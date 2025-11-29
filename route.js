@@ -7,7 +7,7 @@ const AttributeRoutes = require('./src/Routes/attributeRoutes');
 
 
 const HsnCodes = require('./src/Routes/hsnCodeRoutes'); // We will create this next
-const productRoutes = require('./src/Routes/productRoute'); // New
+const productRoutes = require('./src/Routes/productRoute'); 
 const sellerProductRoutes = require('./src/Routes/sellerProductRoute'); // New
 
 const settingsRoutes = require('./src/Routes/settingsRoutes');
