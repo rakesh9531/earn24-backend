@@ -185,6 +185,86 @@ const deleteFile = (filePath) => {
     }
 };
 
+// Admin adds a new product type to the master catalog--- Old before server
+// exports.createMasterProduct = async (req, res) => {
+//     try {
+//         const {
+//             name, categoryId, subcategoryId, brandId, hsnCodeId, description, attributeValueIds
+//         } = req.body;
+
+//         const mainImage = req.files?.main_image?.[0];
+//         const galleryImages = req.files?.gallery_images || [];
+
+//         if (!name || !categoryId || !brandId || !hsnCodeId || !mainImage) {
+//             if (mainImage) deleteFile(mainImage.path);
+//             galleryImages.forEach(file => deleteFile(file.path));
+//             return res.status(400).json({ status: false, message: 'Name, Category, Brand, HSN, and a Main Image are required.' });
+//         }
+
+//         const slug = slugify(name, { lower: true, strict: true });
+
+//         const [existing] = await db.query('SELECT id FROM products WHERE slug = ? AND is_deleted = FALSE', [slug]);
+//         if (existing.length > 0) {
+//             if (mainImage) deleteFile(mainImage.path);
+//             galleryImages.forEach(file => deleteFile(file.path));
+//             return res.status(409).json({ status: false, message: 'A product with this name already exists.' });
+//         }
+
+//         // --- THIS IS YOUR CORRECTED URL LOGIC ---
+//         const getRelativeUrl = (file) => {
+//             const fullPath = file.path;
+//             const uploadsIndex = fullPath.indexOf('uploads');
+//             if (uploadsIndex === -1) return null; // Should not happen with correct setup
+//             return '/' + fullPath.substring(uploadsIndex).replace(/\\/g, '/');
+//         };
+
+//         const mainImageUrl = getRelativeUrl(mainImage);
+//         const galleryImageUrls = galleryImages.map(file => getRelativeUrl(file));
+//         // --- END OF CORRECTION ---
+
+//         const connection = await db.getConnection();
+//         try {
+//             await connection.beginTransaction();
+
+//             const productQuery = `INSERT INTO products (name, slug, category_id, subcategory_id, brand_id, hsn_code_id, description, main_image_url, gallery_image_urls, is_approved, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+//             const [result] = await connection.query(productQuery, [name, slug, categoryId, subcategoryId, brandId, hsnCodeId, description, mainImageUrl, JSON.stringify(galleryImageUrls), true, true]);
+//             const newProductId = result.insertId;
+
+//             // If attributeValueIds are provided, link them to the new product
+//             if (attributeValueIds && attributeValueIds.length > 0) {
+//                 // Ensure it's an array, as FormData can send a single value as a string
+//                 const ids = Array.isArray(attributeValueIds) ? attributeValueIds : [attributeValueIds];
+
+//                 const productAttributeQuery = `INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`;
+//                 const productAttributeValues = ids.map(valueId => [newProductId, valueId]);
+//                 await connection.query(productAttributeQuery, [productAttributeValues]);
+//             }
+
+//             await connection.commit();
+//             res.status(201).json({ status: true, message: "Master product created successfully", productId: newProductId });
+
+//         } catch (error) {
+//             await connection.rollback();
+//             // Rethrow the error to be caught by the outer catch block
+//             throw error;
+//         } finally {
+//             if (connection) connection.release();
+//         }
+
+//     } catch (error) {
+//         // This outer catch will now handle errors from the transaction block as well
+//         // and clean up any uploaded files.
+//         if (req.files?.main_image?.[0]) deleteFile(req.files.main_image[0].path);
+//         (req.files?.gallery_images || []).forEach(file => deleteFile(file.path));
+
+//         console.error("Error creating master product:", error);
+//         res.status(500).json({ status: false, message: "An error occurred during product creation." });
+//     }
+// };
+
+
+
+
 // Admin adds a new product type to the master catalog
 exports.createMasterProduct = async (req, res) => {
     try {
@@ -195,6 +275,7 @@ exports.createMasterProduct = async (req, res) => {
         const mainImage = req.files?.main_image?.[0];
         const galleryImages = req.files?.gallery_images || [];
 
+        // 1. Basic Validation
         if (!name || !categoryId || !brandId || !hsnCodeId || !mainImage) {
             if (mainImage) deleteFile(mainImage.path);
             galleryImages.forEach(file => deleteFile(file.path));
@@ -203,6 +284,7 @@ exports.createMasterProduct = async (req, res) => {
 
         const slug = slugify(name, { lower: true, strict: true });
 
+        // 2. Check for Duplicates
         const [existing] = await db.query('SELECT id FROM products WHERE slug = ? AND is_deleted = FALSE', [slug]);
         if (existing.length > 0) {
             if (mainImage) deleteFile(mainImage.path);
@@ -210,34 +292,64 @@ exports.createMasterProduct = async (req, res) => {
             return res.status(409).json({ status: false, message: 'A product with this name already exists.' });
         }
 
-        // --- THIS IS YOUR CORRECTED URL LOGIC ---
+        // 3. Helper to format Image URLs
         const getRelativeUrl = (file) => {
             const fullPath = file.path;
             const uploadsIndex = fullPath.indexOf('uploads');
-            if (uploadsIndex === -1) return null; // Should not happen with correct setup
+            if (uploadsIndex === -1) return null;
             return '/' + fullPath.substring(uploadsIndex).replace(/\\/g, '/');
         };
 
         const mainImageUrl = getRelativeUrl(mainImage);
         const galleryImageUrls = galleryImages.map(file => getRelativeUrl(file));
-        // --- END OF CORRECTION ---
 
         const connection = await db.getConnection();
         try {
             await connection.beginTransaction();
 
+            // 4. Insert Product
             const productQuery = `INSERT INTO products (name, slug, category_id, subcategory_id, brand_id, hsn_code_id, description, main_image_url, gallery_image_urls, is_approved, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
             const [result] = await connection.query(productQuery, [name, slug, categoryId, subcategoryId, brandId, hsnCodeId, description, mainImageUrl, JSON.stringify(galleryImageUrls), true, true]);
             const newProductId = result.insertId;
 
-            // If attributeValueIds are provided, link them to the new product
-            if (attributeValueIds && attributeValueIds.length > 0) {
-                // Ensure it's an array, as FormData can send a single value as a string
-                const ids = Array.isArray(attributeValueIds) ? attributeValueIds : [attributeValueIds];
+            // 5. Handle Attributes (CORRECTED LOGIC)
+            if (attributeValueIds) {
+                let ids = attributeValueIds;
 
-                const productAttributeQuery = `INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`;
-                const productAttributeValues = ids.map(valueId => [newProductId, valueId]);
-                await connection.query(productAttributeQuery, [productAttributeValues]);
+                // FIX: FormData often sends arrays as JSON strings (e.g., '["6"]') or single strings (e.g., "6")
+                if (typeof ids === 'string') {
+                    try {
+                        // Check if it looks like a JSON array
+                        if (ids.trim().startsWith('[')) {
+                            ids = JSON.parse(ids);
+                        } else {
+                            // It's a single value string
+                            ids = [ids];
+                        }
+                    } catch (e) {
+                        // Fallback: If parse fails, treat as single value
+                        ids = [ids];
+                    }
+                } else if (!Array.isArray(ids)) {
+                    // It's a single number/value, wrap in array
+                    ids = [ids];
+                }
+
+                // Sanitize: Filter out empty values
+                ids = ids.filter(val => val !== null && val !== '' && val !== undefined);
+
+                if (ids.length > 0) {
+                    const productAttributeQuery = `INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`;
+                    
+                    // Map to [[productId, valueId], [productId, valueId]]
+                    const productAttributeValues = ids.map(valueId => {
+                        // Extra safety: If valueId is still an array (e.g. [[6]]), grab the first element
+                        const finalId = Array.isArray(valueId) ? valueId[0] : valueId;
+                        return [newProductId, finalId];
+                    });
+
+                    await connection.query(productAttributeQuery, [productAttributeValues]);
+                }
             }
 
             await connection.commit();
@@ -245,22 +357,23 @@ exports.createMasterProduct = async (req, res) => {
 
         } catch (error) {
             await connection.rollback();
-            // Rethrow the error to be caught by the outer catch block
-            throw error;
+            throw error; // Re-throw to be caught by outer catch
         } finally {
             if (connection) connection.release();
         }
 
     } catch (error) {
-        // This outer catch will now handle errors from the transaction block as well
-        // and clean up any uploaded files.
+        // Cleanup files on error
         if (req.files?.main_image?.[0]) deleteFile(req.files.main_image[0].path);
         (req.files?.gallery_images || []).forEach(file => deleteFile(file.path));
 
         console.error("Error creating master product:", error);
-        res.status(500).json({ status: false, message: "An error occurred during product creation." });
+        res.status(500).json({ status: false, message: "An error occurred during product creation.", error: error.message });
     }
 };
+
+
+
 
 // === THIS IS THE FINAL, COMPLETE, AND CORRECT VERSION OF THIS FUNCTION === local code perfect working 
 // exports.getAllMasterProducts = async (req, res) => {
