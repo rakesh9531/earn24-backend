@@ -16,7 +16,27 @@ const app = express();
 
 
 // Middleware
-app.use(cors());
+// app.use(cors());
+
+
+
+const corsOptions = {
+  origin: [
+    'https://newadmin.earn24.in', 
+    'http://localhost:4200'
+  ],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], // ✅ Explicitly allow all
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+};
+
+app.use(cors(corsOptions));
+
+
+
+
+
+
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
