@@ -900,7 +900,120 @@ exports.getTrendingSearches = async (req, res) => {
 
 
 // ==========================================================
-// === THE NEW, PRODUCTION-READY SEARCH FUNCTION          ===
+// === THE NEW, PRODUCTION-READY SEARCH FUNCTION          === old before server
+// ==========================================================
+// exports.searchProducts = async (req, res) => {
+//     try {
+
+//         console.log("call hua ree search")
+
+//         // --- 1. Get all possible parameters from the frontend ---
+//         const { query, categoryId, brandId, sortBy, page = 1, limit = 20 } = req.query;
+//         const pincode = req.query.pincode; // Assume pincode might also be a filter
+
+//         if (!query && !categoryId && !brandId) {
+//             return res.status(400).json({ status: false, message: "A search query or filter is required." });
+//         }
+
+//         // --- 2. Dynamically build the SQL query ---
+//         let whereClauses = ['sp.is_active = TRUE'];
+//         let queryParams = [];
+
+//         // Handle the text search query
+//         if (query) {
+//             const searchTerms = query.split(' ').filter(term => term); // Split by space and remove empty strings
+//             const searchConditions = searchTerms.map(term => {
+//                 queryParams.push(`%${term}%`, `%${term}%`, `%${term}%`);
+//                 return "(p.name LIKE ? OR p.description LIKE ? OR b.name LIKE ?)";
+//             }).join(' AND ');
+//             whereClauses.push(`(${searchConditions})`);
+//         }
+
+//         // Handle filters
+//         if (categoryId) {
+//             whereClauses.push('p.category_id = ?');
+//             queryParams.push(categoryId);
+//         }
+//         if (brandId) {
+//             whereClauses.push('p.brand_id = ?');
+//             queryParams.push(brandId);
+//         }
+//         if (pincode) {
+//             // Ensure we only show products available in the user's pincode
+//             whereClauses.push('spp.id IS NOT NULL');
+//         }
+        
+//         const whereString = `WHERE ${whereClauses.join(' AND ')}`;
+
+//         // --- 3. Handle Sorting ---
+//         let orderByClause = 'ORDER BY p.popularity DESC'; // Default sort
+//         switch (sortBy) {
+//             case 'price_asc':
+//                 orderByClause = 'ORDER BY sp.selling_price ASC';
+//                 break;
+//             case 'price_desc':
+//                 orderByClause = 'ORDER BY sp.selling_price DESC';
+//                 break;
+//             // Add more cases for 'rating', 'discount', etc. if needed
+//         }
+
+//         // --- 4. Handle Pagination ---
+//         const pageNum = parseInt(page, 10);
+//         const limitNum = parseInt(limit, 10);
+//         const offset = (pageNum - 1) * limitNum;
+
+//         // --- 5. Create the FINAL queries ---
+//         const baseSelectAndJoins = `
+//             FROM seller_products sp
+//             JOIN products p ON sp.product_id = p.id
+//             LEFT JOIN brands b ON p.brand_id = b.id
+//             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
+//             ${pincode ? `JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id AND spp.pincode = ?` : ''}
+//         `;
+//         // Add pincode to params if it exists
+//         if (pincode) queryParams.unshift(pincode);
+
+//         // Query to get the total count for pagination
+//         const countQuery = `SELECT COUNT(DISTINCT p.id) as total ${baseSelectAndJoins} ${whereString}`;
+//         const [countRows] = await db.query(countQuery, queryParams);
+//         const totalProducts = countRows[0].total;
+
+//         // Query to get the actual product data
+//         const dataQuery = `
+//             SELECT DISTINCT
+//                 p.id as product_id, p.name, p.main_image_url, p.description, p.gallery_image_urls,
+//                 b.name as brand_name, 
+//                 sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity
+//             ${baseSelectAndJoins} ${whereString} ${orderByClause} LIMIT ? OFFSET ?
+//         `;
+//         const [products] = await db.query(dataQuery, [...queryParams, limitNum, offset]);
+
+//         console.log("[products]-->",[products])
+
+//         // --- 6. Send the structured response ---
+//         res.status(200).json({
+//             status: true,
+//             data: {
+//                 products,
+//                 pagination: {
+//                     total: totalProducts,
+//                     page: pageNum,
+//                     limit: limitNum,
+//                     totalPages: Math.ceil(totalProducts / limitNum)
+//                 }
+//             }
+//         });
+
+//     } catch (error) {
+//         console.error("Error in searchProducts:", error);
+//         res.status(500).json({ status: false, message: "An internal server error occurred during search." });
+//     }
+// };
+
+
+
+// ==========================================================
+// === THE FIXED, PRODUCTION-READY SEARCH FUNCTION        ===
 // ==========================================================
 exports.searchProducts = async (req, res) => {
     try {
@@ -909,7 +1022,7 @@ exports.searchProducts = async (req, res) => {
 
         // --- 1. Get all possible parameters from the frontend ---
         const { query, categoryId, brandId, sortBy, page = 1, limit = 20 } = req.query;
-        const pincode = req.query.pincode; // Assume pincode might also be a filter
+        const pincode = req.query.pincode; 
 
         if (!query && !categoryId && !brandId) {
             return res.status(400).json({ status: false, message: "A search query or filter is required." });
@@ -921,7 +1034,7 @@ exports.searchProducts = async (req, res) => {
 
         // Handle the text search query
         if (query) {
-            const searchTerms = query.split(' ').filter(term => term); // Split by space and remove empty strings
+            const searchTerms = query.split(' ').filter(term => term); 
             const searchConditions = searchTerms.map(term => {
                 queryParams.push(`%${term}%`, `%${term}%`, `%${term}%`);
                 return "(p.name LIKE ? OR p.description LIKE ? OR b.name LIKE ?)";
@@ -939,7 +1052,6 @@ exports.searchProducts = async (req, res) => {
             queryParams.push(brandId);
         }
         if (pincode) {
-            // Ensure we only show products available in the user's pincode
             whereClauses.push('spp.id IS NOT NULL');
         }
         
@@ -954,7 +1066,6 @@ exports.searchProducts = async (req, res) => {
             case 'price_desc':
                 orderByClause = 'ORDER BY sp.selling_price DESC';
                 break;
-            // Add more cases for 'rating', 'discount', etc. if needed
         }
 
         // --- 4. Handle Pagination ---
@@ -963,6 +1074,10 @@ exports.searchProducts = async (req, res) => {
         const offset = (pageNum - 1) * limitNum;
 
         // --- 5. Create the FINAL queries ---
+        // Note: We handle the parameter order carefully here.
+        // If pincode exists, it goes into the JOIN, which is technically before the WHERE clauses in execution context,
+        // but typically parameter binding order follows the string order.
+        
         const baseSelectAndJoins = `
             FROM seller_products sp
             JOIN products p ON sp.product_id = p.id
@@ -970,7 +1085,9 @@ exports.searchProducts = async (req, res) => {
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             ${pincode ? `JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id AND spp.pincode = ?` : ''}
         `;
-        // Add pincode to params if it exists
+
+        // IMPORTANT: The '?' for pincode is inside the JOIN, which comes BEFORE the WHERE clause.
+        // So we must add pincode to the START of the array.
         if (pincode) queryParams.unshift(pincode);
 
         // Query to get the total count for pagination
@@ -979,16 +1096,25 @@ exports.searchProducts = async (req, res) => {
         const totalProducts = countRows[0].total;
 
         // Query to get the actual product data
+        // ✅ FIX: Added 'p.popularity' to the SELECT list
         const dataQuery = `
             SELECT DISTINCT
-                p.id as product_id, p.name, p.main_image_url, p.description, p.gallery_image_urls,
+                p.id as product_id, 
+                p.name, 
+                p.main_image_url, 
+                p.description, 
+                p.gallery_image_urls,
                 b.name as brand_name, 
-                sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity
+                sp.id as offer_id, 
+                sp.selling_price, 
+                sp.mrp, 
+                sp.minimum_order_quantity,
+                p.popularity -- ✅ REQUIRED FOR ORDER BY
             ${baseSelectAndJoins} ${whereString} ${orderByClause} LIMIT ? OFFSET ?
         `;
+        
+        // Execute the search
         const [products] = await db.query(dataQuery, [...queryParams, limitNum, offset]);
-
-        console.log("[products]-->",[products])
 
         // --- 6. Send the structured response ---
         res.status(200).json({
