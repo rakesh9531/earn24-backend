@@ -262,7 +262,108 @@ exports.createMasterProduct = async (req, res) => {
     }
 };
 
-// === THIS IS THE FINAL, COMPLETE, AND CORRECT VERSION OF THIS FUNCTION ===
+// === THIS IS THE FINAL, COMPLETE, AND CORRECT VERSION OF THIS FUNCTION === local code perfect working 
+// exports.getAllMasterProducts = async (req, res) => {
+//   try {
+//     const page = parseInt(req.query.page, 10) || 1;
+//     const limit = parseInt(req.query.limit, 10) || 10;
+//     const search = req.query.search || '';
+//     const offset = (page - 1) * limit;
+//     const searchPattern = `%${search}%`;
+
+//     // --- THIS IS THE CORRECTED DATA QUERY ---
+//     // It now correctly selects ALL required fields: main_image_url, description, and the aggregated attributes.
+//     const dataQuery = `
+//       SELECT 
+//           p.id, 
+//           p.name, 
+//           p.description,
+//           p.main_image_url,
+//           b.name as brand_name, 
+//           h.gst_percentage,
+//           c.name as category_name,
+//           sc.name as subcategory_name,
+//           p.is_active,
+//           -- This aggregates all attributes for the product into a single JSON array string
+//           (
+//             SELECT CONCAT('[', GROUP_CONCAT(
+//               JSON_OBJECT(
+//                 'attribute_name', attr.name, 
+//                 'value', av.value
+//               )
+//             ), ']') 
+//             FROM product_attributes pa
+//             JOIN attribute_values av ON pa.attribute_value_id = av.id
+//             JOIN attributes attr ON av.attribute_id = a.id
+//             WHERE pa.product_id = p.id
+//           ) as attributes,
+//           -- This creates the user-friendly display name for dropdowns
+//           CONCAT(
+//               p.name,
+//               ' (Brand: ', b.name, ')',
+//               IFNULL(
+//                   (SELECT CONCAT(' (', GROUP_CONCAT(av.value SEPARATOR ', '), ')')
+//                    FROM product_attributes pa
+//                    JOIN attribute_values av ON pa.attribute_value_id = av.id
+//                    WHERE pa.product_id = p.id
+//                   ),
+//                   ''
+//               )
+//           ) as display_name
+//       FROM products p
+//       LEFT JOIN brands b ON p.brand_id = b.id
+//       LEFT JOIN product_categories c ON p.category_id = c.id
+//       LEFT JOIN product_subcategories sc ON p.subcategory_id = sc.id
+//       LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
+//       LEFT JOIN attributes a ON TRUE -- This is a trick to make the alias 'a' available in the subquery
+//       WHERE 
+//           p.is_deleted = FALSE 
+//           AND p.is_approved = TRUE
+//           AND (p.name LIKE ? OR b.name LIKE ?)
+//       GROUP BY p.id -- Grouping is essential for the GROUP_CONCAT to work correctly
+//       ORDER BY p.created_at DESC
+//       LIMIT ? OFFSET ?
+//     `;
+//     const [rows] = await db.query(dataQuery, [searchPattern, searchPattern, limit, offset]);
+    
+//     // Parse the attributes string back into a JSON object for each product
+//     const dataWithParsedAttributes = rows.map(product => ({
+//         ...product,
+//         // The attributes field is a string from the DB, so we parse it.
+//         // If it's null or invalid JSON, default to an empty array.
+//         attributes: product.attributes ? JSON.parse(product.attributes) : []
+//     }));
+
+//     const countQuery = `
+//         SELECT COUNT(*) as total 
+//         FROM products p
+//         LEFT JOIN brands b ON p.brand_id = b.id
+//         WHERE 
+//             p.is_deleted = FALSE 
+//             AND p.is_approved = TRUE
+//             AND (p.name LIKE ? OR b.name LIKE ?)
+//     `;
+//     const [countRows] = await db.query(countQuery, [searchPattern, searchPattern]);
+//     const totalRecords = countRows[0].total;
+
+//     res.status(200).json({ 
+//         status: true, 
+//         data: dataWithParsedAttributes, // Send the parsed data
+//         pagination: {
+//             currentPage: page,
+//             totalPages: Math.ceil(totalRecords / limit),
+//             totalRecords: totalRecords,
+//             limit: limit
+//         }
+//     });
+//   } catch (error) {
+//     console.error("Error fetching master products:", error);
+//     res.status(500).json({ status: false, message: "An error occurred." });
+//   }
+// };
+
+
+// === THIS IS THE FIXED, PRODUCTION-READY VERSION ===
 exports.getAllMasterProducts = async (req, res) => {
   try {
     const page = parseInt(req.query.page, 10) || 1;
@@ -271,8 +372,8 @@ exports.getAllMasterProducts = async (req, res) => {
     const offset = (page - 1) * limit;
     const searchPattern = `%${search}%`;
 
-    // --- THIS IS THE CORRECTED DATA QUERY ---
-    // It now correctly selects ALL required fields: main_image_url, description, and the aggregated attributes.
+    // --- FIX: REMOVED THE INVALID 'LEFT JOIN attributes a' ---
+    // --- FIX: UPDATED THE SUBQUERY TO JOIN ATTRIBUTES INTERNALLY ---
     const dataQuery = `
       SELECT 
           p.id, 
@@ -284,7 +385,8 @@ exports.getAllMasterProducts = async (req, res) => {
           c.name as category_name,
           sc.name as subcategory_name,
           p.is_active,
-          -- This aggregates all attributes for the product into a single JSON array string
+          
+          -- Subquery for JSON Attributes
           (
             SELECT CONCAT('[', GROUP_CONCAT(
               JSON_OBJECT(
@@ -294,10 +396,11 @@ exports.getAllMasterProducts = async (req, res) => {
             ), ']') 
             FROM product_attributes pa
             JOIN attribute_values av ON pa.attribute_value_id = av.id
-            JOIN attributes attr ON av.attribute_id = a.id
+            JOIN attributes attr ON av.attribute_id = attr.id -- ✅ Fixed: Join directly to attr.id, not a.id
             WHERE pa.product_id = p.id
           ) as attributes,
-          -- This creates the user-friendly display name for dropdowns
+
+          -- Subquery for Display Name
           CONCAT(
               p.name,
               ' (Brand: ', b.name, ')',
@@ -310,27 +413,28 @@ exports.getAllMasterProducts = async (req, res) => {
                   ''
               )
           ) as display_name
+
       FROM products p
       LEFT JOIN brands b ON p.brand_id = b.id
       LEFT JOIN product_categories c ON p.category_id = c.id
       LEFT JOIN product_subcategories sc ON p.subcategory_id = sc.id
       LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-      LEFT JOIN attributes a ON TRUE -- This is a trick to make the alias 'a' available in the subquery
+      
+      -- ❌ REMOVED: LEFT JOIN attributes a ON TRUE (This caused the error)
+
       WHERE 
           p.is_deleted = FALSE 
           AND p.is_approved = TRUE
           AND (p.name LIKE ? OR b.name LIKE ?)
-      GROUP BY p.id -- Grouping is essential for the GROUP_CONCAT to work correctly
+      GROUP BY p.id
       ORDER BY p.created_at DESC
       LIMIT ? OFFSET ?
     `;
+
     const [rows] = await db.query(dataQuery, [searchPattern, searchPattern, limit, offset]);
     
-    // Parse the attributes string back into a JSON object for each product
     const dataWithParsedAttributes = rows.map(product => ({
         ...product,
-        // The attributes field is a string from the DB, so we parse it.
-        // If it's null or invalid JSON, default to an empty array.
         attributes: product.attributes ? JSON.parse(product.attributes) : []
     }));
 
@@ -348,7 +452,7 @@ exports.getAllMasterProducts = async (req, res) => {
 
     res.status(200).json({ 
         status: true, 
-        data: dataWithParsedAttributes, // Send the parsed data
+        data: dataWithParsedAttributes,
         pagination: {
             currentPage: page,
             totalPages: Math.ceil(totalRecords / limit),
