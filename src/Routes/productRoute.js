@@ -74,6 +74,14 @@ const productUploadMiddleware = uploadProductImages.fields([
     { name: 'gallery_images', maxCount: 5 }
 ]);
 
+
+router.get('/trending-searches', productController.getTrendingSearches);
+router.get('/search', productController.searchProducts);
+// --- NEW LIGHTWEIGHT ROUTE FOR SEARCH SUGGESTIONS ---
+router.get('/suggestions', productController.getSearchSuggestions);
+router.get('/:id', productController.getProductForUser);
+router.get('/by-category/:categoryId', productController.getProductsByCategory);
+
 // All master product routes require authentication and specific permissions
 router.use(auth);
 
@@ -83,16 +91,6 @@ router.put('/master/update/:id', can('products:update'), productUploadMiddleware
 router.get('/master/details/:id', can('products:read'), productController.getMasterProductById);
 
 
-router.get('/trending-searches', productController.getTrendingSearches);
-router.get('/search', productController.searchProducts);
-// --- NEW LIGHTWEIGHT ROUTE FOR SEARCH SUGGESTIONS ---
-router.get('/suggestions', productController.getSearchSuggestions);
-
-router.get('/:id', productController.getProductForUser);
-
-
-
-router.get('/by-category/:categoryId', productController.getProductsByCategory);
 
 
 module.exports = router;
