@@ -155,8 +155,8 @@ const handleOtpSending = async (mobile_number) => {
     }
 
     // 3. Generate & Send
-    const otp = "1234";
-    // const otp = Math.floor(100000 + Math.random() * 9000).toString();
+    const otp = "123456";
+    // const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const smsSent = await sendSms(mobile_number, otp);
 
     if (!smsSent) return { success: false, status: 500, message: "SMS provider failed." };
