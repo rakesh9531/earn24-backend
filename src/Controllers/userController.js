@@ -4,6 +4,7 @@ const bcrypt = require('bcrypt'); // For hashing passwords
 const jwt = require('jsonwebtoken');
 const moment = require('moment');
 const { registerUserValidator, loginUserValidator } = require('../Validator/userValidation');
+const { sendSms } = require('../utils/smsHelper');
 
 require('dotenv').config();
 
@@ -117,165 +118,454 @@ require('dotenv').config();
 
 
 
-// MLM Logic For Resigter controller belwo
-exports.registerUser = async (req, res) => {
-  try {
-    const { error } = registerUserValidator(req.body);
-    if (error) {
-      return res.status(400).json({ status: false, message: 'Validation failed', errors: error.details.map(err => err.message) });
+// New With OTP 
+
+
+// --- HELPER: OTP GENERATION & RATE LIMITING LOGIC ---
+// This function handles the "5 OTPs per day" and "Block" logic
+const handleOtpSending = async (mobile_number) => {
+    const currentTime = moment().tz("Asia/Kolkata");
+    const [rows] = await db.query('SELECT * FROM otp_records WHERE mobile_number = ?', [mobile_number]);
+    let record = rows[0];
+
+    // 1. Check Block Status
+    if (record && record.is_blocked) {
+        const blockedUntil = moment(record.blocked_until);
+        if (currentTime.isBefore(blockedUntil)) {
+            return { success: false, status: 429, message: `Too many attempts. Blocked until ${blockedUntil.format('hh:mm A')}` };
+        }
+        // Unblock if time passed
+        await db.query('UPDATE otp_records SET is_blocked = 0, attempts_count = 0 WHERE mobile_number = ?', [mobile_number]);
+        record.attempts_count = 0;
     }
 
-    const {
-      full_name,
-      username,
-      password,
-      email,
-      mobile_number,
-      referral_code, // This is the SPONSOR's referral code
-      device_token,
-    } = req.body;
+    // 2. Check Daily Limit (Reset if next day)
+    if (record) {
+        const lastSent = moment(record.last_sent_at);
+        if (!currentTime.isSame(lastSent, 'day')) {
+            await db.query('UPDATE otp_records SET attempts_count = 0 WHERE mobile_number = ?', [mobile_number]);
+            record.attempts_count = 0;
+        }
 
-    const [existing] = await db.query(
-      'SELECT * FROM users WHERE username = ? OR email = ? OR mobile_number = ? LIMIT 1',
-      [username, email, mobile_number]
-    );
-    if (existing.length > 0) {
-      return res.status(409).json({ status: false, message: 'Username, email, or mobile number already exists' });
+        if (record.attempts_count >= 5) {
+            const blockTime = moment().tz("Asia/Kolkata").add(24, 'hours').format('YYYY-MM-DD HH:mm:ss');
+            await db.query('UPDATE otp_records SET is_blocked = 1, blocked_until = ? WHERE mobile_number = ?', [blockTime, mobile_number]);
+            return { success: false, status: 429, message: "Daily limit exceeded. Blocked for 24 hours." };
+        }
     }
 
-    // ===============================================
-    //           YOUR FINAL, CORRECTED LOGIC
-    // ===============================================
-    let sponsorId = null;
-    let userType = 'CUSTOMER'; // Default to Customer
+    // 3. Generate & Send
+    const otp = "1234";
+    // const otp = Math.floor(100000 + Math.random() * 9000).toString();
+    const smsSent = await sendSms(mobile_number, otp);
 
-    if (referral_code && referral_code.trim() !== '') {
-      // A referral code was provided. This user intends to be an Affiliate.
-      const [sponsor] = await db.query('SELECT id FROM users WHERE referral_code = ?', [referral_code.trim()]);
+    if (!smsSent) return { success: false, status: 500, message: "SMS provider failed." };
 
-      if (sponsor.length === 0) {
-        // The provided code is invalid. Stop the registration.
-        return res.status(400).json({ status: false, message: 'Invalid referral code provided.' });
-      }
-      sponsorId = sponsor[0].id;
-      userType = 'AFFILIATE'; // Upgrade the user to an Affiliate.
-
-    }
-    // If no referral_code is provided, sponsorId remains NULL and userType remains 'CUSTOMER'.
-    // This is the correct behavior for a direct customer.
-    // ===============================================
-    //            END OF CORRECTED LOGIC
-    // ===============================================
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    // The new user's own username becomes their personal referral code.
-    const newUserReferralCode = username;
-    const createdAt = moment().tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss');
-
-    const [result] = await db.query(
-      `INSERT INTO users (
-         full_name, username, password, email, mobile_number, 
-         referral_code, sponsor_id, user_type, device_token, 
-         is_online, is_active, is_deleted, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
-      [
-        full_name,
-        username,
-        hashedPassword,
-        email,
-        mobile_number,
-        newUserReferralCode,
-        sponsorId,           // Will be NULL for Customers, or an ID for Affiliates
-        userType,            // Will be 'CUSTOMER' or 'AFFILIATE'
-        device_token || null,
-        1, // is_online
-        createdAt,
-        createdAt
-      ]
-    );
-
-    const userId = result.insertId;
-    await db.query('INSERT INTO user_wallets (user_id) VALUES (?)', [userId]);
-
-    const token = jwt.sign({ id: userId, username }, process.env.JWT_SECRET, { expiresIn: '30d' });
-    
-    // Fetch the newly created user to return all details
-    const [newUserRows] = await db.query('SELECT * FROM users WHERE id = ?', [userId]);
-    const newUserInfo = newUserRows[0];
-
-    res.status(201).json({
-      status: true,
-      message: 'User registered successfully',
-      data: {
-        user: newUserInfo,
-        token
-      }
-    });
-
-  } catch (err) {
-    console.error('Registration error:', err);
-    res.status(500).json({ status: false, message: 'Server error' });
-  }
-}; 
-
-
-exports.userLogin = async (req, res) => {
-  try {
-    // Validator is fine, no changes needed
-    const { error } = loginUserValidator(req.body);
-    if (error) {
-      return res.status(400).json({
-        status: false,
-        message: 'Validation failed',
-        errors: error.details.map(err => err.message)
-      });
+    // 4. Update DB
+    if (record) {
+        await db.query('UPDATE otp_records SET otp_code = ?, attempts_count = attempts_count + 1, last_sent_at = NOW() WHERE mobile_number = ?', [otp, mobile_number]);
+    } else {
+        await db.query('INSERT INTO otp_records (mobile_number, otp_code, attempts_count, last_sent_at) VALUES (?, ?, 1, NOW())', [mobile_number, otp]);
     }
 
-    const { login, password } = req.body;
-
-    // --- THIS IS THE FIX ---
-    // The query now checks the 'login' input against three possible columns.
-    const [users] = await db.query(
-      'SELECT * FROM users WHERE username = ? OR email = ? OR mobile_number = ? LIMIT 1',
-      [login, login, login] // Pass the same input for all three checks
-    );
-
-    if (users.length === 0) {
-      return res.status(404).json({ status: false, message: 'User not found' });
-    }
-
-    const user = users[0];
-
-    // Compare password
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).json({ status: false, message: 'Invalid credentials' }); // More generic error
-    }
-
-    // Generate JWT Token
-    const token = jwt.sign(
-      { id: user.id, username: user.username },
-      process.env.JWT_SECRET,
-      { expiresIn: '30d' }
-    );
-
-    res.status(200).json({
-      status: true,
-      message: 'Login successful',
-      token, // Send the token for the app to store
-      data: {
-        id: user.id,
-        full_name: user.full_name,
-        username: user.username,
-        email: user.email,
-      }
-    });
-
-  } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ status: false, message: 'Server error' });
-  }
+    return { success: true };
 };
+
+// =========================================================
+// 1. REGISTER INITIATE (Step 1: Form Submit -> Send OTP)
+// =========================================================
+exports.registerInitiate = async (req, res) => {
+    try {
+        // 1. Validate Input
+        const { error } = registerUserValidator(req.body);
+        if (error) return res.status(400).json({ status: false, message: error.details[0].message });
+
+        const { full_name, username, password, email, mobile_number, referral_code, device_token } = req.body;
+
+        // 2. Check if user exists in MAIN table
+        const [existing] = await db.query(
+            'SELECT id FROM users WHERE username = ? OR email = ? OR mobile_number = ?', 
+            [username, email, mobile_number]
+        );
+        if (existing.length > 0) {
+            return res.status(409).json({ status: false, message: 'Username, Email or Mobile already exists.' });
+        }
+
+        // 3. MLM Sponsor Logic Check (Validate logic before saving to temp)
+        let sponsorId = null;
+        let userType = 'CUSTOMER';
+        if (referral_code && referral_code.trim() !== '') {
+            const [sponsor] = await db.query('SELECT id FROM users WHERE referral_code = ?', [referral_code.trim()]);
+            if (sponsor.length === 0) return res.status(400).json({ status: false, message: 'Invalid referral code.' });
+            sponsorId = sponsor[0].id;
+            userType = 'AFFILIATE';
+        }
+
+        // 4. Send OTP (using helper)
+        const otpResult = await handleOtpSending(mobile_number);
+        if (!otpResult.success) return res.status(otpResult.status).json({ status: false, message: otpResult.message });
+
+        // 5. Hash Password NOW
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // 6. Save data to TEMP table (expires in 15 mins)
+        const userData = JSON.stringify({
+            full_name, username, password: hashedPassword, email, mobile_number, 
+            referral_code, sponsorId, userType, device_token
+        });
+        
+        const expiry = moment().tz("Asia/Kolkata").add(15, 'minutes').format('YYYY-MM-DD HH:mm:ss');
+
+        // Upsert: If user tried registering before but didn't verify, update the record
+        await db.query(`
+            INSERT INTO temp_registrations (mobile_number, user_data, expires_at) 
+            VALUES (?, ?, ?) 
+            ON DUPLICATE KEY UPDATE user_data = VALUES(user_data), expires_at = VALUES(expires_at)
+        `, [mobile_number, userData, expiry]);
+
+        res.status(200).json({ status: true, message: `OTP sent to ${mobile_number}. Please verify.` });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ status: false, message: 'Server error' });
+    }
+};
+
+// =========================================================
+// 2. VERIFY REGISTRATION OTP (Step 2: OTP -> Create User)
+// =========================================================
+exports.verifyRegistrationOtp = async (req, res) => {
+    try {
+        const { mobile_number, otp } = req.body;
+
+        // 1. Check OTP
+        const [otpRows] = await db.query('SELECT * FROM otp_records WHERE mobile_number = ?', [mobile_number]);
+        if (otpRows.length === 0 || otpRows[0].otp_code !== otp) {
+            return res.status(400).json({ status: false, message: "Invalid OTP." });
+        }
+
+        // 2. Retrieve Temp Data
+        const [tempRows] = await db.query('SELECT * FROM temp_registrations WHERE mobile_number = ?', [mobile_number]);
+        if (tempRows.length === 0) {
+            return res.status(400).json({ status: false, message: "Registration session expired. Please register again." });
+        }
+
+        // Check expiry
+        if (moment().isAfter(moment(tempRows[0].expires_at))) {
+            return res.status(400).json({ status: false, message: "OTP session expired." });
+        }
+
+        const userData = tempRows[0].user_data; // JSON automatically parsed by mysql2 usually, if not use JSON.parse
+
+        // 3. START TRANSACTION (Move from Temp to Main)
+        const connection = await db.getConnection();
+        try {
+            await connection.beginTransaction();
+
+            const newUserReferralCode = userData.username;
+            const now = moment().tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss');
+
+            // Insert into Users
+            const [result] = await connection.query(
+                `INSERT INTO users (full_name, username, password, email, mobile_number, referral_code, sponsor_id, user_type, device_token, is_active, created_at, updated_at) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+                [userData.full_name, userData.username, userData.password, userData.email, userData.mobile_number, newUserReferralCode, userData.sponsorId, userData.userType, userData.device_token, now, now]
+            );
+
+            const userId = result.insertId;
+            await connection.query('INSERT INTO user_wallets (user_id) VALUES (?)', [userId]);
+
+            // Cleanup
+            await connection.query('DELETE FROM temp_registrations WHERE mobile_number = ?', [mobile_number]);
+            await connection.query('UPDATE otp_records SET otp_code = NULL WHERE mobile_number = ?', [mobile_number]); // Invalidate OTP
+
+            await connection.commit();
+
+            // 4. Generate Token (Auto Login)
+            const token = jwt.sign({ id: userId, username: userData.username }, process.env.JWT_SECRET, { expiresIn: '30d' });
+
+            const [userRow] = await db.query('SELECT * FROM users WHERE id = ?', [userId]);
+
+            res.status(201).json({ 
+                status: true, 
+                message: "Registration Successful!", 
+                data: { user: userRow[0], token } 
+            });
+
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            connection.release();
+        }
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ status: false, message: 'Server error during verification.' });
+    }
+};
+
+// =========================================================
+// 3. RESEND OTP
+// =========================================================
+exports.resendOtp = async (req, res) => {
+    try {
+        const { mobile_number } = req.body;
+        // Check if a registration or recovery session exists
+        const [temp] = await db.query('SELECT mobile_number FROM temp_registrations WHERE mobile_number = ? UNION SELECT mobile_number FROM users WHERE mobile_number = ?', [mobile_number, mobile_number]);
+        
+        if (temp.length === 0) return res.status(404).json({ status: false, message: "No active session found for this number." });
+
+        const otpResult = await handleOtpSending(mobile_number);
+        if (!otpResult.success) return res.status(otpResult.status).json({ status: false, message: otpResult.message });
+
+        res.status(200).json({ status: true, message: "OTP resent successfully." });
+
+    } catch (error) {
+        res.status(500).json({ status: false, message: 'Server error' });
+    }
+};
+
+// =========================================================
+// 4. LOGIN (No OTP needed)
+// =========================================================
+exports.loginUser = async (req, res) => {
+    try {
+        const { identifier, password } = req.body; // identifier can be email, mobile, or username
+
+        // Allow login via Email OR Mobile OR Username
+        const [users] = await db.query(
+            'SELECT * FROM users WHERE email = ? OR mobile_number = ? OR username = ?', 
+            [identifier, identifier, identifier]
+        );
+
+        if (users.length === 0) {
+            return res.status(404).json({ status: false, message: "User not found." });
+        }
+
+        const user = users[0];
+
+        if (!user.is_active) return res.status(403).json({ status: false, message: "Account is inactive." });
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(401).json({ status: false, message: "Invalid credentials." });
+        }
+
+        const token = jwt.sign({ id: user.id, username: user.username }, process.env.JWT_SECRET, { expiresIn: '30d' });
+
+        res.status(200).json({
+            status: true,
+            message: "Login successful",
+            data: { user, token }
+        });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ status: false, message: 'Server error' });
+    }
+};
+
+// =========================================================
+// 5. FORGOT PASSWORD FLOW
+// =========================================================
+exports.forgotPasswordInitiate = async (req, res) => {
+    try {
+        const { mobile_number } = req.body;
+        const [user] = await db.query('SELECT id FROM users WHERE mobile_number = ?', [mobile_number]);
+        
+        if (user.length === 0) return res.status(404).json({ status: false, message: "User not found." });
+
+        const otpResult = await handleOtpSending(mobile_number);
+        if (!otpResult.success) return res.status(otpResult.status).json({ status: false, message: otpResult.message });
+
+        res.status(200).json({ status: true, message: "OTP sent for password reset." });
+    } catch (err) { res.status(500).json({ status: false, message: 'Server error' }); }
+};
+
+exports.resetPasswordVerify = async (req, res) => {
+    try {
+        const { mobile_number, otp, new_password } = req.body;
+
+        // Verify OTP
+        const [otpRows] = await db.query('SELECT * FROM otp_records WHERE mobile_number = ?', [mobile_number]);
+        if (otpRows.length === 0 || otpRows[0].otp_code !== otp) {
+            return res.status(400).json({ status: false, message: "Invalid OTP." });
+        }
+
+        const hashedPassword = await bcrypt.hash(new_password, 10);
+        await db.query('UPDATE users SET password = ? WHERE mobile_number = ?', [hashedPassword, mobile_number]);
+        
+        // Clear OTP
+        await db.query('UPDATE otp_records SET otp_code = NULL WHERE mobile_number = ?', [mobile_number]);
+
+        res.status(200).json({ status: true, message: "Password updated successfully. Please login." });
+
+    } catch (err) { res.status(500).json({ status: false, message: 'Server error' }); }
+};
+
+
+
+
+// MLM Logic For Resigter controller belwo
+// exports.registerUser = async (req, res) => {
+//   try {
+//     const { error } = registerUserValidator(req.body);
+//     if (error) {
+//       return res.status(400).json({ status: false, message: 'Validation failed', errors: error.details.map(err => err.message) });
+//     }
+
+//     const {
+//       full_name,
+//       username,
+//       password,
+//       email,
+//       mobile_number,
+//       referral_code, // This is the SPONSOR's referral code
+//       device_token,
+//     } = req.body;
+
+//     const [existing] = await db.query(
+//       'SELECT * FROM users WHERE username = ? OR email = ? OR mobile_number = ? LIMIT 1',
+//       [username, email, mobile_number]
+//     );
+//     if (existing.length > 0) {
+//       return res.status(409).json({ status: false, message: 'Username, email, or mobile number already exists' });
+//     }
+
+//     // ===============================================
+//     //           YOUR FINAL, CORRECTED LOGIC
+//     // ===============================================
+//     let sponsorId = null;
+//     let userType = 'CUSTOMER'; // Default to Customer
+
+//     if (referral_code && referral_code.trim() !== '') {
+//       // A referral code was provided. This user intends to be an Affiliate.
+//       const [sponsor] = await db.query('SELECT id FROM users WHERE referral_code = ?', [referral_code.trim()]);
+
+//       if (sponsor.length === 0) {
+//         // The provided code is invalid. Stop the registration.
+//         return res.status(400).json({ status: false, message: 'Invalid referral code provided.' });
+//       }
+//       sponsorId = sponsor[0].id;
+//       userType = 'AFFILIATE'; // Upgrade the user to an Affiliate.
+
+//     }
+//     // If no referral_code is provided, sponsorId remains NULL and userType remains 'CUSTOMER'.
+//     // This is the correct behavior for a direct customer.
+//     // ===============================================
+//     //            END OF CORRECTED LOGIC
+//     // ===============================================
+
+//     const hashedPassword = await bcrypt.hash(password, 10);
+//     // The new user's own username becomes their personal referral code.
+//     const newUserReferralCode = username;
+//     const createdAt = moment().tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss');
+
+//     const [result] = await db.query(
+//       `INSERT INTO users (
+//          full_name, username, password, email, mobile_number, 
+//          referral_code, sponsor_id, user_type, device_token, 
+//          is_online, is_active, is_deleted, created_at, updated_at
+//        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
+//       [
+//         full_name,
+//         username,
+//         hashedPassword,
+//         email,
+//         mobile_number,
+//         newUserReferralCode,
+//         sponsorId,           // Will be NULL for Customers, or an ID for Affiliates
+//         userType,            // Will be 'CUSTOMER' or 'AFFILIATE'
+//         device_token || null,
+//         1, // is_online
+//         createdAt,
+//         createdAt
+//       ]
+//     );
+
+//     const userId = result.insertId;
+//     await db.query('INSERT INTO user_wallets (user_id) VALUES (?)', [userId]);
+
+//     const token = jwt.sign({ id: userId, username }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    
+//     // Fetch the newly created user to return all details
+//     const [newUserRows] = await db.query('SELECT * FROM users WHERE id = ?', [userId]);
+//     const newUserInfo = newUserRows[0];
+
+//     res.status(201).json({
+//       status: true,
+//       message: 'User registered successfully',
+//       data: {
+//         user: newUserInfo,
+//         token
+//       }
+//     });
+
+//   } catch (err) {
+//     console.error('Registration error:', err);
+//     res.status(500).json({ status: false, message: 'Server error' });
+//   }
+// }; 
+
+
+// exports.userLogin = async (req, res) => {
+//   try {
+//     // Validator is fine, no changes needed
+//     const { error } = loginUserValidator(req.body);
+//     if (error) {
+//       return res.status(400).json({
+//         status: false,
+//         message: 'Validation failed',
+//         errors: error.details.map(err => err.message)
+//       });
+//     }
+
+//     const { login, password } = req.body;
+
+//     // --- THIS IS THE FIX ---
+//     // The query now checks the 'login' input against three possible columns.
+//     const [users] = await db.query(
+//       'SELECT * FROM users WHERE username = ? OR email = ? OR mobile_number = ? LIMIT 1',
+//       [login, login, login] // Pass the same input for all three checks
+//     );
+
+//     if (users.length === 0) {
+//       return res.status(404).json({ status: false, message: 'User not found' });
+//     }
+
+//     const user = users[0];
+
+//     // Compare password
+//     const isMatch = await bcrypt.compare(password, user.password);
+//     if (!isMatch) {
+//       return res.status(401).json({ status: false, message: 'Invalid credentials' }); // More generic error
+//     }
+
+//     // Generate JWT Token
+//     const token = jwt.sign(
+//       { id: user.id, username: user.username },
+//       process.env.JWT_SECRET,
+//       { expiresIn: '30d' }
+//     );
+
+//     res.status(200).json({
+//       status: true,
+//       message: 'Login successful',
+//       token, // Send the token for the app to store
+//       data: {
+//         id: user.id,
+//         full_name: user.full_name,
+//         username: user.username,
+//         email: user.email,
+//       }
+//     });
+
+//   } catch (err) {
+//     console.error('Login error:', err);
+//     res.status(500).json({ status: false, message: 'Server error' });
+//   }
+// };
 
 
 // // --- Main Dashboard Summary ---

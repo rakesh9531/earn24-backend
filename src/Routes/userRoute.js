@@ -43,7 +43,32 @@ const { auth } = require('../Middleware/auth'); // Only `auth` is needed here
 // All routes below require the user to be logged in.
 // router.use(auth);
 
-router.post('/registerUser', userController.registerUser)
+
+
+// --- New REGISTRATION FLOW ---
+// 1. User fills form -> Validates -> Saves to Temp DB -> Sends OTP
+router.post('/register/initiate', userController.registerInitiate);
+
+// 2. User enters OTP -> Moves data from Temp to Users Table -> Auto Logs in
+router.post('/register/verify', userController.verifyRegistrationOtp);
+
+// --- LOGIN FLOW (Standard) ---
+router.post('/loginUser', userController.loginUser);
+
+// --- FORGOT PASSWORD FLOW ---
+router.post('/forgot-password/initiate', userController.forgotPasswordInitiate);
+router.post('/forgot-password/verify', userController.resetPasswordVerify); // Resets password immediately
+
+// --- SHARED ---
+router.post('/resend-otp', userController.resendOtp);
+
+
+
+
+
+
+// OLD REGISTARTION
+// router.post('/registerUser', userController.registerUser)
 
 
 router.get('/profile', auth, userController.getUserProfile);

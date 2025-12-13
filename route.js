@@ -37,6 +37,8 @@ const merchantRoutes = require('./src/Routes/merchantRoutes');
 
 const paymentWebhookRoutes = require('./src/Routes/paymentWebhookRoutes'); // <-- ADD THIS
 
+const paymentRoutes = require('./src/Routes/paymentRoute');
+
 
 router.use('/auth', authRoutes);
 
@@ -68,6 +70,8 @@ router.use('/retailer', retailerRoutes);
 router.use('/merchant', merchantRoutes);
 
 router.use('/webhooks', paymentWebhookRoutes); // <-- ADD THIS
+
+router.use('/payment', paymentRoutes);
 
 
 
