@@ -614,17 +614,150 @@ exports.activateGateway = async (req, res) => {
 // === PUBLIC ROUTES: PAYMENT PROCESSING
 // ==============================================================================
 
+// // 6. CREATE ORDER & INITIATE PAYMENT
+// exports.createOrder = async (req, res) => {
+//   try {
+//     // IMPORTANT: 'orderId' comes from the order previously created in the 'orders' table
+//     const { userId, name, email, mobile, amount, orderId } = req.body;
+
+//     if (!userId || !amount || !orderId) {
+//       return res.status(400).json({ status: false, message: "Missing Order Details (userId, amount, orderId required)." });
+//     }
+
+//     // 1. Fetch Active Gateway
+//     const [rows] = await db.query(
+//       "SELECT gateway_name, encrypted_config, encryption_iv FROM payment_gateway_settings WHERE is_active = 1 LIMIT 1"
+//     );
+
+//     if (rows.length === 0) {
+//       return res.status(503).json({ status: false, message: "No active payment gateway configured." });
+//     }
+
+//     const activeGateway = rows[0];
+//     const decryptedConfig = decryptObject({
+//       encryptedData: activeGateway.encrypted_config,
+//       iv: activeGateway.encryption_iv,
+//     });
+
+//     let responsePayload;
+//     let transactionId = `TXN${Date.now()}`; // Unique Transaction ID
+
+//     // 2. Generate Gateway Specific Payload
+//     switch (activeGateway.gateway_name.toLowerCase()) {
+      
+//       // --- PAYU ---
+//       case "payu":
+//         const { merchantKey, merchantSalt, isSandbox } = decryptedConfig;
+//         const productinfo = "Order_Payment";
+        
+//         // PayU Hash: key|txnid|amount|productinfo|firstname|email|||||||||||salt
+//         const hashString = `${merchantKey}|${transactionId}|${amount}|${productinfo}|${name}|${email}|||||||||||${merchantSalt}`;
+//         const hash = crypto.createHash("sha512").update(hashString).digest("hex");
+
+//         responsePayload = {
+//           gateway: "payu",
+//           payu_url: isSandbox ? "https://test.payu.in/_payment" : "https://secure.payu.in/_payment",
+//           params: {
+//             key: merchantKey,
+//             txnid: transactionId,
+//             amount: amount,
+//             productinfo: productinfo,
+//             firstname: name,
+//             email: email,
+//             phone: mobile,
+//             hash: hash,
+//             surl: `${process.env.BASE_URL || 'http://localhost:3000'}/api/payment/verify-payment`, // Success URL
+//             furl: `${process.env.BASE_URL || 'http://localhost:3000'}/api/payment/verify-payment`, // Failure URL
+//           },
+//         };
+//         break;
+
+//       // --- RAZORPAY ---
+//       case "razorpay":
+//         const razorpay = new Razorpay({
+//           key_id: decryptedConfig.key_id,
+//           key_secret: decryptedConfig.secret,
+//         });
+//         const rzOrder = await razorpay.orders.create({
+//           amount: amount * 100, // Paise
+//           currency: "INR",
+//           receipt: `receipt_${orderId}`,
+//         });
+//         // Use Razorpay Order ID as our Transaction ID
+//         transactionId = rzOrder.id; 
+//         responsePayload = {
+//           gateway: "razorpay",
+//           key_id: decryptedConfig.key_id,
+//           order: rzOrder,
+//         };
+//         break;
+
+//       // --- PHONEPE ---
+//       case "phonepe":
+//         const { merchantId, secret, version } = decryptedConfig;
+//         const redirectUrl = `https://newapi.earn24.in/api/payment/status/${transactionId}`; // Verify endpoint
+
+//         const payload = {
+//           merchantId: merchantId,
+//           merchantTransactionId: transactionId,
+//           merchantUserId: `USER${userId}`,
+//           amount: amount * 100,
+//           redirectUrl: redirectUrl,
+//           redirectMode: "POST",
+//           paymentInstrument: { type: "PAY_PAGE" },
+//         };
+
+//         const base64Payload = Buffer.from(JSON.stringify(payload)).toString("base64");
+//         const xVerify = crypto.createHash("sha256").update(base64Payload + "/pg/v1/pay" + secret).digest("hex") + "###" + version;
+
+//         const phonePeRes = await axios.post(
+//           "https://api.phonepe.com/apis/hermes/pg/v1/pay",
+//           { request: base64Payload },
+//           { headers: { "Content-Type": "application/json", "X-VERIFY": xVerify } }
+//         );
+
+//         responsePayload = {
+//           gateway: "phonepe",
+//           redirectUrl: phonePeRes.data.data.instrumentResponse.redirectInfo.url,
+//           transactionId: transactionId,
+//         };
+//         break;
+
+//       default:
+//         return res.status(500).json({ status: false, message: "Gateway not supported." });
+//     }
+
+//     // 3. Save Transaction & Link to Order ID
+//     await db.query(
+//       `INSERT INTO payment_transactions (transaction_id, user_id, order_id, amount, gateway, status) 
+//        VALUES (?, ?, ?, ?, ?, ?)`,
+//       [transactionId, userId, orderId, amount, activeGateway.gateway_name, "PENDING"]
+//     );
+
+//     return res.status(200).json({ status: true, ...responsePayload });
+
+//   } catch (err) {
+//     console.error("Payment Init Error:", err);
+//     return res.status(500).json({ status: false, message: "Payment initiation failed", error:err.message });
+//   }
+// };
+
+
+
+
+
+
 // 6. CREATE ORDER & INITIATE PAYMENT
 exports.createOrder = async (req, res) => {
   try {
-    // IMPORTANT: 'orderId' comes from the order previously created in the 'orders' table
     const { userId, name, email, mobile, amount, orderId } = req.body;
 
+    // 1. Validation
     if (!userId || !amount || !orderId) {
-      return res.status(400).json({ status: false, message: "Missing Order Details (userId, amount, orderId required)." });
+      return res.status(400).json({ status: false, message: "Missing Order Details." });
     }
 
-    // 1. Fetch Active Gateway
+    // 2. Fetch Active Gateway
     const [rows] = await db.query(
       "SELECT gateway_name, encrypted_config, encryption_iv FROM payment_gateway_settings WHERE is_active = 1 LIMIT 1"
     );
@@ -634,28 +767,35 @@ exports.createOrder = async (req, res) => {
     }
 
     const activeGateway = rows[0];
+    // Normalize name to lowercase and trim spaces to prevent matching errors
+    const gatewayName = activeGateway.gateway_name.toLowerCase().trim();
+
     const decryptedConfig = decryptObject({
       encryptedData: activeGateway.encrypted_config,
       iv: activeGateway.encryption_iv,
     });
 
-    let responsePayload;
-    let transactionId = `TXN${Date.now()}`; // Unique Transaction ID
+    let responsePayload = {
+        // ✅ SAFETY: Ensure gateway is always in the response, regardless of switch case
+        gateway: gatewayName 
+    };
+    
+    let transactionId = `TXN${Date.now()}`;
 
-    // 2. Generate Gateway Specific Payload
-    switch (activeGateway.gateway_name.toLowerCase()) {
+    // 3. Generate Gateway Specific Payload
+    switch (gatewayName) {
       
       // --- PAYU ---
       case "payu":
         const { merchantKey, merchantSalt, isSandbox } = decryptedConfig;
         const productinfo = "Order_Payment";
         
-        // PayU Hash: key|txnid|amount|productinfo|firstname|email|||||||||||salt
+        // PayU Hash sequence
         const hashString = `${merchantKey}|${transactionId}|${amount}|${productinfo}|${name}|${email}|||||||||||${merchantSalt}`;
         const hash = crypto.createHash("sha512").update(hashString).digest("hex");
 
         responsePayload = {
-          gateway: "payu",
+          ...responsePayload, // Keep the gateway key
           payu_url: isSandbox ? "https://test.payu.in/_payment" : "https://secure.payu.in/_payment",
           params: {
             key: merchantKey,
@@ -666,8 +806,9 @@ exports.createOrder = async (req, res) => {
             email: email,
             phone: mobile,
             hash: hash,
-            surl: `${process.env.BASE_URL || 'http://localhost:3000'}/api/payment/verify-payment`, // Success URL
-            furl: `${process.env.BASE_URL || 'http://localhost:3000'}/api/payment/verify-payment`, // Failure URL
+            // Ensure these URLs point to your LIVE server or Tunneled URL (ngrok) for testing
+            surl: `${process.env.BASE_URL || 'http://localhost:3000'}/api/payment/verify-payment`, 
+            furl: `${process.env.BASE_URL || 'http://localhost:3000'}/api/payment/verify-payment`,
           },
         };
         break;
@@ -683,10 +824,9 @@ exports.createOrder = async (req, res) => {
           currency: "INR",
           receipt: `receipt_${orderId}`,
         });
-        // Use Razorpay Order ID as our Transaction ID
         transactionId = rzOrder.id; 
         responsePayload = {
-          gateway: "razorpay",
+          ...responsePayload,
           key_id: decryptedConfig.key_id,
           order: rzOrder,
         };
@@ -695,7 +835,7 @@ exports.createOrder = async (req, res) => {
       // --- PHONEPE ---
       case "phonepe":
         const { merchantId, secret, version } = decryptedConfig;
-        const redirectUrl = `https://newapi.earn24.in/api/payment/status/${transactionId}`; // Verify endpoint
+        const redirectUrl = `https://newapi.earn24.in/api/payment/status/${transactionId}`;
 
         const payload = {
           merchantId: merchantId,
@@ -717,30 +857,37 @@ exports.createOrder = async (req, res) => {
         );
 
         responsePayload = {
-          gateway: "phonepe",
+          ...responsePayload,
           redirectUrl: phonePeRes.data.data.instrumentResponse.redirectInfo.url,
           transactionId: transactionId,
         };
         break;
 
       default:
-        return res.status(500).json({ status: false, message: "Gateway not supported." });
+        return res.status(500).json({ status: false, message: `Gateway '${gatewayName}' not supported.` });
     }
 
-    // 3. Save Transaction & Link to Order ID
+    // 4. Save Transaction
     await db.query(
       `INSERT INTO payment_transactions (transaction_id, user_id, order_id, amount, gateway, status) 
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [transactionId, userId, orderId, amount, activeGateway.gateway_name, "PENDING"]
+      [transactionId, userId, orderId, amount, gatewayName, "PENDING"]
     );
 
     return res.status(200).json({ status: true, ...responsePayload });
 
   } catch (err) {
     console.error("Payment Init Error:", err);
-    return res.status(500).json({ status: false, message: "Payment initiation failed", error:err.message });
+    return res.status(500).json({ status: false, message: "Payment initiation failed", error: err.message });
   }
 };
+
+
+
+
+
+
+
 
 // 7. VERIFY PAYMENT (Handles Redirects from PayU / Calls from Razorpay)
 exports.verifyPayment = async (req, res) => {
