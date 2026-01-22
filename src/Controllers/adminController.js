@@ -277,6 +277,90 @@ exports.adminLogin = async (req, res) => {
 // };
 
 
+// exports.getAllUserList = async (req, res) => {
+//     try {
+//         // --- STEP 1: Get all new filter and sort parameters from the request body ---
+//         let {
+//             page = 1,
+//             limit = 10,
+//             search = '',
+//             sortBy = 'created_at', // Default sort
+//             sortOrder = 'desc',   // Default order
+//             filterByRank = null,  // New: e.g., 'DIAMOND'
+//             minAggregateBV = null // New: e.g., 8000 (to find users close to a target)
+//         } = req.body;
+
+//         page = parseInt(page);
+//         limit = parseInt(limit);
+//         const offset = (page - 1) * limit;
+//         const searchTerm = `%${search}%`;
+
+//         // --- STEP 2: Dynamically build the WHERE clause ---
+//         let whereConditions = ['is_deleted = 0'];
+//         let queryParams = [];
+
+//         // Basic search condition
+//         if (search) {
+//             whereConditions.push('(full_name LIKE ? OR username LIKE ? OR email LIKE ? OR mobile_number LIKE ?)');
+//             queryParams.push(searchTerm, searchTerm, searchTerm, searchTerm);
+//         }
+
+//         // New Filter: By Rank
+//         if (filterByRank && filterByRank !== 'ALL') {
+//             whereConditions.push('rank = ?');
+//             queryParams.push(filterByRank);
+//         }
+
+//         // New Filter: Minimum Total Personal BV
+//         if (minAggregateBV && !isNaN(parseFloat(minAggregateBV))) {
+//             whereConditions.push('aggregate_personal_bv >= ?');
+//             queryParams.push(parseFloat(minAggregateBV));
+//         }
+
+//         const whereClause = `WHERE ${whereConditions.join(' AND ')}`;
+
+//         // --- STEP 3: Build the ORDER BY clause with validation ---
+//         // Whitelist allowed columns to prevent SQL injection
+//         const allowedSortColumns = ['created_at', 'full_name', 'rank', 'aggregate_personal_bv', 'last_12_months_repurchase_bv'];
+//         const safeSortBy = allowedSortColumns.includes(sortBy) ? sortBy : 'created_at';
+//         const safeSortOrder = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+//         const orderByClause = `ORDER BY ${safeSortBy} ${safeSortOrder}`;
+
+//         // --- STEP 4: Execute the queries with the new dynamic clauses ---
+//         const countQuery = `SELECT COUNT(*) AS total FROM users ${whereClause}`;
+//         const [countRows] = await db.query(countQuery, queryParams);
+//         const total = countRows[0].total;
+
+//         const dataQuery = `
+//             SELECT 
+//                 id, full_name, username, email, mobile_number, is_active, is_blocked, created_at,
+//                 sponsor_id, rank, current_monthly_qualified_rank,
+//                 aggregate_personal_bv, last_12_months_repurchase_bv
+//             FROM users 
+//             ${whereClause}
+//             ${orderByClause}
+//             LIMIT ? OFFSET ?`;
+//         const [userRows] = await db.query(dataQuery, [...queryParams, limit, offset]);
+
+//         res.status(200).json({
+//             status: true,
+//             message: "User list fetched successfully",
+//             data: userRows,
+//             pagination: {
+//                 total, page, limit,
+//                 totalPages: Math.ceil(total / limit),
+//             },
+//         });
+//     } catch (error) {
+//         console.error('Error in getAllUserList:', error);
+//         res.status(500).json({ status: false, error: error.message, message: "Internal server error" });
+//     }
+// };
+
+
+
+
+
 exports.getAllUserList = async (req, res) => {
     try {
         // --- STEP 1: Get all new filter and sort parameters from the request body ---
@@ -284,10 +368,10 @@ exports.getAllUserList = async (req, res) => {
             page = 1,
             limit = 10,
             search = '',
-            sortBy = 'created_at', // Default sort
-            sortOrder = 'desc',   // Default order
-            filterByRank = null,  // New: e.g., 'DIAMOND'
-            minAggregateBV = null // New: e.g., 8000 (to find users close to a target)
+            sortBy = 'created_at',
+            sortOrder = 'desc',
+            filterByRank = null,
+            minAggregateBV = null
         } = req.body;
 
         page = parseInt(page);
@@ -299,19 +383,17 @@ exports.getAllUserList = async (req, res) => {
         let whereConditions = ['is_deleted = 0'];
         let queryParams = [];
 
-        // Basic search condition
         if (search) {
             whereConditions.push('(full_name LIKE ? OR username LIKE ? OR email LIKE ? OR mobile_number LIKE ?)');
             queryParams.push(searchTerm, searchTerm, searchTerm, searchTerm);
         }
 
-        // New Filter: By Rank
+        // Fix: Wrap rank in backticks here too just in case
         if (filterByRank && filterByRank !== 'ALL') {
-            whereConditions.push('rank = ?');
+            whereConditions.push('`rank` = ?'); 
             queryParams.push(filterByRank);
         }
 
-        // New Filter: Minimum Total Personal BV
         if (minAggregateBV && !isNaN(parseFloat(minAggregateBV))) {
             whereConditions.push('aggregate_personal_bv >= ?');
             queryParams.push(parseFloat(minAggregateBV));
@@ -319,27 +401,34 @@ exports.getAllUserList = async (req, res) => {
 
         const whereClause = `WHERE ${whereConditions.join(' AND ')}`;
 
-        // --- STEP 3: Build the ORDER BY clause with validation ---
-        // Whitelist allowed columns to prevent SQL injection
+        // --- STEP 3: Build the ORDER BY clause ---
         const allowedSortColumns = ['created_at', 'full_name', 'rank', 'aggregate_personal_bv', 'last_12_months_repurchase_bv'];
-        const safeSortBy = allowedSortColumns.includes(sortBy) ? sortBy : 'created_at';
+        let safeSortBy = allowedSortColumns.includes(sortBy) ? sortBy : 'created_at';
+        
+        // Fix: If sorting by rank, wrap it in backticks
+        if (safeSortBy === 'rank') {
+            safeSortBy = '`rank`';
+        }
+
         const safeSortOrder = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
         const orderByClause = `ORDER BY ${safeSortBy} ${safeSortOrder}`;
 
-        // --- STEP 4: Execute the queries with the new dynamic clauses ---
+        // --- STEP 4: Execute the queries ---
         const countQuery = `SELECT COUNT(*) AS total FROM users ${whereClause}`;
         const [countRows] = await db.query(countQuery, queryParams);
         const total = countRows[0].total;
 
+        // --- THE FIX IS HERE: Added backticks around `rank` ---
         const dataQuery = `
             SELECT 
                 id, full_name, username, email, mobile_number, is_active, is_blocked, created_at,
-                sponsor_id, rank, current_monthly_qualified_rank,
+                sponsor_id, \`rank\`, current_monthly_qualified_rank,
                 aggregate_personal_bv, last_12_months_repurchase_bv
             FROM users 
             ${whereClause}
             ${orderByClause}
             LIMIT ? OFFSET ?`;
+            
         const [userRows] = await db.query(dataQuery, [...queryParams, limit, offset]);
 
         res.status(200).json({
