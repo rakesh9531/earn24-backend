@@ -1,90 +1,132 @@
-// File: /Controllers/retailerController.js
-
 const db = require('../../db');
 const bcrypt = require('bcrypt');
 const moment = require('moment-timezone');
-// Optional: const { retailerRegistrationValidator } = require('../Validator/retailerValidator');
+const { createRetailerSchema, updateStatusSchema } = require('../Validator/retailerValidator');
 
-/**
- * Handles the registration of a new Retailer.
- * Creates a record in the `retailers` table and a corresponding profile in the `sellers` table.
- * The new account will be 'PENDING' approval by an admin.
- */
-exports.registerRetailer = async (req, res) => {
-    // Optional: Add Joi or other validation here
-    // const { error } = retailerRegistrationValidator(req.body);
-    // if (error) { ... }
+const getISTTime = () => moment().tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss');
 
-    const {
-        shop_name, owner_name, phone_number, email, password,
-        shop_address, pincode
-    } = req.body;
-
-    // Basic Validation
-    if (!shop_name || !owner_name || !phone_number || !email || !password || !shop_address || !pincode) {
-        return res.status(400).json({ status: false, message: 'All required retailer fields must be provided.' });
-    }
-
-    const connection = await db.getConnection();
+exports.createRetailer = async (req, res) => {
     try {
-        await connection.beginTransaction();
+        const { error, value } = createRetailerSchema.validate(req.body);
+        if (error) return res.status(400).json({ status: false, message: error.details[0].message });
 
-        // 1. Check if a retailer with this email or phone already exists
-        const [existing] = await connection.query(
-            'SELECT id FROM retailers WHERE email = ? OR phone_number = ?',
-            [email, phone_number]
+        // Destructure camelCase values
+        const {
+            shopName, ownerName, email, phoneNumber, 
+            password, shopAddress, pincode, gstNumber, panNumber, status
+        } = value;
+
+        // Map Status
+        let dbApproval = status === 'pending' ? 'PENDING' : 'APPROVED';
+        let dbActive = status === 'suspended' || status === 'pending' ? 0 : 1;
+
+        // Check Duplicates
+        const [existing] = await db.query(
+            'SELECT id FROM retailers WHERE (email = ? OR phone_number = ?) AND is_deleted = 0',
+            [email, phoneNumber]
         );
+
         if (existing.length > 0) {
-            throw new Error('A retailer with this email or phone number already exists.');
+            return res.status(409).json({ status: false, message: 'Retailer with this Email or Phone already exists.' });
         }
 
-        // 2. Hash the password and get current time
         const hashedPassword = await bcrypt.hash(password, 10);
-        const now = moment().tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss');
+        const now = getISTTime();
 
-        // 3. Insert into the `retailers` table
-        // The `approval_status` column will default to 'PENDING' based on our schema change.
-        const retailerSql = `
+        // Insert using camelCase variables into snake_case DB columns
+        const sql = `
             INSERT INTO retailers 
-            (shop_name, owner_name, phone_number, email, password, shop_address, pincode, created_at, updated_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (shop_name, owner_name, email, phone_number, password, 
+             shop_address, pincode, gst_number, pan_number,
+             admin_approval_status, is_active, is_deleted, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
         `;
-        const [retailerResult] = await connection.query(retailerSql, [
-            shop_name, owner_name, phone_number, email, hashedPassword,
-            shop_address, pincode, now, now
+
+        const [result] = await db.query(sql, [
+            shopName, ownerName, email, phoneNumber, hashedPassword,
+            shopAddress, pincode, gstNumber, panNumber,
+            dbApproval, dbActive, now, now
         ]);
-        const newRetailerId = retailerResult.insertId;
 
-        // 4. Create the corresponding entry in the `sellers` table
-        const sellerSql = `
-            INSERT INTO sellers (sellerable_id, sellerable_type, display_name, created_at) 
-            VALUES (?, ?, ?, ?)
-        `;
-        // We use 'Retailer' as the type to link back to the retailers table.
-        await connection.query(sellerSql, [newRetailerId, 'Retailer', shop_name, now]);
-
-        // 5. Commit the transaction
-        await connection.commit();
-
-        res.status(201).json({
-            status: true,
-            message: 'Retailer registration successful. Your account is pending admin approval.',
-            retailerId: newRetailerId
-        });
+        res.status(201).json({ status: true, message: 'Retailer created successfully.', retailerId: result.insertId });
 
     } catch (error) {
-        await connection.rollback();
-        console.error("Error registering retailer:", error);
-        // Use a 409 Conflict status for duplicate entries
-        res.status(409).json({ status: false, message: error.message || 'An error occurred during registration.' });
-    } finally {
-        if (connection) connection.release();
+        console.error('createRetailer error:', error);
+        res.status(500).json({ status: false, message: 'Internal server error' });
     }
 };
 
-// You can add other retailer-specific controller functions here later, for example:
-/*
-exports.getRetailerProfile = async (req, res) => {
-    // Logic to get the profile of the logged-in retailer
+exports.getAllRetailers = async (req, res) => {
+    try {
+        const { search = '' } = req.query;
+        let sql = `SELECT * FROM retailers WHERE is_deleted = 0`;
+        const values = [];
+
+        if (search) {
+            sql += ` AND (shop_name LIKE ? OR owner_name LIKE ? OR email LIKE ? OR phone_number LIKE ?)`;
+            const term = `%${search}%`;
+            values.push(term, term, term, term);
+        }
+
+        sql += ` ORDER BY created_at DESC`;
+
+        const [rows] = await db.query(sql, values);
+
+        // Map DB snake_case -> API camelCase
+        const mappedData = rows.map(r => {
+            let frontendStatus = 'pending';
+            if (r.admin_approval_status === 'APPROVED' && r.is_active === 1) frontendStatus = 'active';
+            else if (r.admin_approval_status === 'APPROVED' && r.is_active === 0) frontendStatus = 'suspended';
+            else if (r.admin_approval_status === 'REJECTED') frontendStatus = 'rejected';
+
+            return {
+                _id: r.id,          // Mapped to _id for Angular consistency
+                shopName: r.shop_name,
+                fullName: r.owner_name,
+                email: r.email,
+                phoneNumber: r.phone_number,
+                address: r.shop_address,
+                pincode: r.pincode,
+                gstNumber: r.gst_number || 'N/A',
+                status: frontendStatus,
+                createdAt: r.created_at
+            };
+        });
+
+        res.status(200).json(mappedData);
+
+    } catch (error) {
+        console.error('getAllRetailers error:', error);
+        res.status(500).json({ status: false, message: 'Internal server error' });
+    }
 };
-*/
+
+// ... updateStatus and deleteRetailer remain the same as previous (they are simple) ...
+// Included here for completion
+exports.updateStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { error, value } = updateStatusSchema.validate(req.body);
+        if (error) return res.status(400).json({ status: false, message: error.details[0].message });
+
+        const { status } = value;
+        let dbActive = status === 'active' ? 1 : 0;
+        let dbApproval = status === 'pending' ? 'PENDING' : 'APPROVED';
+
+        const now = getISTTime();
+        await db.query(
+            `UPDATE retailers SET is_active = ?, admin_approval_status = ?, updated_at = ? WHERE id = ? AND is_deleted = 0`,
+            [dbActive, dbApproval, now, id]
+        );
+        res.status(200).json({ status: true, message: `Status updated to ${status}` });
+    } catch (error) { res.status(500).json({ status: false, message: 'Error' }); }
+};
+
+exports.deleteRetailer = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const now = getISTTime();
+        await db.query(`UPDATE retailers SET is_deleted = 1, updated_at = ? WHERE id = ?`, [now, id]);
+        res.status(200).json({ status: true, message: 'Retailer deleted successfully.' });
+    } catch (error) { res.status(500).json({ status: false, message: 'Error' }); }
+};

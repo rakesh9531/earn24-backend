@@ -39,9 +39,11 @@ const userController = require('../Controllers/userController');
 const { auth } = require('../Middleware/auth'); // Only `auth` is needed here
 
 // Public routes for registration and login are moved to authRoutes.js
-
+const createUploader = require('../Middleware/uploaderFactory'); // Your existing uploader factory
 // All routes below require the user to be logged in.
 // router.use(auth);
+
+const uploadProfile = createUploader('profiles');
 
 
 
@@ -72,6 +74,7 @@ router.post('/resend-otp', userController.resendOtp);
 
 
 router.get('/profile', auth, userController.getUserProfile);
+router.put('/profile/update', auth, uploadProfile.single('profileImage'), userController.updateUserProfile);
 router.get('/summary', auth, userController.getDashboardSummary);
 router.get('/profit-history', auth, userController.getProfitHistory);
 router.get('/bv-history', auth, userController.getBvHistory);

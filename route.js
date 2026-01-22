@@ -39,6 +39,9 @@ const paymentWebhookRoutes = require('./src/Routes/paymentWebhookRoutes'); // <-
 
 const paymentRoutes = require('./src/Routes/paymentRoute');
 
+const retailerAuthRoutes = require('./src/Routes/retailerAuthRoutes');
+const retailerInventoryRoutes = require('./src/Routes/retailerInventoryRoutes');
+
 
 router.use('/auth', authRoutes);
 
@@ -72,6 +75,10 @@ router.use('/merchant', merchantRoutes);
 router.use('/webhooks', paymentWebhookRoutes); // <-- ADD THIS
 
 router.use('/payment', paymentRoutes);
+
+router.use('/retailer/auth', retailerAuthRoutes);           // Login
+router.use('/retailer/inventory', retailerInventoryRoutes); // Inventory Management
+
 
 
 
