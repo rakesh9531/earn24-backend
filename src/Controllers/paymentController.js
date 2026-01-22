@@ -573,7 +573,7 @@ exports.getGatewayConfig = async (req, res) => {
 
     res.status(200).json({ status: true, config });
   } catch (error) {
-    res.status(500).json({ status: false, message: "Internal server error" });
+    res.status(500).json({ status: false, message: "Internal server error", error:error.message });
   }
 };
 
@@ -591,7 +591,7 @@ exports.updateGateway = async (req, res) => {
 
     res.status(200).json({ status: true, message: "Gateway updated successfully" });
   } catch (error) {
-    res.status(500).json({ status: false, message: "Internal server error" });
+    res.status(500).json({ status: false, message: "Internal server error", error:error.message });
   }
 };
 
@@ -606,7 +606,7 @@ exports.activateGateway = async (req, res) => {
 
     res.status(200).json({ status: true, message: "Gateway activated successfully." });
   } catch (error) {
-    res.status(500).json({ status: false, message: "Internal server error" });
+    res.status(500).json({ status: false, message: "Internal server error", error:error.message });
   }
 };
 
@@ -738,7 +738,7 @@ exports.createOrder = async (req, res) => {
 
   } catch (err) {
     console.error("Payment Init Error:", err);
-    return res.status(500).json({ status: false, message: "Payment initiation failed" });
+    return res.status(500).json({ status: false, message: "Payment initiation failed", error:err.message });
   }
 };
 
