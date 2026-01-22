@@ -18,13 +18,159 @@ const generateOrderNumber = () => {
 
 
 
+// Workign for cod
+// exports.createOrder = async (req, res) => {
+//     const userId = req.user.id;
+//     // const userId = 1;
+
+//     console.log("Call hua")
+
+//     const { shippingAddressId, paymentMethod } = req.body;
+
+//     if (!shippingAddressId || !paymentMethod) {
+//         return res.status(400).json({ status: false, message: 'Shipping address and payment method are required.' });
+//     }
+
+//     const connection = await db.getConnection();
+//     try {
+//         await connection.beginTransaction();
+
+//         // 1. Get user's cart items
+//         const [cart] = await connection.query('SELECT id FROM carts WHERE user_id = ?', [userId]);
+//         if (!cart[0]) {
+//             await connection.rollback();
+//             return res.status(404).json({ status: false, message: 'Cart not found.' });
+//         }
+//         const cartId = cart[0].id;
+        
+//         const itemQuery = `
+//             SELECT 
+//                 ci.quantity, sp.id as seller_product_id, p.id as product_id, p.name as product_name,
+//                 sp.selling_price, sp.purchase_price, h.gst_percentage, u.sponsor_id
+//             FROM cart_items ci
+//             JOIN seller_products sp ON ci.seller_product_id = sp.id
+//             JOIN products p ON sp.product_id = p.id
+//             JOIN users u ON u.id = ?
+//             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
+//             WHERE ci.cart_id = ? FOR UPDATE;
+//         `;
+//         const [items] = await connection.query(itemQuery, [userId, cartId]);
+
+//         if (items.length === 0) {
+//             await connection.rollback();
+//             return res.status(400).json({ status: false, message: 'Your cart is empty.' });
+//         }
+
+//         // 2. Fetch all settings
+//         const [settingsRows] = await connection.query("SELECT setting_key, setting_value FROM app_settings");
+//         const settings = settingsRows.reduce((acc, setting) => {
+//             acc[setting.setting_key] = parseFloat(setting.setting_value);
+//             return acc;
+//         }, {});
+        
+//         const bvGenerationPct = settings.bv_generation_pct_of_profit || 80.0;
+//         const bvThreshold = settings.delivery_fee_bv_threshold || 50.0;
+//         const standardFee = settings.delivery_fee_standard || 40.0;
+//         const specialFee = settings.delivery_fee_special !== undefined ? settings.delivery_fee_special : 0.0;
+
+//         // 3. Pre-calculate totals
+//         let calculatedTotalBv = 0;
+//         for (const item of items) {
+//             const basePrice = item.selling_price / (1 + ((item.gst_percentage || 0) / 100));
+//             const netProfit = basePrice - item.purchase_price;
+//             const bvEarnedPerUnit = (netProfit > 0) ? netProfit * (bvGenerationPct / 100) : 0;
+//             calculatedTotalBv += bvEarnedPerUnit * item.quantity;
+//         }
+
+//         const deliveryFee = (calculatedTotalBv >= bvThreshold) ? specialFee : standardFee;
+//         const finalSubtotal = items.reduce((sum, item) => sum + (item.selling_price * item.quantity), 0);
+//         const totalAmount = finalSubtotal + deliveryFee;
+
+//         // 5. Handle Wallet Payment
+//         if (paymentMethod === 'WALLET') {
+//             const [walletRows] = await connection.query('SELECT balance FROM user_wallet WHERE user_id = ? FOR UPDATE', [userId]);
+//             if (!walletRows[0] || walletRows[0].balance < totalAmount) {
+//                 await connection.rollback();
+//                 return res.status(400).json({ status: false, message: "Insufficient wallet balance." });
+//             }
+//             await connection.query('UPDATE user_wallet SET balance = balance - ? WHERE user_id = ?', [totalAmount, userId]);
+//         }
+        
+//         // 6. Create the main order record
+//         const orderNumber = generateOrderNumber();
+//         const paymentStatus = (paymentMethod === 'WALLET') ? 'COMPLETED' : 'PENDING';
+//         const orderStatus = (paymentMethod === 'ONLINE') ? 'PENDING_PAYMENT' : 'CONFIRMED';
+        
+//         const orderSql = `INSERT INTO orders (user_id, shipping_address_id, order_number, subtotal, delivery_fee, total_amount, total_bv_earned, payment_method, payment_status, order_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+//         const [orderResult] = await connection.query(orderSql, [userId, shippingAddressId, orderNumber, finalSubtotal, deliveryFee, totalAmount, calculatedTotalBv, paymentMethod, paymentStatus, orderStatus]);
+//         const orderId = orderResult.insertId;
+
+//         // 7. Loop through items to save, distribute earnings, and check stock
+//         for (const item of items) {
+//             // Step 7a: Decrease stock
+//             const [updateResult] = await connection.query(
+//                 'UPDATE seller_products SET quantity = quantity - ? WHERE id = ? AND quantity >= ?', 
+//                 [item.quantity, item.seller_product_id, item.quantity]
+//             );
+            
+//             // If stock update fails, something is wrong, so we stop.
+//             if (updateResult.affectedRows === 0) {
+//                 throw new Error(`Critical error: Insufficient stock for product ID ${item.seller_product_id} during final processing.`);
+//             }
+            
+//             // ==========================================================
+//             // === THE FIX IS HERE ===
+//             // ==========================================================
+//             // Step 7b: After stock is successfully decreased, trigger the notification check.
+//             await notificationService.checkStockAndNotify(item.seller_product_id, connection);
+//             // ==========================================================
+
+//             // Step 7c: Calculate earnings and create order item record
+//             const basePrice = item.selling_price / (1 + ((item.gst_percentage || 0) / 100));
+//             const netProfit = basePrice - item.purchase_price;
+//             const bvEarnedPerUnit = (netProfit > 0) ? netProfit * (bvGenerationPct / 100) : 0;
+            
+//             const orderItemSql = `INSERT INTO order_items (order_id, product_id, seller_product_id, product_name, quantity, price_per_unit, total_price, bv_earned_per_unit, total_bv_earned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+//             const [orderItemResult] = await connection.query(orderItemSql, [orderId, item.product_id, item.seller_product_id, item.product_name, item.quantity, item.selling_price, item.selling_price * item.quantity, bvEarnedPerUnit, bvEarnedPerUnit * item.quantity]);
+            
+//             // Step 7d: Distribute earnings if applicable
+//             if (paymentMethod === 'WALLET' && netProfit > 0) {
+//                 await distributeEarnings(connection, { userId, sponsorId: item.sponsor_id, orderItemId: orderItemResult.insertId, productId: item.product_id, netProfit, settings });
+//             }
+//         }
+        
+//         // 8. Clean up the cart
+//         await connection.query('DELETE FROM cart_items WHERE cart_id = ?', [cartId]);
+
+//         // 9. Prepare response
+//         let responseData = { orderId, orderNumber, totalAmount };
+//         if (paymentMethod === 'ONLINE') {
+//             // Payment gateway logic would go here
+//         }
+        
+//         await connection.commit();
+//         res.status(201).json({ status: true, message: 'Order placed successfully!', data: responseData });
+//     } catch (error) {
+//         await connection.rollback();
+//         console.error("Error creating order:", error);
+//         res.status(500).json({ status: false, message: error.message || 'Failed to place order.' });
+//     } finally {
+//         if (connection) {
+//             connection.release();
+//         }
+//     }
+// };
+
+
+
+
+
+
+
+
 
 exports.createOrder = async (req, res) => {
     const userId = req.user.id;
-    // const userId = 1;
-
-    console.log("Call hua")
-
     const { shippingAddressId, paymentMethod } = req.body;
 
     if (!shippingAddressId || !paymentMethod) {
@@ -46,7 +192,7 @@ exports.createOrder = async (req, res) => {
         const itemQuery = `
             SELECT 
                 ci.quantity, sp.id as seller_product_id, p.id as product_id, p.name as product_name,
-                sp.selling_price, sp.purchase_price, h.gst_percentage, u.sponsor_id
+                sp.selling_price, sp.purchase_price, h.gst_percentage, u.sponsor_id, sp.quantity as stock_available
             FROM cart_items ci
             JOIN seller_products sp ON ci.seller_product_id = sp.id
             JOIN products p ON sp.product_id = p.id
@@ -61,7 +207,15 @@ exports.createOrder = async (req, res) => {
             return res.status(400).json({ status: false, message: 'Your cart is empty.' });
         }
 
-        // 2. Fetch all settings
+        // 2. Validate Stock before proceeding
+        for (const item of items) {
+            if (item.quantity > item.stock_available) {
+                await connection.rollback();
+                return res.status(400).json({ status: false, message: `Insufficient stock for ${item.product_name}` });
+            }
+        }
+
+        // 3. Fetch Settings & Calculate Totals
         const [settingsRows] = await connection.query("SELECT setting_key, setting_value FROM app_settings");
         const settings = settingsRows.reduce((acc, setting) => {
             acc[setting.setting_key] = parseFloat(setting.setting_value);
@@ -71,9 +225,8 @@ exports.createOrder = async (req, res) => {
         const bvGenerationPct = settings.bv_generation_pct_of_profit || 80.0;
         const bvThreshold = settings.delivery_fee_bv_threshold || 50.0;
         const standardFee = settings.delivery_fee_standard || 40.0;
-        const specialFee = settings.delivery_fee_special !== undefined ? settings.delivery_fee_special : 0.0;
+        const specialFee = settings.delivery_fee_special || 0.0;
 
-        // 3. Pre-calculate totals
         let calculatedTotalBv = 0;
         for (const item of items) {
             const basePrice = item.selling_price / (1 + ((item.gst_percentage || 0) / 100));
@@ -86,7 +239,7 @@ exports.createOrder = async (req, res) => {
         const finalSubtotal = items.reduce((sum, item) => sum + (item.selling_price * item.quantity), 0);
         const totalAmount = finalSubtotal + deliveryFee;
 
-        // 5. Handle Wallet Payment
+        // 4. Handle Wallet Payment (Immediate Deduction)
         if (paymentMethod === 'WALLET') {
             const [walletRows] = await connection.query('SELECT balance FROM user_wallet WHERE user_id = ? FOR UPDATE', [userId]);
             if (!walletRows[0] || walletRows[0].balance < totalAmount) {
@@ -96,36 +249,31 @@ exports.createOrder = async (req, res) => {
             await connection.query('UPDATE user_wallet SET balance = balance - ? WHERE user_id = ?', [totalAmount, userId]);
         }
         
-        // 6. Create the main order record
+        // 5. Determine Order Status
         const orderNumber = generateOrderNumber();
-        const paymentStatus = (paymentMethod === 'WALLET') ? 'COMPLETED' : 'PENDING';
-        const orderStatus = (paymentMethod === 'ONLINE') ? 'PENDING_PAYMENT' : 'CONFIRMED';
+        let paymentStatus = 'PENDING';
+        let orderStatus = 'PENDING'; // Default
+
+        if (paymentMethod === 'WALLET') {
+            paymentStatus = 'COMPLETED';
+            orderStatus = 'CONFIRMED';
+        } else if (paymentMethod === 'COD') {
+            paymentStatus = 'PENDING';
+            orderStatus = 'CONFIRMED';
+        } else if (paymentMethod === 'ONLINE') {
+            paymentStatus = 'PENDING';
+            orderStatus = 'PENDING_PAYMENT'; // Special status for Online
+        }
         
+        // 6. Create Order Header
         const orderSql = `INSERT INTO orders (user_id, shipping_address_id, order_number, subtotal, delivery_fee, total_amount, total_bv_earned, payment_method, payment_status, order_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         const [orderResult] = await connection.query(orderSql, [userId, shippingAddressId, orderNumber, finalSubtotal, deliveryFee, totalAmount, calculatedTotalBv, paymentMethod, paymentStatus, orderStatus]);
         const orderId = orderResult.insertId;
 
-        // 7. Loop through items to save, distribute earnings, and check stock
+        // 7. Insert Order Items & Handle Stock
         for (const item of items) {
-            // Step 7a: Decrease stock
-            const [updateResult] = await connection.query(
-                'UPDATE seller_products SET quantity = quantity - ? WHERE id = ? AND quantity >= ?', 
-                [item.quantity, item.seller_product_id, item.quantity]
-            );
             
-            // If stock update fails, something is wrong, so we stop.
-            if (updateResult.affectedRows === 0) {
-                throw new Error(`Critical error: Insufficient stock for product ID ${item.seller_product_id} during final processing.`);
-            }
-            
-            // ==========================================================
-            // === THE FIX IS HERE ===
-            // ==========================================================
-            // Step 7b: After stock is successfully decreased, trigger the notification check.
-            await notificationService.checkStockAndNotify(item.seller_product_id, connection);
-            // ==========================================================
-
-            // Step 7c: Calculate earnings and create order item record
+            // A. ALWAYS Insert Line Item
             const basePrice = item.selling_price / (1 + ((item.gst_percentage || 0) / 100));
             const netProfit = basePrice - item.purchase_price;
             const bvEarnedPerUnit = (netProfit > 0) ? netProfit * (bvGenerationPct / 100) : 0;
@@ -133,34 +281,49 @@ exports.createOrder = async (req, res) => {
             const orderItemSql = `INSERT INTO order_items (order_id, product_id, seller_product_id, product_name, quantity, price_per_unit, total_price, bv_earned_per_unit, total_bv_earned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
             const [orderItemResult] = await connection.query(orderItemSql, [orderId, item.product_id, item.seller_product_id, item.product_name, item.quantity, item.selling_price, item.selling_price * item.quantity, bvEarnedPerUnit, bvEarnedPerUnit * item.quantity]);
             
-            // Step 7d: Distribute earnings if applicable
-            if (paymentMethod === 'WALLET' && netProfit > 0) {
+            // B. Stock Deduction Logic
+            // For ONLINE payments, some systems reserve stock now, others wait for success.
+            // Here we deduct immediately to prevent overselling. If payment fails, we can add back.
+            const [updateResult] = await connection.query(
+                'UPDATE seller_products SET quantity = quantity - ? WHERE id = ? AND quantity >= ?', 
+                [item.quantity, item.seller_product_id, item.quantity]
+            );
+            
+            if (updateResult.affectedRows === 0) {
+                throw new Error(`Stock mismatch for product ${item.seller_product_id}`);
+            }
+
+            // C. Trigger Low Stock Notification
+            await notificationService.checkStockAndNotify(item.seller_product_id, connection);
+
+            // D. Distribute Earnings (ONLY for Wallet/COD immediately)
+            // For ONLINE, we wait until payment success webhook/callback
+            if ((paymentMethod === 'WALLET' || paymentMethod === 'COD') && netProfit > 0) {
                 await distributeEarnings(connection, { userId, sponsorId: item.sponsor_id, orderItemId: orderItemResult.insertId, productId: item.product_id, netProfit, settings });
             }
         }
         
-        // 8. Clean up the cart
+        // 8. Clean up cart (Only if confirmed or pending payment)
         await connection.query('DELETE FROM cart_items WHERE cart_id = ?', [cartId]);
 
-        // 9. Prepare response
-        let responseData = { orderId, orderNumber, totalAmount };
-        if (paymentMethod === 'ONLINE') {
-            // Payment gateway logic would go here
-        }
-        
         await connection.commit();
-        res.status(201).json({ status: true, message: 'Order placed successfully!', data: responseData });
+
+        // 9. Response
+        // For ONLINE, the frontend needs 'orderId' to initiate the payment gateway flow
+        res.status(201).json({ 
+            status: true, 
+            message: paymentMethod === 'ONLINE' ? 'Order initiated, proceed to payment.' : 'Order placed successfully!', 
+            data: { orderId, orderNumber, totalAmount } 
+        });
+
     } catch (error) {
         await connection.rollback();
         console.error("Error creating order:", error);
         res.status(500).json({ status: false, message: error.message || 'Failed to place order.' });
     } finally {
-        if (connection) {
-            connection.release();
-        }
+        if (connection) connection.release();
     }
 };
-
 
 
 
