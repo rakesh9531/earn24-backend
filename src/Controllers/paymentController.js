@@ -747,10 +747,148 @@ exports.activateGateway = async (req, res) => {
 
 
 
-// 6. CREATE ORDER & INITIATE PAYMENT
+// // 6. CREATE ORDER & INITIATE PAYMENT test final
+// exports.createOrder = async (req, res) => {
+//   try {
+//     const { userId, name, email, mobile, amount, orderId } = req.body;
+
+//     // 1. Validation
+//     if (!userId || !amount || !orderId) {
+//       return res.status(400).json({ status: false, message: "Missing Order Details." });
+//     }
+
+//     // 2. Fetch Active Gateway
+//     const [rows] = await db.query(
+//       "SELECT gateway_name, encrypted_config, encryption_iv FROM payment_gateway_settings WHERE is_active = 1 LIMIT 1"
+//     );
+
+//     if (rows.length === 0) {
+//       return res.status(503).json({ status: false, message: "No active payment gateway configured." });
+//     }
+
+//     const activeGateway = rows[0];
+//     // Normalize name to lowercase and trim spaces to prevent matching errors
+//     const gatewayName = activeGateway.gateway_name.toLowerCase().trim();
+
+//     const decryptedConfig = decryptObject({
+//       encryptedData: activeGateway.encrypted_config,
+//       iv: activeGateway.encryption_iv,
+//     });
+
+//     let responsePayload = {
+//         // ✅ SAFETY: Ensure gateway is always in the response, regardless of switch case
+//         gateway: gatewayName 
+//     };
+    
+//     let transactionId = `TXN${Date.now()}`;
+
+//     // 3. Generate Gateway Specific Payload
+//     switch (gatewayName) {
+      
+//       // --- PAYU ---
+//       case "payu":
+//         const { merchantKey, merchantSalt, isSandbox } = decryptedConfig;
+//         const productinfo = "Order_Payment";
+        
+//         // PayU Hash sequence
+//         const hashString = `${merchantKey}|${transactionId}|${amount}|${productinfo}|${name}|${email}|||||||||||${merchantSalt}`;
+//         const hash = crypto.createHash("sha512").update(hashString).digest("hex");
+
+//         responsePayload = {
+//           ...responsePayload, // Keep the gateway key
+//           payu_url: isSandbox ? "https://test.payu.in/_payment" : "https://secure.payu.in/_payment",
+//           params: {
+//             key: merchantKey,
+//             txnid: transactionId,
+//             amount: amount,
+//             productinfo: productinfo,
+//             firstname: name,
+//             email: email,
+//             phone: mobile,
+//             hash: hash,
+//             // Ensure these URLs point to your LIVE server or Tunneled URL (ngrok) for testing
+//             surl: `${process.env.BASE_URL || 'http://localhost:3000'}/api/payment/verify-payment`, 
+//             furl: `${process.env.BASE_URL || 'http://localhost:3000'}/api/payment/verify-payment`,
+//           },
+//         };
+//         break;
+
+//       // --- RAZORPAY ---
+//       case "razorpay":
+//         const razorpay = new Razorpay({
+//           key_id: decryptedConfig.key_id,
+//           key_secret: decryptedConfig.secret,
+//         });
+//         const rzOrder = await razorpay.orders.create({
+//           amount: amount * 100, // Paise
+//           currency: "INR",
+//           receipt: `receipt_${orderId}`,
+//         });
+//         transactionId = rzOrder.id; 
+//         responsePayload = {
+//           ...responsePayload,
+//           key_id: decryptedConfig.key_id,
+//           order: rzOrder,
+//         };
+//         break;
+
+//       // --- PHONEPE ---
+//       case "phonepe":
+//         const { merchantId, secret, version } = decryptedConfig;
+//         const redirectUrl = `https://newapi.earn24.in/api/payment/status/${transactionId}`;
+
+//         const payload = {
+//           merchantId: merchantId,
+//           merchantTransactionId: transactionId,
+//           merchantUserId: `USER${userId}`,
+//           amount: amount * 100,
+//           redirectUrl: redirectUrl,
+//           redirectMode: "POST",
+//           paymentInstrument: { type: "PAY_PAGE" },
+//         };
+
+//         const base64Payload = Buffer.from(JSON.stringify(payload)).toString("base64");
+//         const xVerify = crypto.createHash("sha256").update(base64Payload + "/pg/v1/pay" + secret).digest("hex") + "###" + version;
+
+//         const phonePeRes = await axios.post(
+//           "https://api.phonepe.com/apis/hermes/pg/v1/pay",
+//           { request: base64Payload },
+//           { headers: { "Content-Type": "application/json", "X-VERIFY": xVerify } }
+//         );
+
+//         responsePayload = {
+//           ...responsePayload,
+//           redirectUrl: phonePeRes.data.data.instrumentResponse.redirectInfo.url,
+//           transactionId: transactionId,
+//         };
+//         break;
+
+//       default:
+//         return res.status(500).json({ status: false, message: `Gateway '${gatewayName}' not supported.` });
+//     }
+
+//     // 4. Save Transaction
+//     await db.query(
+//       `INSERT INTO payment_transactions (transaction_id, user_id, order_id, amount, gateway, status) 
+//        VALUES (?, ?, ?, ?, ?, ?)`,
+//       [transactionId, userId, orderId, amount, gatewayName, "PENDING"]
+//     );
+
+//     return res.status(200).json({ status: true, ...responsePayload });
+
+//   } catch (err) {
+//     console.error("Payment Init Error:", err);
+//     return res.status(500).json({ status: false, message: "Payment initiation failed", error: err.message });
+//   }
+// };
+
+
+
 exports.createOrder = async (req, res) => {
   try {
     const { userId, name, email, mobile, amount, orderId } = req.body;
+
+    console.log("payment controller create order")
 
     // 1. Validation
     if (!userId || !amount || !orderId) {
@@ -767,7 +905,6 @@ exports.createOrder = async (req, res) => {
     }
 
     const activeGateway = rows[0];
-    // Normalize name to lowercase and trim spaces to prevent matching errors
     const gatewayName = activeGateway.gateway_name.toLowerCase().trim();
 
     const decryptedConfig = decryptObject({
@@ -776,10 +913,10 @@ exports.createOrder = async (req, res) => {
     });
 
     let responsePayload = {
-        // ✅ SAFETY: Ensure gateway is always in the response, regardless of switch case
         gateway: gatewayName 
     };
     
+    // Ensure Transaction ID is unique and string
     let transactionId = `TXN${Date.now()}`;
 
     // 3. Generate Gateway Specific Payload
@@ -790,41 +927,54 @@ exports.createOrder = async (req, res) => {
         const { merchantKey, merchantSalt, isSandbox } = decryptedConfig;
         const productinfo = "Order_Payment";
         
-        // PayU Hash sequence
-        const hashString = `${merchantKey}|${transactionId}|${amount}|${productinfo}|${name}|${email}|||||||||||${merchantSalt}`;
+        // --- FIX 1: Robust First Name Logic ---
+        // Ensure name is never undefined. Split to get just the first name (PayU standard)
+        const rawName = name || "Customer";
+        const firstname = rawName.trim().split(" ")[0]; 
+
+        // --- FIX 2: Consistent Amount String ---
+        // Ensure amount is a string to avoid float precision issues in hash
+        const amountStr = amount.toString();
+
+        // PayU Hash sequence: key|txnid|amount|productinfo|firstname|email|...|salt
+        const hashString = `${merchantKey}|${transactionId}|${amountStr}|${productinfo}|${firstname}|${email}|||||||||||${merchantSalt}`;
         const hash = crypto.createHash("sha512").update(hashString).digest("hex");
 
+        const baseUrl = process.env.BASE_URL || 'http://localhost:3000'; // Fallback only for local dev
+
         responsePayload = {
-          ...responsePayload, // Keep the gateway key
+          ...responsePayload,
           payu_url: isSandbox ? "https://test.payu.in/_payment" : "https://secure.payu.in/_payment",
           params: {
             key: merchantKey,
             txnid: transactionId,
-            amount: amount,
+            amount: amountStr, // Send same string as hashed
             productinfo: productinfo,
-            firstname: name,
+            firstname: firstname, // ✅ Using the safe variable
             email: email,
             phone: mobile,
             hash: hash,
-            // Ensure these URLs point to your LIVE server or Tunneled URL (ngrok) for testing
-            surl: `${process.env.BASE_URL || 'http://localhost:3000'}/api/payment/verify-payment`, 
-            furl: `${process.env.BASE_URL || 'http://localhost:3000'}/api/payment/verify-payment`,
+            // SURL/FURL must be absolute URLs accessible from the internet
+            surl: `${baseUrl}/api/payment/verify-payment`, 
+            furl: `${baseUrl}/api/payment/verify-payment`,
           },
         };
         break;
 
       // --- RAZORPAY ---
       case "razorpay":
+        // Make sure you require Razorpay at the top if using it
+        const Razorpay = require('razorpay'); 
         const razorpay = new Razorpay({
           key_id: decryptedConfig.key_id,
           key_secret: decryptedConfig.secret,
         });
         const rzOrder = await razorpay.orders.create({
-          amount: amount * 100, // Paise
+          amount: Math.round(amount * 100), // Ensure Integer (Paise)
           currency: "INR",
           receipt: `receipt_${orderId}`,
         });
-        transactionId = rzOrder.id; 
+        transactionId = rzOrder.id; // Use Razorpay Order ID as txn ID
         responsePayload = {
           ...responsePayload,
           key_id: decryptedConfig.key_id,
@@ -835,32 +985,41 @@ exports.createOrder = async (req, res) => {
       // --- PHONEPE ---
       case "phonepe":
         const { merchantId, secret, version } = decryptedConfig;
+        // Ensure this URL is live/public
         const redirectUrl = `https://newapi.earn24.in/api/payment/status/${transactionId}`;
 
-        const payload = {
+        const phonePePayload = {
           merchantId: merchantId,
           merchantTransactionId: transactionId,
           merchantUserId: `USER${userId}`,
-          amount: amount * 100,
+          amount: Math.round(amount * 100), // PhonePe expects Paise (Integer)
           redirectUrl: redirectUrl,
           redirectMode: "POST",
           paymentInstrument: { type: "PAY_PAGE" },
+          mobileNumber: mobile // Good to include for PhonePe
         };
 
-        const base64Payload = Buffer.from(JSON.stringify(payload)).toString("base64");
+        const base64Payload = Buffer.from(JSON.stringify(phonePePayload)).toString("base64");
         const xVerify = crypto.createHash("sha256").update(base64Payload + "/pg/v1/pay" + secret).digest("hex") + "###" + version;
 
+        // Determine URL based on Sandbox/Prod (You might store 'isSandbox' in DB for PhonePe too)
+        const phonePeUrl = "https://api.phonepe.com/apis/hermes/pg/v1/pay"; 
+
         const phonePeRes = await axios.post(
-          "https://api.phonepe.com/apis/hermes/pg/v1/pay",
+          phonePeUrl,
           { request: base64Payload },
           { headers: { "Content-Type": "application/json", "X-VERIFY": xVerify } }
         );
 
-        responsePayload = {
-          ...responsePayload,
-          redirectUrl: phonePeRes.data.data.instrumentResponse.redirectInfo.url,
-          transactionId: transactionId,
-        };
+        if(phonePeRes.data && phonePeRes.data.success) {
+            responsePayload = {
+              ...responsePayload,
+              redirectUrl: phonePeRes.data.data.instrumentResponse.redirectInfo.url,
+              transactionId: transactionId,
+            };
+        } else {
+            throw new Error("PhonePe Init Failed");
+        }
         break;
 
       default:
@@ -881,7 +1040,6 @@ exports.createOrder = async (req, res) => {
     return res.status(500).json({ status: false, message: "Payment initiation failed", error: err.message });
   }
 };
-
 
 
 
