@@ -457,3 +457,33 @@ exports.getOrderDetails = async (req, res) => {
 };
 
 
+exports.updatePaymentMethod = async (req, res) => {
+    try {
+        const orderId = req.params.id;
+        const { paymentMethod } = req.body;
+
+        if (!paymentMethod) {
+            return res.status(400).json({ status: false, message: 'Payment method is required' });
+        }
+
+        // Update the payment method in the database
+        // Assuming your table is 'orders' and column is 'payment_method'
+        const [result] = await db.query(
+            'UPDATE orders SET payment_method = ? WHERE id = ?',
+            [paymentMethod, orderId]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ status: false, message: 'Order not found' });
+        }
+
+        res.status(200).json({ 
+            status: true, 
+            message: 'Payment method updated successfully' 
+        });
+
+    } catch (error) {
+        console.error('Error updating payment method:', error);
+        res.status(500).json({ status: false, message: 'Server error' });
+    }
+};

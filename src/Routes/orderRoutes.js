@@ -41,4 +41,7 @@ router.post('/create', orderController.createOrder);
 router.get('/', orderController.getOrderHistory);
 router.get('/:orderId', orderController.getOrderDetails);
 
+// ✅ ADD THIS NEW ROUTE
+router.patch('/:id/payment-method', auth, orderController.updatePaymentMethod);
+
 module.exports = router;
