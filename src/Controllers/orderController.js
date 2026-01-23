@@ -466,11 +466,18 @@ exports.updatePaymentMethod = async (req, res) => {
             return res.status(400).json({ status: false, message: 'Payment method is required' });
         }
 
-        // Update the payment method in the database
-        // Assuming your table is 'orders' and column is 'payment_method'
+        // ✅ LOGIC: If switching to COD, we set status to CONFIRMED immediately.
+        // If Online, it stays PENDING (until payment callback).
+        let newStatus = 'PENDING'; 
+        if (paymentMethod === 'COD') {
+            newStatus = 'CONFIRMED'; 
+        }
+
+        // ✅ SQL: Update both 'payment_method' AND 'order_status'
+        // (Assuming your DB column is 'order_status'. If it is 'status', change it below)
         const [result] = await db.query(
-            'UPDATE orders SET payment_method = ? WHERE id = ?',
-            [paymentMethod, orderId]
+            'UPDATE orders SET payment_method = ?, order_status = ? WHERE id = ?',
+            [paymentMethod, newStatus, orderId]
         );
 
         if (result.affectedRows === 0) {
@@ -479,7 +486,8 @@ exports.updatePaymentMethod = async (req, res) => {
 
         res.status(200).json({ 
             status: true, 
-            message: 'Payment method updated successfully' 
+            message: 'Payment method and status updated successfully',
+            data: { order_status: newStatus } // Return new status
         });
 
     } catch (error) {
