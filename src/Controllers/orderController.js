@@ -241,12 +241,12 @@ exports.createOrder = async (req, res) => {
 
         // 4. Handle Wallet Payment (Immediate Deduction)
         if (paymentMethod === 'WALLET') {
-            const [walletRows] = await connection.query('SELECT balance FROM user_wallet WHERE user_id = ? FOR UPDATE', [userId]);
+            const [walletRows] = await connection.query('SELECT balance FROM user_wallets WHERE user_id = ? FOR UPDATE', [userId]);
             if (!walletRows[0] || walletRows[0].balance < totalAmount) {
                 await connection.rollback();
                 return res.status(400).json({ status: false, message: "Insufficient wallet balance." });
             }
-            await connection.query('UPDATE user_wallet SET balance = balance - ? WHERE user_id = ?', [totalAmount, userId]);
+            await connection.query('UPDATE user_wallets SET balance = balance - ? WHERE user_id = ?', [totalAmount, userId]);
         }
         
         // 5. Determine Order Status
@@ -346,13 +346,13 @@ async function distributeEarnings(connection, { userId, sponsorId, orderItemId, 
     if (cashbackPct > 0) {
         const cashbackAmount = distributableProfit * (cashbackPct / 100);
         await connection.query(`INSERT INTO profit_distribution_ledger (order_item_id, user_id, distribution_type, total_profit_on_item, distributable_amount, percentage_applied, amount_credited) VALUES (?, ?, 'CASHBACK', ?, ?, ?, ?)`, [orderItemId, userId, netProfit, distributableProfit, cashbackPct, cashbackAmount]);
-        await connection.query('UPDATE user_wallet SET balance = balance + ? WHERE user_id = ?', [cashbackAmount, userId]);
+        await connection.query('UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?', [cashbackAmount, userId]);
     }
 
     if (sponsorId && sponsorPct > 0) {
         const sponsorBonusAmount = distributableProfit * (sponsorPct / 100);
         await connection.query(`INSERT INTO profit_distribution_ledger (order_item_id, user_id, distribution_type, total_profit_on_item, distributable_amount, percentage_applied, amount_credited) VALUES (?, ?, 'SPONSOR_BONUS', ?, ?, ?, ?)`, [orderItemId, sponsorId, netProfit, distributableProfit, sponsorPct, sponsorBonusAmount]);
-        await connection.query('UPDATE user_wallet SET balance = balance + ? WHERE user_id = ?', [sponsorBonusAmount, sponsorId]);
+        await connection.query('UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?', [sponsorBonusAmount, sponsorId]);
     }
 }
 // ==========================================================
