@@ -58,7 +58,7 @@ exports.getMyOrders = async (req, res) => {
                    sa.address_line_1, sa.address_line_2, sa.city, sa.pincode
             FROM orders o
             JOIN users u ON o.user_id = u.id
-            JOIN shipping_addresses sa ON o.shipping_address_id = sa.id
+            JOIN user_addresses sa ON o.shipping_address_id = sa.id
             -- This ensures the agent only sees orders assigned to THEM
             WHERE o.delivery_agent_id = ? 
             AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')
