@@ -7,6 +7,7 @@ const smsService = require('../utils/smsService'); // Import the SMS utility
  * 1. AGENT LOGIN (Existing)
  */
 exports.login = async (req, res) => {
+    console.log("LOGIN REQUEST RECEIVED:", req.body); 
     const { phoneNumber, password } = req.body;
     try {
         const [rows] = await db.query("SELECT * FROM delivery_agents WHERE phone_number = ? AND is_active = 1", [phoneNumber]);
