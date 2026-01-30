@@ -83,5 +83,9 @@ router.get('/downline', auth, userController.getDownline);
 router.get('/mlm/my-network-tree', auth, userController.getMyInitialNetworkTree);
 router.get('/mlm/tree-node/:userId', auth, userController.getMlmTreeNode);
 
+// --- WALLET ROUTES ---
+router.get('/wallet/balance', auth, userController.getWalletBalance);
+router.get('/wallet/history', auth, userController.getWalletHistory);
+
 
 module.exports = router;

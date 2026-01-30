@@ -1198,3 +1198,93 @@ exports.getMyInitialNetworkTree = async (req, res) => {
   req.params.userId = req.user.id;
   return exports.getMlmTreeNode(req, res);
 };
+
+
+
+
+
+
+
+
+/**
+ * Get current wallet balance for the logged-in user.
+ * Route: GET /api/user/wallet/balance
+ */
+exports.getWalletBalance = async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        const [rows] = await db.query(
+            'SELECT balance, locked_balance FROM user_wallets WHERE user_id = ?', 
+            [userId]
+        );
+
+        if (rows.length === 0) {
+            return res.status(200).json({ 
+                status: true, 
+                data: { balance: 0, locked_balance: 0, available: 0 } 
+            });
+        }
+
+        const total = parseFloat(rows[0].balance);
+        const locked = parseFloat(rows[0].locked_balance);
+        
+        res.status(200).json({ 
+            status: true, 
+            data: { 
+                balance: total, 
+                locked_balance: locked,
+                available: total - locked 
+            } 
+        });
+
+    } catch (error) {
+        console.error('Error fetching wallet balance:', error);
+        res.status(500).json({ status: false, message: 'Server error' });
+    }
+};
+
+/**
+ * Get paginated wallet transactions.
+ * Route: GET /api/user/wallet/history?page=1&limit=10
+ */
+exports.getWalletHistory = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const offset = (page - 1) * limit;
+
+        // 1. Fetch Data
+        const sql = `
+            SELECT id, amount, type, description, reference_id, created_at 
+            FROM user_wallet_transactions 
+            WHERE user_id = ? 
+            ORDER BY created_at DESC 
+            LIMIT ? OFFSET ?
+        `;
+        const [rows] = await db.query(sql, [userId, limit, offset]);
+
+        // 2. Count Total
+        const [countRows] = await db.query(
+            'SELECT COUNT(*) as total FROM user_wallet_transactions WHERE user_id = ?', 
+            [userId]
+        );
+        const totalRecords = countRows[0].total;
+
+        res.status(200).json({
+            status: true,
+            data: rows,
+            pagination: {
+                currentPage: page,
+                totalPages: Math.ceil(totalRecords / limit),
+                totalRecords,
+                limit
+            }
+        });
+
+    } catch (error) {
+        console.error('Error fetching wallet history:', error);
+        res.status(500).json({ status: false, message: 'Server error' });
+    }
+};
