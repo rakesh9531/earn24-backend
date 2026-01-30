@@ -17,6 +17,14 @@ class Order {
     payment_method,
     payment_status,
     order_status,
+
+    // --- NEW HANDSHAKE FIELDS ---
+    delivery_otp,
+    delivery_payment_mode,
+    delivery_amount_collected,
+    delivered_at,
+    // ----------------------------
+
     created_at,
     updated_at,
     // These will be populated from JOINs
@@ -31,6 +39,15 @@ class Order {
     this.deliveryAgentId = delivery_agent_id;
     
     this.orderNumber = order_number;
+
+
+    // Delivery & Handshake Data
+    this.deliveryOtp = delivery_otp || null;
+    this.deliveryPaymentMode = delivery_payment_mode || null;
+    this.deliveryAmountCollected = parseFloat(delivery_amount_collected || 0);
+    this.deliveredAt = delivered_at ? moment(delivered_at).tz(timeZone).format('YYYY-MM-DD HH:mm:ss') : null;
+
+
 
     // Financials
     this.subtotal = parseFloat(subtotal);

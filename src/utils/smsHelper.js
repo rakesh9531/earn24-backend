@@ -21,3 +21,50 @@ exports.sendSms = async (mobileNumber, otp) => {
         return false;
     }
 };
+
+
+
+
+
+
+
+
+// const axios = require('axios');
+
+// /**
+//  * Send OTP via 2Factor.in
+//  * API Format: https://2factor.in/API/V1/{api_key}/SMS/{phone_number}/{otp}/{template_name}
+//  */
+// exports.sendSms = async (mobileNumber, otp) => {
+//     try {
+//         const API_KEY = process.env.TWO_FACTOR_API_KEY || 'YOUR_ACTUAL_2FACTOR_API_KEY';
+//         const TEMPLATE_NAME = 'DeliveryOTP'; // Ensure this template is approved in your 2Factor panel
+
+//         // 2Factor requires phone numbers in international format or 10 digits
+//         // We ensure it's a string and clean it
+//         const cleanNumber = mobileNumber.toString().replace(/\D/g, '');
+
+//         // --- REAL API CALL ---
+//         const url = `https://2factor.in/API/V1/${API_KEY}/SMS/${cleanNumber}/${otp}/${TEMPLATE_NAME}`;
+        
+//         const response = await axios.get(url);
+
+//         if (response.data.Status === 'Success') {
+//             console.log(`[2Factor] OTP ${otp} sent successfully to ${cleanNumber}`);
+//             return true;
+//         } else {
+//             console.error("[2Factor] API Error:", response.data);
+//             return false;
+//         }
+//     } catch (error) {
+//         console.error("SMS Failed:", error.response ? error.response.data : error.message);
+        
+//         // --- FALLBACK FOR DEVELOPMENT ---
+//         console.log("=================================================");
+//         console.log(`[SMS FALLBACK] Sending OTP to ${mobileNumber}`);
+//         console.log(`[SMS FALLBACK] OTP CODE: ${otp}`);
+//         console.log("=================================================");
+        
+//         return false;
+//     }
+// };
