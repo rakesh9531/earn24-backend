@@ -1,7 +1,7 @@
 const db = require('../../db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const smsService = require('../utils/smsService'); // Import the SMS utility
+const smsService = require('../utils/smsHelper'); // Import the SMS utility
 
 /**
  * 1. AGENT LOGIN (Existing)
