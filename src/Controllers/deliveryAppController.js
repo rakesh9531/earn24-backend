@@ -76,85 +76,104 @@ exports.getMyOrders = async (req, res) => {
 
 
 
-/**
- * 3. START DELIVERY (With 2Factor SMS)
- */
+// 1. Just start the trip (Status: OUT_FOR_DELIVERY)
 exports.startDelivery = async (req, res) => {
     const { orderId } = req.body;
-    const agentId = req.user.id;
+    try {
+        await db.query("UPDATE orders SET order_status = 'OUT_FOR_DELIVERY' WHERE id = ?", [orderId]);
+        res.json({ status: true, message: "Delivery started. Customer notified." });
+    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
+};
+
+// 2. NEW: Trigger OTP only when agent reaches customer
+exports.sendDeliveryOTP = async (req, res) => {
+    const { orderId } = req.body;
     const otp = Math.floor(100000 + Math.random() * 900000).toString(); 
+    try {
+        const [order] = await db.query(
+            "SELECT u.mobile_number FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?", [orderId]
+        );
+        
+        await db.query("UPDATE orders SET delivery_otp = ? WHERE id = ?", [otp, orderId]);
+        const smsSent = await smsService.sendSms(order[0].mobile_number, otp);
+        
+        res.json({ status: true, message: "OTP sent to customer.", debug_otp: otp });
+    } catch (e) { res.status(500).json({ status: false, message: "Failed to send OTP." }); }
+};
+
+// 3. Complete Order (Verifies OTP and Payment)
+exports.completeDelivery = async (req, res) => {
+    const { orderId, otp, paymentMode } = req.body;
+    try {
+        const [order] = await db.query("SELECT delivery_otp, total_amount FROM orders WHERE id = ?", [orderId]);
+        
+        if (!order[0] || order[0].delivery_otp !== otp) {
+            return res.status(400).json({ status: false, message: "Invalid OTP Handshake failed." });
+        }
+
+        await db.query(
+            "UPDATE orders SET order_status='DELIVERED', payment_status='COMPLETED', payment_method=?, delivery_otp=NULL, delivered_at=NOW() WHERE id=?", 
+            [paymentMode, orderId]
+        );
+
+        res.json({ status: true, message: "Order successfully delivered!" });
+    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
+};
+
+
+exports.getAgentStats = async (req, res) => {
+    const agentId = req.user.id;
+    try {
+        const query = `
+            SELECT 
+                COUNT(CASE WHEN order_status = 'DELIVERED' THEN 1 END) as delivered_count,
+                COUNT(CASE WHEN order_status = 'CANCELLED' THEN 1 END) as rejected_count,
+                COUNT(CASE WHEN order_status = 'RETURNED' THEN 1 END) as returned_count,
+                SUM(CASE WHEN order_status = 'DELIVERED' AND payment_method = 'COD' THEN total_amount ELSE 0 END) as cash_collected,
+                SUM(CASE WHEN order_status = 'DELIVERED' AND payment_method = 'ONLINE' THEN total_amount ELSE 0 END) as online_collected
+            FROM orders 
+            WHERE delivery_agent_id = ?
+        `;
+        const [stats] = await db.query(query, [agentId]);
+        res.json({ status: true, data: stats[0] });
+    } catch (e) {
+        res.status(500).json({ status: false, message: e.message });
+    }
+};
+
+
+
+// Add this to Controllers/deliveryAppController.js
+exports.cancelAssignment = async (req, res) => {
+    const { orderId, reason } = req.body;
+    const agentId = req.user.id;
 
     try {
-        // 1. Check if this order is actually assigned to THIS agent
+        // We only allow cancellation if the order is not yet DELIVERED
         const [order] = await db.query(
-            "SELECT o.id, u.mobile_number FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ? AND o.delivery_agent_id = ?", 
+            "SELECT id FROM orders WHERE id = ? AND delivery_agent_id = ? AND order_status != 'DELIVERED'", 
             [orderId, agentId]
         );
 
         if (!order[0]) {
-            return res.status(403).json({ status: false, message: "Unauthorized. This order is not assigned to you." });
+            return res.status(404).json({ status: false, message: "Order not found or already delivered." });
         }
 
-        const customerMobile = order[0].mobile_number;
-
-        // 2. Update DB with OTP
-        await db.query("UPDATE orders SET delivery_otp = ?, order_status = 'OUT_FOR_DELIVERY' WHERE id = ?", [otp, orderId]);
-        
-        // 3. Trigger 2Factor SMS
-        const smsSent = await smsService.sendSms(customerMobile, otp);
-        
-        res.json({ 
-            status: true, 
-            message: smsSent ? "OTP sent to customer." : "Delivery started, but SMS failed. Please use debug OTP.",
-            debug_otp: otp // Keep this for testing until your 2Factor is live
-        });
-
-    } catch (e) {
-        console.error(e);
-        res.status(500).json({ status: false, message: "Failed to initiate delivery." });
-    }
-};
-
-/**
- * 4. COMPLETE DELIVERY (Robust Verification)
- */
-exports.completeDelivery = async (req, res) => {
-    const { orderId, otp, paymentMode } = req.body;
-    const agentId = req.user.id;
-    const connection = await db.getConnection();
-
-    try {
-        await connection.beginTransaction();
-
-        // Security: Lock the row and check assigned agent + OTP
-        const [orderRows] = await connection.query(
-            "SELECT delivery_otp, total_amount, order_status FROM orders WHERE id = ? AND delivery_agent_id = ? FOR UPDATE", 
-            [orderId, agentId]
-        );
-
-        if (!orderRows[0]) throw new Error("Order not found or not assigned to you.");
-        if (orderRows[0].delivery_otp !== otp) throw new Error("Invalid Handshake OTP.");
-
-        const updateQuery = `
+        // Reset the agent and set status back to CONFIRMED so Admin can see it again
+        const query = `
             UPDATE orders 
-            SET order_status = 'DELIVERED', 
-                payment_status = 'COMPLETED', 
-                delivery_payment_mode = ?, 
-                delivery_amount_collected = ?, 
-                delivered_at = NOW(),
+            SET delivery_agent_id = NULL, 
+                order_status = 'CONFIRMED', 
                 delivery_otp = NULL 
             WHERE id = ?
         `;
+        await db.query(query, [orderId]);
 
-        await connection.query(updateQuery, [paymentMode, orderRows[0].total_amount, orderId]);
+        // ROBUST: Log the cancellation reason in a separate table if you have one
+        console.log(`Order ${orderId} cancelled by agent ${agentId}. Reason: ${reason || 'Not specified'}`);
 
-        await connection.commit();
-        res.json({ status: true, message: "Verification successful. Order Delivered!" });
-
+        res.json({ status: true, message: "Assignment cancelled. Order returned to Admin pool." });
     } catch (e) {
-        await connection.rollback();
-        res.status(400).json({ status: false, message: e.message });
-    } finally {
-        connection.release();
+        res.status(500).json({ status: false, message: e.message });
     }
 };
