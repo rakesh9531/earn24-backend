@@ -26,17 +26,42 @@ exports.login = async (req, res) => {
 /**
  * 2. GET ASSIGNED TASKS (Existing)
  */
+// exports.getMyOrders = async (req, res) => {
+//     const agentId = req.user.id;
+//     try {
+//         const query = `
+//             SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.order_status,
+//                    u.full_name as customer_name, u.mobile_number as customer_phone,
+//                    sa.address_line1, sa.city, sa.pincode
+//             FROM orders o
+//             JOIN users u ON o.user_id = u.id
+//             JOIN shipping_addresses sa ON o.shipping_address_id = sa.id
+//             WHERE o.delivery_agent_id = ? AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')
+//             ORDER BY o.created_at DESC
+//         `;
+//         const [orders] = await db.query(query, [agentId]);
+//         res.json({ status: true, data: orders });
+//     } catch (e) {
+//         res.status(500).json({ status: false, message: e.message });
+//     }
+// };
+
+
+
+
 exports.getMyOrders = async (req, res) => {
     const agentId = req.user.id;
     try {
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.order_status,
                    u.full_name as customer_name, u.mobile_number as customer_phone,
-                   sa.address_line1, sa.city, sa.pincode
+                   sa.address_line_1, sa.address_line_2, sa.city, sa.pincode
             FROM orders o
             JOIN users u ON o.user_id = u.id
             JOIN shipping_addresses sa ON o.shipping_address_id = sa.id
-            WHERE o.delivery_agent_id = ? AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')
+            -- This ensures the agent only sees orders assigned to THEM
+            WHERE o.delivery_agent_id = ? 
+            AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')
             ORDER BY o.created_at DESC
         `;
         const [orders] = await db.query(query, [agentId]);
@@ -45,6 +70,11 @@ exports.getMyOrders = async (req, res) => {
         res.status(500).json({ status: false, message: e.message });
     }
 };
+
+
+
+
+
 
 /**
  * 3. START DELIVERY (With 2Factor SMS)
