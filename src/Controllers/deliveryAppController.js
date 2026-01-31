@@ -187,3 +187,37 @@ exports.verifyOTP = async (req, res) => {
         res.status(500).json({ status: false, message: e.message });
     }
 };
+
+
+
+
+// 1. History: Only Completed or Cancelled orders
+exports.getHistory = async (req, res) => {
+    const agentId = req.user.id;
+    const query = `
+        SELECT o.order_number, o.total_amount, o.order_status, o.payment_method, 
+               o.delivered_at, u.full_name as customer_name
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+        WHERE o.delivery_agent_id = ? AND o.order_status IN ('DELIVERED', 'CANCELLED')
+        ORDER BY o.delivered_at DESC LIMIT 50`;
+    const [rows] = await db.query(query, [agentId]);
+    res.json({ status: true, data: rows });
+};
+
+// 2. Earnings: Breakdown of cash collected vs commissions
+exports.getEarningsSummary = async (req, res) => {
+    const agentId = req.user.id;
+    // Assuming you have a 'commission' field or logic
+    const query = `
+        SELECT 
+            DATE(delivered_at) as date,
+            COUNT(*) as total_deliveries,
+            SUM(CASE WHEN payment_method = 'COD' THEN total_amount ELSE 0 END) as cash_collected,
+            SUM(CASE WHEN payment_method != 'COD' THEN total_amount ELSE 0 END) as online_collected
+        FROM orders 
+        WHERE delivery_agent_id = ? AND order_status = 'DELIVERED'
+        GROUP BY DATE(delivered_at) ORDER BY date DESC LIMIT 7`;
+    const [rows] = await db.query(query, [agentId]);
+    res.json({ status: true, data: rows });
+};

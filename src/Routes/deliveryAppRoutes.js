@@ -20,4 +20,7 @@ router.post('/complete-delivery', auth, deliveryAppController.completeDelivery);
 router.get('/stats', auth, deliveryAppController.getAgentStats);
 router.post('/cancel-assignment', auth, deliveryAppController.cancelAssignment);
 
+router.get('/history', auth, deliveryAppController.getHistory);
+router.get('/earnings-summary', auth, deliveryAppController.getEarningsSummary);
+
 module.exports = router;
