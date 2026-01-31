@@ -115,18 +115,28 @@ exports.getMyOrders = async (req, res) => {
             JOIN user_addresses sa ON o.shipping_address_id = sa.id
             WHERE o.delivery_agent_id = ? AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')
             ORDER BY o.created_at DESC`;
+        
         const [orders] = await db.query(query, [agentId]);
 
-        // FETCH ITEMS FOR PICKUP
         for (let order of orders) {
-            const [items] = await db.query("SELECT product_name, quantity FROM order_items WHERE order_id = ?", [order.id]);
+            // Join with products and brands for real-world details
+            const itemQuery = `
+                SELECT 
+                    oi.product_name, oi.quantity, 
+                    p.main_image_url, p.weight, p.unit,
+                    b.name as brand_name
+                FROM order_items oi
+                JOIN products p ON oi.product_id = p.id
+                LEFT JOIN brands b ON p.brand_id = b.id
+                WHERE oi.order_id = ?`;
+            
+            const [items] = await db.query(itemQuery, [order.id]);
             order.items = items;
         }
 
         res.json({ status: true, data: orders });
     } catch (e) { res.status(500).json({ status: false, message: e.message }); }
 };
-
 
 
 
