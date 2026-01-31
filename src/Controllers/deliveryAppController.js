@@ -234,19 +234,55 @@ exports.getHistory = async (req, res) => {
 };
 
 
-// 2. Earnings: Breakdown of cash collected vs commissions
 exports.getEarningsSummary = async (req, res) => {
     const agentId = req.user.id;
-    // Assuming you have a 'commission' field or logic
-    const query = `
-        SELECT 
-            DATE(delivered_at) as date,
-            COUNT(*) as total_deliveries,
-            SUM(CASE WHEN payment_method = 'COD' THEN total_amount ELSE 0 END) as cash_collected,
-            SUM(CASE WHEN payment_method != 'COD' THEN total_amount ELSE 0 END) as online_collected
-        FROM orders 
-        WHERE delivery_agent_id = ? AND order_status = 'DELIVERED'
-        GROUP BY DATE(delivered_at) ORDER BY date DESC LIMIT 7`;
-    const [rows] = await db.query(query, [agentId]);
-    res.json({ status: true, data: rows });
+    const page = parseInt(req.query.page) || 1;
+    const limit = 10;
+    const offset = (page - 1) * limit;
+
+    try {
+        // 1. Overall Totals (Lifetime)
+        const [overall] = await db.query(`
+            SELECT 
+                SUM(CASE WHEN payment_method = 'COD' THEN total_amount ELSE 0 END) as total_cash_lifetime,
+                SUM(CASE WHEN payment_method != 'COD' THEN total_amount ELSE 0 END) as total_online_lifetime,
+                COUNT(*) as total_orders_lifetime
+            FROM orders WHERE delivery_agent_id = ? AND order_status = 'DELIVERED'`, [agentId]);
+
+        // 2. This Month's Summary
+        const [thisMonth] = await db.query(`
+            SELECT SUM(total_amount) as amount, COUNT(*) as count 
+            FROM orders 
+            WHERE delivery_agent_id = ? AND order_status = 'DELIVERED' 
+            AND MONTH(delivered_at) = MONTH(CURRENT_DATE()) AND YEAR(delivered_at) = YEAR(CURRENT_DATE())`, [agentId]);
+
+        // 3. Paginated Daily History
+        const [dailyCount] = await db.query(`
+            SELECT COUNT(DISTINCT DATE(delivered_at)) as totalDays 
+            FROM orders WHERE delivery_agent_id = ? AND order_status = 'DELIVERED'`, [agentId]);
+
+        const totalPages = Math.ceil(dailyCount[0].totalDays / limit);
+
+        const dailyQuery = `
+            SELECT 
+                DATE(delivered_at) as date,
+                COUNT(*) as total_deliveries,
+                SUM(CASE WHEN payment_method = 'COD' THEN total_amount ELSE 0 END) as cash_collected,
+                SUM(CASE WHEN payment_method != 'COD' THEN total_amount ELSE 0 END) as online_collected
+            FROM orders 
+            WHERE delivery_agent_id = ? AND order_status = 'DELIVERED'
+            GROUP BY DATE(delivered_at) ORDER BY date DESC LIMIT ? OFFSET ?`;
+            
+        const [dailyRows] = await db.query(dailyQuery, [agentId, limit, offset]);
+
+        res.json({ 
+            status: true, 
+            summary: {
+                lifetime: overall[0],
+                thisMonth: thisMonth[0]
+            },
+            dailyStats: dailyRows,
+            pagination: { currentPage: page, totalPages }
+        });
+    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
 };
