@@ -78,28 +78,54 @@ exports.login = async (req, res) => {
 
 
 
+// exports.getMyOrders = async (req, res) => {
+//     const agentId = req.user.id;
+//     try {
+//         const query = `
+//             SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.order_status,
+//                    u.full_name as customer_name, u.mobile_number as customer_phone,
+//                    sa.address_line_1, sa.address_line_2, sa.city, sa.pincode
+//             FROM orders o
+//             JOIN users u ON o.user_id = u.id
+//             JOIN user_addresses sa ON o.shipping_address_id = sa.id
+//             -- This ensures the agent only sees orders assigned to THEM
+//             WHERE o.delivery_agent_id = ? 
+//             AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')
+//             ORDER BY o.created_at DESC
+//         `;
+//         const [orders] = await db.query(query, [agentId]);
+//         res.json({ status: true, data: orders });
+//     } catch (e) {
+//         res.status(500).json({ status: false, message: e.message });
+//     }
+// };
+
+
+
+// 3. GET ACTIVE TASKS WITH ITEMS
 exports.getMyOrders = async (req, res) => {
     const agentId = req.user.id;
     try {
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.order_status,
                    u.full_name as customer_name, u.mobile_number as customer_phone,
-                   sa.address_line_1, sa.address_line_2, sa.city, sa.pincode
+                   sa.address_line_1, sa.city, sa.pincode
             FROM orders o
             JOIN users u ON o.user_id = u.id
             JOIN user_addresses sa ON o.shipping_address_id = sa.id
-            -- This ensures the agent only sees orders assigned to THEM
-            WHERE o.delivery_agent_id = ? 
-            AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')
-            ORDER BY o.created_at DESC
-        `;
+            WHERE o.delivery_agent_id = ? AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')
+            ORDER BY o.created_at DESC`;
         const [orders] = await db.query(query, [agentId]);
-        res.json({ status: true, data: orders });
-    } catch (e) {
-        res.status(500).json({ status: false, message: e.message });
-    }
-};
 
+        // FETCH ITEMS FOR PICKUP
+        for (let order of orders) {
+            const [items] = await db.query("SELECT product_name, quantity FROM order_items WHERE order_id = ?", [order.id]);
+            order.items = items;
+        }
+
+        res.json({ status: true, data: orders });
+    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
+};
 
 
 
