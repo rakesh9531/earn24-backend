@@ -6,22 +6,51 @@ const smsService = require('../utils/smsHelper'); // Import the SMS utility
 /**
  * 1. AGENT LOGIN (Existing)
  */
+// exports.login = async (req, res) => {
+//     console.log("LOGIN REQUEST RECEIVED:", req.body); 
+//     const { phoneNumber, password } = req.body;
+//     try {
+//         const [rows] = await db.query("SELECT * FROM delivery_agents WHERE phone_number = ? AND is_active = 1", [phoneNumber]);
+//         if (rows.length === 0) return res.status(401).json({ status: false, message: "Agent account not found or inactive." });
+
+//         const valid = await bcrypt.compare(password, rows[0].password);
+//         if (!valid) return res.status(401).json({ status: false, message: "Invalid password." });
+
+//         const token = jwt.sign({ id: rows[0].id, role: 'delivery_agent' }, process.env.JWT_SECRET, { expiresIn: '24h' });
+//         res.json({ status: true, token, agent: { name: rows[0].full_name, id: rows[0].id } });
+//     } catch (e) {
+//         res.status(500).json({ status: false, message: "Server Error during login." });
+//     }
+// };
+
+
+
 exports.login = async (req, res) => {
-    console.log("LOGIN REQUEST RECEIVED:", req.body); 
     const { phoneNumber, password } = req.body;
     try {
         const [rows] = await db.query("SELECT * FROM delivery_agents WHERE phone_number = ? AND is_active = 1", [phoneNumber]);
-        if (rows.length === 0) return res.status(401).json({ status: false, message: "Agent account not found or inactive." });
+        if (rows.length === 0) return res.status(401).json({ status: false, message: "Agent account not found." });
 
         const valid = await bcrypt.compare(password, rows[0].password);
-        if (!valid) return res.status(401).json({ status: false, message: "Invalid password." });
+        if (!valid) return res.status(401).json({ status: false, message: "Invalid credentials." });
 
         const token = jwt.sign({ id: rows[0].id, role: 'delivery_agent' }, process.env.JWT_SECRET, { expiresIn: '24h' });
-        res.json({ status: true, token, agent: { name: rows[0].full_name, id: rows[0].id } });
-    } catch (e) {
-        res.status(500).json({ status: false, message: "Server Error during login." });
-    }
+        
+        // ADD THE PHONE NUMBER HERE
+        res.json({ 
+            status: true, 
+            token, 
+            agent: { 
+                name: rows[0].full_name, 
+                id: rows[0].id,
+                phoneNumber: rows[0].phone_number // <--- ADD THIS LINE
+            } 
+        });
+    } catch (e) { res.status(500).json({ status: false, message: "Server Error" }); }
 };
+
+
+
 
 /**
  * 2. GET ASSIGNED TASKS (Existing)
