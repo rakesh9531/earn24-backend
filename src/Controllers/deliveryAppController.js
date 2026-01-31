@@ -194,16 +194,45 @@ exports.verifyOTP = async (req, res) => {
 // 1. History: Only Completed or Cancelled orders
 exports.getHistory = async (req, res) => {
     const agentId = req.user.id;
-    const query = `
-        SELECT o.order_number, o.total_amount, o.order_status, o.payment_method, 
-               o.delivered_at, u.full_name as customer_name
-        FROM orders o
-        JOIN users u ON o.user_id = u.id
-        WHERE o.delivery_agent_id = ? AND o.order_status IN ('DELIVERED', 'CANCELLED')
-        ORDER BY o.delivered_at DESC LIMIT 50`;
-    const [rows] = await db.query(query, [agentId]);
-    res.json({ status: true, data: rows });
+    const page = parseInt(req.query.page) || 1; // Default to page 1
+    const limit = 10; // Number of records per page
+    const offset = (page - 1) * limit;
+
+    try {
+        // 1. Get the total count of history items (to calculate total pages)
+        const [countResult] = await db.query(
+            "SELECT COUNT(*) as total FROM orders WHERE delivery_agent_id = ? AND order_status IN ('DELIVERED', 'CANCELLED')", 
+            [agentId]
+        );
+        const totalItems = countResult[0].total;
+        const totalPages = Math.ceil(totalItems / limit);
+
+        // 2. Fetch the paginated data
+        const query = `
+            SELECT o.order_number, o.total_amount, o.order_status, o.payment_method, 
+                   o.delivered_at, u.full_name as customer_name
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            WHERE o.delivery_agent_id = ? AND o.order_status IN ('DELIVERED', 'CANCELLED')
+            ORDER BY o.delivered_at DESC 
+            LIMIT ? OFFSET ?`;
+            
+        const [rows] = await db.query(query, [agentId, limit, offset]);
+
+        res.json({ 
+            status: true, 
+            data: rows,
+            pagination: {
+                currentPage: page,
+                totalPages: totalPages,
+                totalItems: totalItems
+            }
+        });
+    } catch (e) {
+        res.status(500).json({ status: false, message: e.message });
+    }
 };
+
 
 // 2. Earnings: Breakdown of cash collected vs commissions
 exports.getEarningsSummary = async (req, res) => {
