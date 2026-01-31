@@ -101,22 +101,15 @@ exports.sendDeliveryOTP = async (req, res) => {
     } catch (e) { res.status(500).json({ status: false, message: "Failed to send OTP." }); }
 };
 
-// 3. Complete Order (Verifies OTP and Payment)
+// 7. STEP 4: Complete Delivery
 exports.completeDelivery = async (req, res) => {
-    const { orderId, otp, paymentMode } = req.body;
+    const { orderId, paymentMode } = req.body;
     try {
-        const [order] = await db.query("SELECT delivery_otp, total_amount FROM orders WHERE id = ?", [orderId]);
-        
-        if (!order[0] || order[0].delivery_otp !== otp) {
-            return res.status(400).json({ status: false, message: "Invalid OTP Handshake failed." });
-        }
-
         await db.query(
             "UPDATE orders SET order_status='DELIVERED', payment_status='COMPLETED', payment_method=?, delivery_otp=NULL, delivered_at=NOW() WHERE id=?", 
             [paymentMode, orderId]
         );
-
-        res.json({ status: true, message: "Order successfully delivered!" });
+        res.json({ status: true, message: "Delivery Success!" });
     } catch (e) { res.status(500).json({ status: false, message: e.message }); }
 };
 
@@ -173,6 +166,23 @@ exports.cancelAssignment = async (req, res) => {
         console.log(`Order ${orderId} cancelled by agent ${agentId}. Reason: ${reason || 'Not specified'}`);
 
         res.json({ status: true, message: "Assignment cancelled. Order returned to Admin pool." });
+    } catch (e) {
+        res.status(500).json({ status: false, message: e.message });
+    }
+};
+
+
+// Add this to your backend controller
+exports.verifyOTP = async (req, res) => {
+    const { orderId, otp } = req.body;
+    try {
+        const [order] = await db.query("SELECT delivery_otp FROM orders WHERE id = ?", [orderId]);
+        
+        if (!order[0] || order[0].delivery_otp !== otp) {
+            return res.status(400).json({ status: false, message: "Invalid OTP code." });
+        }
+
+        res.json({ status: true, message: "OTP Verified. Proceed to payment." });
     } catch (e) {
         res.status(500).json({ status: false, message: e.message });
     }
