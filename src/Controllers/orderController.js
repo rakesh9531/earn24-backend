@@ -437,6 +437,7 @@ exports.createOrder = async (req, res) => {
         for (const item of items) {
             
             // A. Create Attribute Snapshot (FIXED JOIN LOGIC)
+            // Note: Join attributes (a) through attribute_values (av)
             const [attrRows] = await connection.query(`
                 SELECT a.name as attr_key, av.value as attr_value
                 FROM product_attributes pa
@@ -447,7 +448,7 @@ exports.createOrder = async (req, res) => {
             const snapshot = {};
             attrRows.forEach(row => { snapshot[row.attr_key] = row.attr_value; });
 
-            // B. Calculate Profit
+            // B. Calculate Profit for MLM
             const basePrice = item.selling_price / (1 + ((item.gst_percentage || 0) / 100));
             const netProfitOnItem = (basePrice - item.purchase_price) * item.quantity;
 
@@ -476,6 +477,8 @@ exports.createOrder = async (req, res) => {
 
         // 6. Final Wallet Deduction
         if (paymentMethod === 'WALLET') {
+            const [w] = await connection.query('SELECT balance FROM user_wallets WHERE user_id = ? FOR UPDATE', [userId]);
+            if (w[0].balance < totalAmount) throw new Error("Insufficient wallet balance.");
             await connection.query('UPDATE user_wallets SET balance = balance - ? WHERE user_id = ?', [totalAmount, userId]);
         }
         
@@ -486,6 +489,7 @@ exports.createOrder = async (req, res) => {
 
     } catch (error) {
         await connection.rollback();
+        console.error("Order Creation Error:", error.message);
         res.status(500).json({ status: false, message: error.message });
     } finally {
         connection.release();
