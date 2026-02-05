@@ -116,11 +116,14 @@ exports.addSellerOffer = async (req, res) => {
 
 
 
-// --- HELPER FUNCTION (At the bottom of your controller file) ---
+/**
+ * --- HELPER FUNCTION ---
+ * Standardizes product data parsing for all APIs.
+ * Ensures attributes and gallery are always arrays.
+ */
 const formatProducts = (rows) => {
     return rows.map(p => ({
         ...p,
-        // Automatically handle parsing if data exists, otherwise return empty array
         gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : [],
         attributes: p.attributes ? JSON.parse(p.attributes) : [],
         pincodes: p.available_pincodes ? p.available_pincodes.split(',') : []
@@ -132,11 +135,11 @@ const formatProducts = (rows) => {
 
 
 
-// --- 1. SEARCH API ---
+// 1. SEARCH API
 exports.findProductsByPincode = async (req, res) => {
     try {
         const { search, pincode } = req.query;
-        if (!pincode) return res.status(400).json({ status: false, message: "Pincode required." });
+        if (!pincode) return res.status(400).json({ status: false, message: "Pincode is required." });
 
         const searchTerm = `%${search || ''}%`;
         const query = `
@@ -158,40 +161,107 @@ exports.findProductsByPincode = async (req, res) => {
             GROUP BY sp.id`;
 
         const [rows] = await db.query(query, [pincode, searchTerm, searchTerm]);
-        
-        // CLEANER CODE: Just call the helper
         res.status(200).json({ status: true, data: formatProducts(rows) });
 
-    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
+    } catch (error) {
+        res.status(500).json({ status: false, message: error.message });
+    }
 };
 
-// --- 2. HOME DATA API ---
+// 2. HOME SCREEN DATA
 exports.getHomeScreenData = async (req, res) => {
-    // ... categories and settings fetch logic ...
-    const productResults = await Promise.all(productPromises);
+    const { pincode } = req.query;
+    if (!pincode) return res.status(400).json({ status: false, message: "Pincode is required." });
 
-    const categorizedProducts = categoryTree.map((category, index) => {
-        // CLEANER CODE: Use the helper here too
-        const products = formatProducts(productResults[index][0]);
+    try {
+        const [banners] = await db.query(`SELECT id, image_url, link_to, title FROM banners WHERE is_active = TRUE ORDER BY display_order ASC`);
+        const [parentCats] = await db.query(`SELECT id, name, image_url FROM product_categories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY display_order ASC`);
+        const [subCats] = await db.query(`SELECT id, category_id, name, image_url FROM product_subcategories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY name ASC`);
 
-        return {
+        const categoryTree = parentCats.map(parent => ({
+            ...parent,
+            subCategories: subCats.filter(s => s.category_id === parent.id)
+        }));
+
+        const [settings] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'");
+        const bvPct = settings[0] ? parseFloat(settings[0].setting_value) : 80.0;
+
+        // --- FIX: Correctly defining productPromises ---
+        const productPromises = categoryTree.map(category => 
+            db.query(`
+                SELECT 
+                    p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
+                    sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
+                    ((sp.selling_price / (1 + (IFNULL(h.gst_percentage,0) / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
+                    (
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                        FROM product_attributes pa
+                        JOIN attribute_values av ON pa.attribute_value_id = av.id
+                        JOIN attributes attr ON av.attribute_id = attr.id
+                        WHERE pa.product_id = p.id
+                    ) as attributes
+                FROM seller_products sp
+                JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
+                JOIN products p ON sp.product_id = p.id
+                LEFT JOIN brands b ON p.brand_id = b.id
+                LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
+                WHERE spp.pincode = ? AND p.category_id = ? AND sp.is_active = TRUE
+                GROUP BY sp.id LIMIT 10`, [bvPct, pincode, category.id])
+        );
+
+        const productResults = await Promise.all(productPromises);
+
+        const categorizedProducts = categoryTree.map((category, index) => ({
             id: category.id,
             title: `Best in ${category.name}`,
-            parent_category_id: category.id, 
-            products: products
-        };
-    }).filter(section => section.products.length > 0);
+            products: formatProducts(productResults[index][0])
+        })).filter(section => section.products.length > 0);
 
-    res.status(200).json({ status: true, data: { banners, categories: categoryTree, productSections: categorizedProducts } });
+        res.status(200).json({
+            status: true,
+            data: { banners, categories: categoryTree, productSections: categorizedProducts }
+        });
+
+    } catch (error) {
+        res.status(500).json({ status: false, message: error.message });
+    }
 };
 
-// --- 3. RELATED PRODUCTS API ---
+// 3. RELATED PRODUCTS
 exports.getRelatedProducts = async (req, res) => {
-    // ... categoryId fetch logic and UNION query setup ...
-    const [relatedProducts] = await db.query(strictPincodeQuery, [/* params */]);
+    const { productId } = req.params;
+    const { pincode } = req.query;
+    if (!pincode || !productId) return res.status(400).json({ status: false, message: "Missing params" });
 
-    // CLEANER CODE: Use the helper here as well
-    res.status(200).json({ status: true, data: formatProducts(relatedProducts) });
+    try {
+        const [pRows] = await db.query('SELECT category_id FROM products WHERE id = ?', [productId]);
+        if (!pRows[0]) return res.status(404).json({ status: false, message: "Product not found" });
+        
+        const catId = pRows[0].category_id;
+        const query = `
+            SELECT 
+                p.id as product_id, p.name, p.main_image_url, p.description,
+                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp,
+                (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                    FROM product_attributes pa
+                    JOIN attribute_values av ON pa.attribute_value_id = av.id
+                    JOIN attributes attr ON av.attribute_id = attr.id
+                    WHERE pa.product_id = p.id
+                ) as attributes
+            FROM seller_products sp
+            JOIN products p ON sp.product_id = p.id
+            JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
+            LEFT JOIN brands b ON p.brand_id = b.id
+            WHERE spp.pincode = ? AND p.category_id = ? AND p.id != ? AND sp.is_active = TRUE
+            GROUP BY sp.id LIMIT 10`;
+
+        const [rows] = await db.query(query, [pincode, catId, productId]);
+        res.status(200).json({ status: true, data: formatProducts(rows) });
+
+    } catch (error) {
+        res.status(500).json({ status: false, message: error.message });
+    }
 };
 
 
