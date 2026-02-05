@@ -69,52 +69,130 @@ exports.assignOrderForDelivery = async (req, res) => {
 
 
 
+// exports.getAdminOrderDetails = async (req, res) => {
+//     const { orderId } = req.params;
+//     try {
+//         // Fetch main order details, customer info, and address info in one query
+//         const orderQuery = `
+//             SELECT 
+//                 o.*, 
+//                 u.full_name as customer_name, 
+//                 u.mobile_number as customer_phone,
+//                 ua.address_line_1,
+//                 ua.address_line_2,
+//                 ua.city,
+//                 ua.state,
+//                 ua.pincode,
+//                 ua.landmark
+//             FROM orders o 
+//             JOIN users u ON o.user_id = u.id
+//             LEFT JOIN user_addresses ua ON o.shipping_address_id = ua.id
+//             WHERE o.id = ?
+//         `;
+//         const [orderRows] = await db.query(orderQuery, [orderId]);
+//         if (orderRows.length === 0) {
+//             return res.status(404).json({ status: false, message: 'Order not found.' });
+//         }
+        
+//         // Fetch all line items for this order
+//         const itemsQuery = `
+//             SELECT 
+//                 oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price,
+//                 p.main_image_url 
+//             FROM order_items oi
+//             JOIN products p ON oi.product_id = p.id
+//             WHERE oi.order_id = ?
+//         `;
+//         const [itemRows] = await db.query(itemsQuery, [orderId]);
+
+//         // Combine the results into a single, clean object
+//         const orderDetails = {
+//             ...orderRows[0], // Includes all fields from the 'orders' table
+//             items: itemRows
+//         };
+        
+//         res.status(200).json({ status: true, data: orderDetails });
+
+//     } catch (error) {
+//         console.error("Error fetching admin order details:", error);
+//         res.status(500).json({ status: false, message: 'An error occurred.' });
+//     }
+// };
+
+
+
+
+
+
+
+//  Above working 
+
+
 exports.getAdminOrderDetails = async (req, res) => {
     const { orderId } = req.params;
     try {
-        // Fetch main order details, customer info, and address info in one query
+        // 1. Fetch main order details, customer info, and address info
         const orderQuery = `
             SELECT 
                 o.*, 
                 u.full_name as customer_name, 
                 u.mobile_number as customer_phone,
+                u.email as customer_email,
                 ua.address_line_1,
                 ua.address_line_2,
                 ua.city,
                 ua.state,
                 ua.pincode,
-                ua.landmark
+                ua.landmark,
+                da.full_name as agent_name,
+                da.phone_number as agent_phone
             FROM orders o 
             JOIN users u ON o.user_id = u.id
             LEFT JOIN user_addresses ua ON o.shipping_address_id = ua.id
+            LEFT JOIN delivery_agents da ON o.delivery_agent_id = da.id
             WHERE o.id = ?
         `;
         const [orderRows] = await db.query(orderQuery, [orderId]);
+        
         if (orderRows.length === 0) {
             return res.status(404).json({ status: false, message: 'Order not found.' });
         }
         
-        // Fetch all line items for this order
+        // 2. Fetch all line items for this order with Attributes and Brand
         const itemsQuery = `
             SELECT 
-                oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price,
-                p.main_image_url 
+                oi.id as order_item_id,
+                oi.product_name, 
+                oi.quantity, 
+                oi.price_per_unit, 
+                oi.total_price,
+                oi.attributes_snapshot, -- This stores the 'Weight/Size/Color' snapshot
+                p.main_image_url,
+                b.name as brand_name
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
+            LEFT JOIN brands b ON p.brand_id = b.id
             WHERE oi.order_id = ?
         `;
         const [itemRows] = await db.query(itemsQuery, [orderId]);
 
-        // Combine the results into a single, clean object
+        // 3. Process the items to parse the JSON attributes snapshot
+        const processedItems = itemRows.map(item => ({
+            ...item,
+            // Convert the JSON string from DB into a real Javascript Object/Array
+            attributes: item.attributes_snapshot ? (typeof item.attributes_snapshot === 'string' ? JSON.parse(item.attributes_snapshot) : item.attributes_snapshot) : {}
+        }));
+
+        // 4. Combine results into a single clean object
         const orderDetails = {
-            ...orderRows[0], // Includes all fields from the 'orders' table
-            items: itemRows
+            ...orderRows[0], 
+            items: processedItems
         };
         
         res.status(200).json({ status: true, data: orderDetails });
 
     } catch (error) {
         console.error("Error fetching admin order details:", error);
-        res.status(500).json({ status: false, message: 'An error occurred.' });
+        res.status(500).json({ status: false, message: 'An internal server error occurred.' });
     }
 };
