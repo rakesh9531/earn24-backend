@@ -78,193 +78,40 @@ exports.addSellerOffer = async (req, res) => {
 
 
 // Working
-// // Public API for the mobile app to search for products
-// exports.findProductsByPincode = async (req, res) => {
-//     try {
-//         const { search, pincode } = req.query;
-
-//         console.log("ssss")
-//         if (!pincode) {
-//             return res.status(400).json({ status: false, message: "Pincode is required to find products." });
-//         }
-
-//         const searchTerm = `%${search || ''}%`;
-//         const query = `
-//             SELECT
-//                 p.name, p.main_image_url, b.name as brand_name,
-//                 sp.id as offer_id, sp.selling_price, sp.mrp, sp.quantity,
-//                 s.display_name as seller_name
-//             FROM seller_products sp
-//             JOIN products p ON sp.product_id = p.id
-//             JOIN sellers s ON sp.seller_id = s.id
-//             LEFT JOIN brands b ON p.brand_id = b.id
-//             WHERE 
-//                 sp.pincode = ?
-//                 AND (p.name LIKE ? OR b.name LIKE ?)
-//                 AND sp.is_active = TRUE AND p.is_active = TRUE AND p.is_approved = TRUE
-//         `;
-
-//         const [rows] = await db.query(query, [pincode, searchTerm, searchTerm]);
-//         res.status(200).json({ status: true, data: rows });
-
-//     } catch (error) {
-//         console.error("Error finding products by pincode:", error);
-//         res.status(500).json({ status: false, message: "An error occurred." });
-//     }
-// };
-
-
-
-
-/**
- * --- HELPER FUNCTION ---
- * Standardizes product data parsing for all APIs.
- * Ensures attributes and gallery are always arrays.
- */
-const formatProducts = (rows) => {
-    return rows.map(p => ({
-        ...p,
-        gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : [],
-        attributes: p.attributes ? JSON.parse(p.attributes) : [],
-        pincodes: p.available_pincodes ? p.available_pincodes.split(',') : []
-    }));
-};
-
-
-
-
-
-
-// 1. SEARCH API
+// Public API for the mobile app to search for products
 exports.findProductsByPincode = async (req, res) => {
     try {
         const { search, pincode } = req.query;
-        if (!pincode) return res.status(400).json({ status: false, message: "Pincode is required." });
+
+        console.log("ssss")
+        if (!pincode) {
+            return res.status(400).json({ status: false, message: "Pincode is required to find products." });
+        }
 
         const searchTerm = `%${search || ''}%`;
         const query = `
             SELECT
-                p.id as product_id, p.name, p.main_image_url, p.description,
-                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp,
-                (
-                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
-                    FROM product_attributes pa
-                    JOIN attribute_values av ON pa.attribute_value_id = av.id
-                    JOIN attributes attr ON av.attribute_id = attr.id
-                    WHERE pa.product_id = p.id
-                ) as attributes
+                p.name, p.main_image_url, b.name as brand_name,
+                sp.id as offer_id, sp.selling_price, sp.mrp, sp.quantity,
+                s.display_name as seller_name
             FROM seller_products sp
             JOIN products p ON sp.product_id = p.id
-            JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
+            JOIN sellers s ON sp.seller_id = s.id
             LEFT JOIN brands b ON p.brand_id = b.id
-            WHERE spp.pincode = ? AND (p.name LIKE ? OR b.name LIKE ?) AND sp.is_active = TRUE
-            GROUP BY sp.id`;
+            WHERE 
+                sp.pincode = ?
+                AND (p.name LIKE ? OR b.name LIKE ?)
+                AND sp.is_active = TRUE AND p.is_active = TRUE AND p.is_approved = TRUE
+        `;
 
         const [rows] = await db.query(query, [pincode, searchTerm, searchTerm]);
-        res.status(200).json({ status: true, data: formatProducts(rows) });
+        res.status(200).json({ status: true, data: rows });
 
     } catch (error) {
-        res.status(500).json({ status: false, message: error.message });
+        console.error("Error finding products by pincode:", error);
+        res.status(500).json({ status: false, message: "An error occurred." });
     }
 };
-
-// 2. HOME SCREEN DATA
-exports.getHomeScreenData = async (req, res) => {
-    const { pincode } = req.query;
-    if (!pincode) return res.status(400).json({ status: false, message: "Pincode is required." });
-
-    try {
-        const [banners] = await db.query(`SELECT id, image_url, link_to, title FROM banners WHERE is_active = TRUE ORDER BY display_order ASC`);
-        const [parentCats] = await db.query(`SELECT id, name, image_url FROM product_categories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY display_order ASC`);
-        const [subCats] = await db.query(`SELECT id, category_id, name, image_url FROM product_subcategories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY name ASC`);
-
-        const categoryTree = parentCats.map(parent => ({
-            ...parent,
-            subCategories: subCats.filter(s => s.category_id === parent.id)
-        }));
-
-        const [settings] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'");
-        const bvPct = settings[0] ? parseFloat(settings[0].setting_value) : 80.0;
-
-        // --- FIX: Correctly defining productPromises ---
-        const productPromises = categoryTree.map(category => 
-            db.query(`
-                SELECT 
-                    p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
-                    sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
-                    ((sp.selling_price / (1 + (IFNULL(h.gst_percentage,0) / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
-                    (
-                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
-                        FROM product_attributes pa
-                        JOIN attribute_values av ON pa.attribute_value_id = av.id
-                        JOIN attributes attr ON av.attribute_id = attr.id
-                        WHERE pa.product_id = p.id
-                    ) as attributes
-                FROM seller_products sp
-                JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
-                JOIN products p ON sp.product_id = p.id
-                LEFT JOIN brands b ON p.brand_id = b.id
-                LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
-                WHERE spp.pincode = ? AND p.category_id = ? AND sp.is_active = TRUE
-                GROUP BY sp.id LIMIT 10`, [bvPct, pincode, category.id])
-        );
-
-        const productResults = await Promise.all(productPromises);
-
-        const categorizedProducts = categoryTree.map((category, index) => ({
-            id: category.id,
-            title: `Best in ${category.name}`,
-            products: formatProducts(productResults[index][0])
-        })).filter(section => section.products.length > 0);
-
-        res.status(200).json({
-            status: true,
-            data: { banners, categories: categoryTree, productSections: categorizedProducts }
-        });
-
-    } catch (error) {
-        res.status(500).json({ status: false, message: error.message });
-    }
-};
-
-// 3. RELATED PRODUCTS
-exports.getRelatedProducts = async (req, res) => {
-    const { productId } = req.params;
-    const { pincode } = req.query;
-    if (!pincode || !productId) return res.status(400).json({ status: false, message: "Missing params" });
-
-    try {
-        const [pRows] = await db.query('SELECT category_id FROM products WHERE id = ?', [productId]);
-        if (!pRows[0]) return res.status(404).json({ status: false, message: "Product not found" });
-        
-        const catId = pRows[0].category_id;
-        const query = `
-            SELECT 
-                p.id as product_id, p.name, p.main_image_url, p.description,
-                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp,
-                (
-                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
-                    FROM product_attributes pa
-                    JOIN attribute_values av ON pa.attribute_value_id = av.id
-                    JOIN attributes attr ON av.attribute_id = attr.id
-                    WHERE pa.product_id = p.id
-                ) as attributes
-            FROM seller_products sp
-            JOIN products p ON sp.product_id = p.id
-            JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
-            LEFT JOIN brands b ON p.brand_id = b.id
-            WHERE spp.pincode = ? AND p.category_id = ? AND p.id != ? AND sp.is_active = TRUE
-            GROUP BY sp.id LIMIT 10`;
-
-        const [rows] = await db.query(query, [pincode, catId, productId]);
-        res.status(200).json({ status: true, data: formatProducts(rows) });
-
-    } catch (error) {
-        res.status(500).json({ status: false, message: error.message });
-    }
-};
-
-
 
 
 
@@ -510,224 +357,224 @@ exports.toggleOfferStatus = async (req, res) => {
 
 
 //  Working
-// exports.getHomeScreenData = async (req, res) => {
-//     const { pincode } = req.query;
+exports.getHomeScreenData = async (req, res) => {
+    const { pincode } = req.query;
 
-//     if (!pincode) {
-//         return res.status(400).json({ status: false, message: "Pincode is required." });
-//     }
+    if (!pincode) {
+        return res.status(400).json({ status: false, message: "Pincode is required." });
+    }
 
-//     try {
-//         // --- 1. Fetch Active Banners (Unchanged) ---
-//         const [banners] = await db.query(
-//             `SELECT id, image_url, link_to, title FROM banners WHERE is_active = TRUE ORDER BY display_order ASC`
-//         );
+    try {
+        // --- 1. Fetch Active Banners (Unchanged) ---
+        const [banners] = await db.query(
+            `SELECT id, image_url, link_to, title FROM banners WHERE is_active = TRUE ORDER BY display_order ASC`
+        );
 
-//         // --- 2. Fetch Categories and Sub-Categories (Unchanged) ---
-//         const [parentCategories] = await db.query(
-//             `SELECT id, name, image_url FROM product_categories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY display_order ASC`
-//         );
-//         const [subCategories] = await db.query(
-//             `SELECT id, category_id, name, image_url FROM product_subcategories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY name ASC`
-//         );
-//         const categoryTree = parentCategories.map(parent => {
-//             const children = subCategories
-//                 .filter(sub => sub.category_id === parent.id)
-//                 .map(sub => ({
-//                     id: sub.id,
-//                     name: sub.name,
-//                     image_url: sub.image_url,
-//                 }));
-//             return {
-//                 id: parent.id,
-//                 name: parent.name,
-//                 image_url: parent.image_url,
-//                 subCategories: children
-//             };
-//         });
+        // --- 2. Fetch Categories and Sub-Categories (Unchanged) ---
+        const [parentCategories] = await db.query(
+            `SELECT id, name, image_url FROM product_categories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY display_order ASC`
+        );
+        const [subCategories] = await db.query(
+            `SELECT id, category_id, name, image_url FROM product_subcategories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY name ASC`
+        );
+        const categoryTree = parentCategories.map(parent => {
+            const children = subCategories
+                .filter(sub => sub.category_id === parent.id)
+                .map(sub => ({
+                    id: sub.id,
+                    name: sub.name,
+                    image_url: sub.image_url,
+                }));
+            return {
+                id: parent.id,
+                name: parent.name,
+                image_url: parent.image_url,
+                subCategories: children
+            };
+        });
 
-//         // --- 3. Fetch App Settings (Unchanged) ---
-//         const [settingsRows] = await db.query("SELECT setting_key, setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'");
-//         const bvSetting = settingsRows.find(s => s.setting_key === 'bv_generation_pct_of_profit');
-//         const bvGenerationPct = bvSetting ? parseFloat(bvSetting.setting_value) : 80.0;
+        // --- 3. Fetch App Settings (Unchanged) ---
+        const [settingsRows] = await db.query("SELECT setting_key, setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'");
+        const bvSetting = settingsRows.find(s => s.setting_key === 'bv_generation_pct_of_profit');
+        const bvGenerationPct = bvSetting ? parseFloat(bvSetting.setting_value) : 80.0;
 
-//         // --- 4. Fetch Products for each MAIN Category (Unchanged) ---
-//         const productPromises = categoryTree.map(category => 
-//             db.query(`
-//                 SELECT 
-//                     p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
-//                     sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
-//                     sp.purchase_price, sp.minimum_order_quantity,
-//                     ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
-//                     (
-//                         SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
-//                         FROM product_attributes pa
-//                         JOIN attribute_values av ON pa.attribute_value_id = av.id
-//                         JOIN attributes attr ON av.attribute_id = attr.id
-//                         WHERE pa.product_id = p.id
-//                     ) as attributes,
-//                     (
-//                         SELECT GROUP_CONCAT(spp_inner.pincode) 
-//                         FROM seller_product_pincodes spp_inner 
-//                         WHERE spp_inner.seller_product_id = sp.id
-//                     ) as available_pincodes
-//                 FROM seller_products sp
-//                 JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
-//                 JOIN products p ON sp.product_id = p.id
-//                 LEFT JOIN brands b ON p.brand_id = b.id
-//                 LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
-//                 WHERE 
-//                     spp.pincode = ? AND 
-//                     p.category_id = ? AND 
-//                     sp.is_active = TRUE
-//                 GROUP BY sp.id
-//                 ORDER BY p.popularity DESC
-//                 LIMIT 10
-//             `,
-//             [bvGenerationPct, pincode, category.id]
-//             )
-//         );
+        // --- 4. Fetch Products for each MAIN Category (Unchanged) ---
+        const productPromises = categoryTree.map(category => 
+            db.query(`
+                SELECT 
+                    p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
+                    sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
+                    sp.purchase_price, sp.minimum_order_quantity,
+                    ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
+                    (
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                        FROM product_attributes pa
+                        JOIN attribute_values av ON pa.attribute_value_id = av.id
+                        JOIN attributes attr ON av.attribute_id = attr.id
+                        WHERE pa.product_id = p.id
+                    ) as attributes,
+                    (
+                        SELECT GROUP_CONCAT(spp_inner.pincode) 
+                        FROM seller_product_pincodes spp_inner 
+                        WHERE spp_inner.seller_product_id = sp.id
+                    ) as available_pincodes
+                FROM seller_products sp
+                JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
+                JOIN products p ON sp.product_id = p.id
+                LEFT JOIN brands b ON p.brand_id = b.id
+                LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
+                WHERE 
+                    spp.pincode = ? AND 
+                    p.category_id = ? AND 
+                    sp.is_active = TRUE
+                GROUP BY sp.id
+                ORDER BY p.popularity DESC
+                LIMIT 10
+            `,
+            [bvGenerationPct, pincode, category.id]
+            )
+        );
 
-//         const productResults = await Promise.all(productPromises);
+        const productResults = await Promise.all(productPromises);
 
-//         // ==========================================================
-//         // === THE FIX IS HERE                                    ===
-//         // ==========================================================
-//         const categorizedProducts = categoryTree.map((category, index) => {
-//             const rawProducts = productResults[index][0];
-//             const productsWithParsedData = rawProducts.map(p => ({
-//                 ...p,
-//                 gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : [],
-//                 attributes: p.attributes ? JSON.parse(p.attributes) : [],
-//                 pincodes: p.available_pincodes ? p.available_pincodes.split(',') : []
-//             }));
+        // ==========================================================
+        // === THE FIX IS HERE                                    ===
+        // ==========================================================
+        const categorizedProducts = categoryTree.map((category, index) => {
+            const rawProducts = productResults[index][0];
+            const productsWithParsedData = rawProducts.map(p => ({
+                ...p,
+                gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : [],
+                attributes: p.attributes ? JSON.parse(p.attributes) : [],
+                pincodes: p.available_pincodes ? p.available_pincodes.split(',') : []
+            }));
 
-//             return {
-//                 id: category.id,
-//                 title: `Best in ${category.name}`,
-//                 // --- THIS IS THE MISSING LINE THAT FIXES THE PROBLEM ---
-//                 parent_category_id: category.id, 
-//                 products: productsWithParsedData
-//             };
-//         }).filter(section => section.products.length > 0);
-
-
-//         // --- 5. Combine all data and send the final response ---
-//         res.status(200).json({
-//             status: true,
-//             data: {
-//                 banners,
-//                 categories: categoryTree,
-//                 productSections: categorizedProducts,
-//             }
-//         });
-
-//     } catch (error) {
-//         console.error("Error fetching home screen data:", error);
-//         res.status(500).json({ status: false, message: "An internal server error occurred." });
-//     }
-// };
+            return {
+                id: category.id,
+                title: `Best in ${category.name}`,
+                // --- THIS IS THE MISSING LINE THAT FIXES THE PROBLEM ---
+                parent_category_id: category.id, 
+                products: productsWithParsedData
+            };
+        }).filter(section => section.products.length > 0);
 
 
+        // --- 5. Combine all data and send the final response ---
+        res.status(200).json({
+            status: true,
+            data: {
+                banners,
+                categories: categoryTree,
+                productSections: categorizedProducts,
+            }
+        });
+
+    } catch (error) {
+        console.error("Error fetching home screen data:", error);
+        res.status(500).json({ status: false, message: "An internal server error occurred." });
+    }
+};
 
 
-// exports.getRelatedProducts = async (req, res) => {
-//     const { productId } = req.params;
-//     const { pincode } = req.query;
-//     const G_LIMIT = 10;
 
-//     console.log(`Executing STRICT pincode search for productId: ${productId} with pincode: ${pincode || 'None'}`);
 
-//     // If no pincode is provided by the app, we cannot find related products.
-//     // Return an empty list, as per the strict logic.
-//     if (!pincode) {
-//         return res.status(200).json({ status: true, data: [] });
-//     }
+exports.getRelatedProducts = async (req, res) => {
+    const { productId } = req.params;
+    const { pincode } = req.query;
+    const G_LIMIT = 10;
 
-//     if (!productId) {
-//         return res.status(400).json({ status: false, message: "Product ID is required." });
-//     }
+    console.log(`Executing STRICT pincode search for productId: ${productId} with pincode: ${pincode || 'None'}`);
 
-//     try {
-//         const [productRows] = await db.query('SELECT category_id FROM products WHERE id = ?', [productId]);
-//         if (productRows.length === 0) {
-//             return res.status(404).json({ status: false, message: "Original product not found." });
-//         }
-//         const categoryId = productRows[0].category_id;
+    // If no pincode is provided by the app, we cannot find related products.
+    // Return an empty list, as per the strict logic.
+    if (!pincode) {
+        return res.status(200).json({ status: true, data: [] });
+    }
 
-//         const baseSelect = `
-//             p.id as product_id, p.name, p.main_image_url, p.description, p.gallery_image_urls,
-//             b.name as brand_name, 
-//             sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
-//             ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * 80 / 100 as bv_earned,
-//             (
-//                 SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
-//                 FROM product_attributes pa
-//                 JOIN attribute_values av ON pa.attribute_value_id = av.id
-//                 JOIN attributes attr ON av.attribute_id = attr.id
-//                 WHERE pa.product_id = p.id
-//             ) as attributes
-//         `;
+    if (!productId) {
+        return res.status(400).json({ status: false, message: "Product ID is required." });
+    }
 
-//         // The UNION query is the best way to handle the two priority levels.
-//         const strictPincodeQuery = `
-//             -- This subquery wrapper allows us to order the combined results
-//             SELECT * FROM (
-//                 -- Priority 1: Same Category, Same Pincode
-//                 (SELECT 
-//                     1 as priority, ${baseSelect}
-//                 FROM seller_products sp
-//                 JOIN products p ON sp.product_id = p.id
-//                 JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
-//                 LEFT JOIN brands b ON p.brand_id = b.id
-//                 LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-//                 WHERE p.category_id = ? AND spp.pincode = ? AND p.id != ? AND sp.is_active = TRUE
-//                 GROUP BY sp.id)
+    try {
+        const [productRows] = await db.query('SELECT category_id FROM products WHERE id = ?', [productId]);
+        if (productRows.length === 0) {
+            return res.status(404).json({ status: false, message: "Original product not found." });
+        }
+        const categoryId = productRows[0].category_id;
+
+        const baseSelect = `
+            p.id as product_id, p.name, p.main_image_url, p.description, p.gallery_image_urls,
+            b.name as brand_name, 
+            sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
+            ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * 80 / 100 as bv_earned,
+            (
+                SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                FROM product_attributes pa
+                JOIN attribute_values av ON pa.attribute_value_id = av.id
+                JOIN attributes attr ON av.attribute_id = attr.id
+                WHERE pa.product_id = p.id
+            ) as attributes
+        `;
+
+        // The UNION query is the best way to handle the two priority levels.
+        const strictPincodeQuery = `
+            -- This subquery wrapper allows us to order the combined results
+            SELECT * FROM (
+                -- Priority 1: Same Category, Same Pincode
+                (SELECT 
+                    1 as priority, ${baseSelect}
+                FROM seller_products sp
+                JOIN products p ON sp.product_id = p.id
+                JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
+                LEFT JOIN brands b ON p.brand_id = b.id
+                LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
+                WHERE p.category_id = ? AND spp.pincode = ? AND p.id != ? AND sp.is_active = TRUE
+                GROUP BY sp.id)
                 
-//                 UNION ALL
+                UNION ALL
                 
-//                 -- Priority 2: Any Category, Same Pincode
-//                 (SELECT 
-//                     2 as priority, ${baseSelect}
-//                 FROM seller_products sp
-//                 JOIN products p ON sp.product_id = p.id
-//                 JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
-//                 LEFT JOIN brands b ON p.brand_id = b.id
-//                 LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-//                 WHERE spp.pincode = ? AND p.id != ? AND sp.is_active = TRUE
-//                 -- Exclude products already found in the first query to avoid duplicates
-//                 AND p.id NOT IN (
-//                     SELECT p_inner.id FROM seller_products sp_inner
-//                     JOIN products p_inner ON sp_inner.product_id = p_inner.id
-//                     JOIN seller_product_pincodes spp_inner ON sp_inner.id = spp_inner.seller_product_id
-//                     WHERE p_inner.category_id = ? AND spp_inner.pincode = ?
-//                 )
-//                 GROUP BY sp.id)
-//             ) as combined_results
-//             ORDER BY priority ASC, RAND()
-//             LIMIT ?
-//         `;
+                -- Priority 2: Any Category, Same Pincode
+                (SELECT 
+                    2 as priority, ${baseSelect}
+                FROM seller_products sp
+                JOIN products p ON sp.product_id = p.id
+                JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
+                LEFT JOIN brands b ON p.brand_id = b.id
+                LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
+                WHERE spp.pincode = ? AND p.id != ? AND sp.is_active = TRUE
+                -- Exclude products already found in the first query to avoid duplicates
+                AND p.id NOT IN (
+                    SELECT p_inner.id FROM seller_products sp_inner
+                    JOIN products p_inner ON sp_inner.product_id = p_inner.id
+                    JOIN seller_product_pincodes spp_inner ON sp_inner.id = spp_inner.seller_product_id
+                    WHERE p_inner.category_id = ? AND spp_inner.pincode = ?
+                )
+                GROUP BY sp.id)
+            ) as combined_results
+            ORDER BY priority ASC, RAND()
+            LIMIT ?
+        `;
         
-//         const [relatedProducts] = await db.query(strictPincodeQuery, [
-//             categoryId, pincode, productId, // Params for Priority 1
-//             pincode, productId,             // Params for Priority 2
-//             categoryId, pincode,             // Params for the sub-query exclusion
-//             G_LIMIT                         // Final LIMIT
-//         ]);
+        const [relatedProducts] = await db.query(strictPincodeQuery, [
+            categoryId, pincode, productId, // Params for Priority 1
+            pincode, productId,             // Params for Priority 2
+            categoryId, pincode,             // Params for the sub-query exclusion
+            G_LIMIT                         // Final LIMIT
+        ]);
 
-//         // THE FALLBACK TO OTHER PINCODES HAS BEEN REMOVED.
+        // THE FALLBACK TO OTHER PINCODES HAS BEEN REMOVED.
         
-//         const processedProducts = relatedProducts.map(row => ({
-//             ...row,
-//             priority: undefined, // Remove the helper field
-//             gallery_image_urls: row.gallery_image_urls ? JSON.parse(row.gallery_image_urls) : [],
-//             attributes: row.attributes ? JSON.parse(row.attributes) : []
-//         }));
+        const processedProducts = relatedProducts.map(row => ({
+            ...row,
+            priority: undefined, // Remove the helper field
+            gallery_image_urls: row.gallery_image_urls ? JSON.parse(row.gallery_image_urls) : [],
+            attributes: row.attributes ? JSON.parse(row.attributes) : []
+        }));
 
-//         res.status(200).json({ status: true, data: processedProducts });
+        res.status(200).json({ status: true, data: processedProducts });
 
-//     } catch (error) {
-//         console.error("Error fetching related products:", error);
-//         res.status(500).json({ status: false, message: "An error occurred while fetching related products.", error: error.message });
-//     }
-// };
+    } catch (error) {
+        console.error("Error fetching related products:", error);
+        res.status(500).json({ status: false, message: "An error occurred while fetching related products.", error: error.message });
+    }
+};
