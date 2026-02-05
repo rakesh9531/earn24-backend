@@ -395,7 +395,7 @@ exports.createOrder = async (req, res) => {
 
         if (items.length === 0) throw new Error('Your cart is empty.');
 
-        // 2. Fetch Settings for BV and Distribution
+        // 2. Fetch Settings
         const [settingsRows] = await connection.query("SELECT setting_key, setting_value FROM app_settings");
         const settings = settingsRows.reduce((acc, setting) => {
             acc[setting.setting_key] = parseFloat(setting.setting_value);
@@ -407,7 +407,7 @@ exports.createOrder = async (req, res) => {
         const standardFee = settings.delivery_fee_standard || 40.0;
         const specialFee = settings.delivery_fee_special || 0.0;
 
-        // 3. Calculate Totals and check Stock
+        // 3. Calculate Totals
         let calculatedTotalBv = 0;
         let finalSubtotal = 0;
         for (const item of items) {
@@ -436,18 +436,18 @@ exports.createOrder = async (req, res) => {
         // 5. Loop Items: Snapshot Attributes + Stock + Distribute Earnings
         for (const item of items) {
             
-            // A. Create Attribute Snapshot (Real World Logic)
+            // A. Create Attribute Snapshot (FIXED JOIN LOGIC)
             const [attrRows] = await connection.query(`
                 SELECT a.name as attr_key, av.value as attr_value
                 FROM product_attributes pa
-                JOIN attributes a ON pa.attribute_id = a.id
                 JOIN attribute_values av ON pa.attribute_value_id = av.id
+                JOIN attributes a ON av.attribute_id = a.id
                 WHERE pa.product_id = ?`, [item.product_id]);
 
             const snapshot = {};
             attrRows.forEach(row => { snapshot[row.attr_key] = row.attr_value; });
 
-            // B. Calculate Profit for this specific line item
+            // B. Calculate Profit
             const basePrice = item.selling_price / (1 + ((item.gst_percentage || 0) / 100));
             const netProfitOnItem = (basePrice - item.purchase_price) * item.quantity;
 
@@ -462,7 +462,7 @@ exports.createOrder = async (req, res) => {
             // D. Stock Deduction
             await connection.query('UPDATE seller_products SET quantity = quantity - ? WHERE id = ?', [item.quantity, item.seller_product_id]);
 
-            // E. Distribute Earnings (ONLY for Wallet/COD immediately)
+            // E. Distribute Earnings (Wallet/COD)
             if ((paymentMethod === 'WALLET' || paymentMethod === 'COD') && netProfitOnItem > 0) {
                 await distributeEarnings(connection, { 
                     userId, 
@@ -474,10 +474,8 @@ exports.createOrder = async (req, res) => {
             }
         }
 
-        // 6. Final Wallet Deduction if paid via wallet
+        // 6. Final Wallet Deduction
         if (paymentMethod === 'WALLET') {
-            const [w] = await connection.query('SELECT balance FROM user_wallets WHERE user_id = ? FOR UPDATE', [userId]);
-            if (w[0].balance < totalAmount) throw new Error("Insufficient wallet balance.");
             await connection.query('UPDATE user_wallets SET balance = balance - ? WHERE user_id = ?', [totalAmount, userId]);
         }
         
