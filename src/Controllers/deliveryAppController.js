@@ -102,10 +102,54 @@ exports.login = async (req, res) => {
 
 
 
-// 3. GET ACTIVE TASKS WITH ITEMS
+// // 3. GET ACTIVE TASKS WITH ITEMS
+// exports.getMyOrders = async (req, res) => {
+//     const agentId = req.user.id;
+//     try {
+//         const query = `
+//             SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.order_status,
+//                    u.full_name as customer_name, u.mobile_number as customer_phone,
+//                    sa.address_line_1, sa.city, sa.pincode
+//             FROM orders o
+//             JOIN users u ON o.user_id = u.id
+//             JOIN user_addresses sa ON o.shipping_address_id = sa.id
+//             WHERE o.delivery_agent_id = ? AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')
+//             ORDER BY o.created_at DESC`;
+        
+//         const [orders] = await db.query(query, [agentId]);
+
+//         for (let order of orders) {
+//             // Join with products and brands for real-world details
+//             const itemQuery = `
+//                 SELECT 
+//                     oi.product_name, oi.quantity, 
+//                     p.main_image_url, p.weight, p.unit,
+//                     b.name as brand_name
+//                 FROM order_items oi
+//                 JOIN products p ON oi.product_id = p.id
+//                 LEFT JOIN brands b ON p.brand_id = b.id
+//                 WHERE oi.order_id = ?`;
+            
+//             const [items] = await db.query(itemQuery, [order.id]);
+//             order.items = items;
+//         }
+
+//         res.json({ status: true, data: orders });
+//     } catch (e) { res.status(500).json({ status: false, message: e.message }); }
+// };
+
+
+
+
+
+
+
+
+// 3. GET ACTIVE TASKS WITH ITEMS (Production Robust Version)
 exports.getMyOrders = async (req, res) => {
     const agentId = req.user.id;
     try {
+        // Fetch Order and Customer/Address details
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.order_status,
                    u.full_name as customer_name, u.mobile_number as customer_phone,
@@ -119,11 +163,14 @@ exports.getMyOrders = async (req, res) => {
         const [orders] = await db.query(query, [agentId]);
 
         for (let order of orders) {
-            // Join with products and brands for real-world details
+            // FIX: Removed p.weight and p.unit. 
+            // Instead, we fetch attributes_snapshot which contains the weight/size user ordered.
             const itemQuery = `
                 SELECT 
-                    oi.product_name, oi.quantity, 
-                    p.main_image_url, p.weight, p.unit,
+                    oi.product_name, 
+                    oi.quantity, 
+                    oi.attributes_snapshot, -- This contains the Weight/Size data
+                    p.main_image_url,
                     b.name as brand_name
                 FROM order_items oi
                 JOIN products p ON oi.product_id = p.id
@@ -131,12 +178,28 @@ exports.getMyOrders = async (req, res) => {
                 WHERE oi.order_id = ?`;
             
             const [items] = await db.query(itemQuery, [order.id]);
-            order.items = items;
+            
+            // Parse the JSON attributes for each item so the Frontend can loop through them
+            order.items = items.map(item => ({
+                ...item,
+                attributes: item.attributes_snapshot ? 
+                    (typeof item.attributes_snapshot === 'string' ? JSON.parse(item.attributes_snapshot) : item.attributes_snapshot) 
+                    : {}
+            }));
         }
 
         res.json({ status: true, data: orders });
-    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
+    } catch (e) { 
+        console.error("Fetch Orders Error:", e.message);
+        res.status(500).json({ status: false, message: "Failed to fetch orders." }); 
+    }
 };
+
+
+
+
+
+
 
 
 
