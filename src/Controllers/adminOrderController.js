@@ -280,19 +280,69 @@ exports.verifySettlement = async (req, res) => {
 
 
 // / 1. New function for "All Orders History" page
+// exports.getAllOrdersHistory = async (req, res) => {
+//     try {
+//         const query = `
+//             SELECT o.*, u.full_name as customer_name, u.mobile_number as customer_phone
+//             FROM orders o
+//             JOIN users u ON o.user_id = u.id
+//             ORDER BY o.created_at DESC`;
+//         const [rows] = await db.query(query);
+//         res.json({ status: true, data: rows });
+//     } catch (e) {
+//         res.status(500).json({ status: false, message: e.message });
+//     }
+// };
+
+
+
+
+
+// GET /api/admin/orders/all-history
 exports.getAllOrdersHistory = async (req, res) => {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || '';
+    const offset = (page - 1) * limit;
+    const searchPattern = `%${search}%`;
+
     try {
+        // 1. Fetch orders with search and pagination
         const query = `
             SELECT o.*, u.full_name as customer_name, u.mobile_number as customer_phone
             FROM orders o
             JOIN users u ON o.user_id = u.id
-            ORDER BY o.created_at DESC`;
-        const [rows] = await db.query(query);
-        res.json({ status: true, data: rows });
+            WHERE (o.order_number LIKE ? OR u.full_name LIKE ? OR u.mobile_number LIKE ?)
+            ORDER BY o.created_at DESC
+            LIMIT ? OFFSET ?`;
+
+        const [rows] = await db.query(query, [searchPattern, searchPattern, searchPattern, limit, offset]);
+
+        // 2. Fetch total count for pagination UI
+        const [countRows] = await db.query(
+            "SELECT COUNT(*) as total FROM orders o JOIN users u ON o.user_id = u.id WHERE (o.order_number LIKE ? OR u.full_name LIKE ?)",
+            [searchPattern, searchPattern]
+        );
+
+        res.status(200).json({
+            status: true,
+            data: rows,
+            pagination: {
+                currentPage: page,
+                totalPages: Math.ceil(countRows[0].total / limit),
+                totalRecords: countRows[0].total
+            }
+        });
     } catch (e) {
         res.status(500).json({ status: false, message: e.message });
     }
 };
+
+
+
+
+
+
 
 // 2. Verified function for Cash Settlement list
 // exports.getPendingSettlements = async (req, res) => {
