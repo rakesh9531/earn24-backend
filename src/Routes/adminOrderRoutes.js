@@ -35,10 +35,6 @@ const { auth, can } = require('../Middleware/auth');
 
 router.use(auth);
 
-router.get('/', can('orders:read'), adminOrderController.getOrdersByStatus);
-router.put('/:orderId/assign-delivery', can('orders:updateStatus'), adminOrderController.assignOrderForDelivery);
-router.get('/:orderId', can('orders:read'), adminOrderController.getAdminOrderDetails);
-
 
 //-----------------------------------------------------------------------------
 
@@ -46,5 +42,15 @@ router.get('/:orderId', can('orders:read'), adminOrderController.getAdminOrderDe
 router.get('/pending-settlements', auth, adminOrderController.getPendingSettlements);
 router.post('/verify-settlement', auth, adminOrderController.verifySettlement);
 router.post('/settle-cash', auth, can('orders:manage'), adminOrderController.settleAgentCash);
+router.get('/all', can('orders:read'), adminOrderController.getAllOrdersHistory);
+
+
+
+router.get('/', can('orders:read'), adminOrderController.getOrdersByStatus);
+router.put('/:orderId/assign-delivery', can('orders:updateStatus'), adminOrderController.assignOrderForDelivery);
+router.get('/:orderId', can('orders:read'), adminOrderController.getAdminOrderDetails);
+
+
+
 
 module.exports = router;

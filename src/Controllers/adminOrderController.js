@@ -298,3 +298,19 @@ exports.verifySettlement = async (req, res) => {
         res.json({ status: true, message: "Cash collection verified and settled!" });
     } catch (e) { res.status(500).json({ status: false, message: e.message }); }
 };
+
+
+// 1. Get EVERY order (For All Orders History Page)
+exports.getAllOrdersHistory = async (req, res) => {
+    try {
+        const query = `
+            SELECT o.*, u.full_name as customer_name 
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            ORDER BY o.created_at DESC`;
+        const [rows] = await db.query(query);
+        res.json({ status: true, data: rows });
+    } catch (e) {
+        res.status(500).json({ status: false, message: e.message });
+    }
+};
