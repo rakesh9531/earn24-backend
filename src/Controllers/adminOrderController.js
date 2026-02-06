@@ -196,3 +196,105 @@ exports.getAdminOrderDetails = async (req, res) => {
         res.status(500).json({ status: false, message: 'An internal server error occurred.' });
     }
 };
+
+
+
+
+
+// --------------------------------------------------------------------------------------------------
+
+
+exports.settleAgentCash = async (req, res) => {
+    const { orderId } = req.body;
+    const adminId = req.user.id; 
+
+    const connection = await db.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        // 1. Fetch order details first to know the amount and agent
+        const [order] = await connection.query(
+            "SELECT total_amount, delivery_agent_id, order_number FROM orders WHERE id = ? AND payment_method = 'COD' AND order_status = 'DELIVERED' AND is_cash_settled = 0 FOR UPDATE",
+            [orderId]
+        );
+
+        if (!order[0]) {
+            await connection.rollback();
+            return res.status(400).json({ status: false, message: "Order not found, not COD, or already settled." });
+        }
+
+        const { total_amount, delivery_agent_id, order_number } = order[0];
+
+        // 2. Update the Order as Settled
+        await connection.query(
+            `UPDATE orders 
+             SET is_cash_settled = 1, 
+                 cash_settled_at = NOW(), 
+                 settled_by_admin_id = ? 
+             WHERE id = ?`,
+            [adminId, orderId]
+        );
+
+        // 3. ROBUST STEP: Create a Ledger Entry for Audit
+        // This table should exist to track financial movements
+        const ledgerSql = `
+            INSERT INTO admin_settlement_logs 
+            (admin_id, agent_id, order_id, amount_received, remarks) 
+            VALUES (?, ?, ?, ?, ?)`;
+        
+        await connection.query(ledgerSql, [
+            adminId, 
+            delivery_agent_id, 
+            orderId, 
+            total_amount, 
+            `Cash received for Order ${order_number}`
+        ]);
+
+        await connection.commit();
+        res.json({ status: true, message: `₹${total_amount} settled successfully for Order ${order_number}` });
+
+    } catch (e) {
+        await connection.rollback();
+        console.error("Settlement Error:", e);
+        res.status(500).json({ status: false, message: "Internal server error during settlement." });
+    } finally {
+        connection.release();
+    }
+};
+
+
+
+
+
+
+// 1. GET /api/admin/orders/pending-settlements
+exports.getPendingSettlements = async (req, res) => {
+    try {
+        const query = `
+            SELECT o.id, o.order_number, o.total_amount, o.delivered_at,
+                   u.full_name as customer_name,
+                   da.full_name as agent_name, da.phone_number as agent_phone
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            JOIN delivery_agents da ON o.delivery_agent_id = da.id
+            WHERE o.payment_method = 'COD' 
+            AND o.order_status = 'DELIVERED' 
+            AND o.is_cash_settled = 0
+            ORDER BY o.delivered_at ASC`;
+        const [rows] = await db.query(query);
+        res.json({ status: true, data: rows });
+    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
+};
+
+// 2. POST /api/admin/orders/verify-settlement
+exports.verifySettlement = async (req, res) => {
+    const { orderId } = req.body;
+    const adminId = req.user.id;
+    try {
+        await db.query(
+            "UPDATE orders SET is_cash_settled = 1, cash_settled_at = NOW(), settled_by_admin_id = ? WHERE id = ?",
+            [adminId, orderId]
+        );
+        res.json({ status: true, message: "Cash collection verified and settled!" });
+    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
+};
