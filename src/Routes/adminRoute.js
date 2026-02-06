@@ -51,6 +51,7 @@ const router = express.Router();
 const adminController = require('../Controllers/adminController');
 const { auth, can } = require('../Middleware/auth');
 const upload = require('../Middleware/upload');
+const pageController = require('../Controllers/pageController');
 
 // Public route for login is moved to authRoutes.js
 // Unprotected route to create the very first admin
@@ -82,6 +83,16 @@ router.post("/merchants/create", auth, can('merchants:create'), adminController.
 router.get('/mlm/list-users', auth, adminController.getPaginatedUsers);
 router.get('/mlm/search-users', auth, adminController.searchUsersForTree);
 router.get('/mlm/tree-node/:userId', auth, adminController.getDownlineForTreeNode);
+
+
+
+// --- App Pages Management (Admin Only) ---
+router.get('/pages/all', auth, can('settings:read'), pageController.getAllPages);
+router.post('/pages/update', auth, can('settings:manage'), pageController.updatePageContent);
+
+// --- Public Access (No Auth needed for Mobile App to read Privacy Policy) ---
+// Note: Register this in your top-level route.js if you want it strictly public
+router.get('/public/page', pageController.getPageContent);
 
 
 module.exports = router;
