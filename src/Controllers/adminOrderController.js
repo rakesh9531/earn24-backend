@@ -265,9 +265,36 @@ exports.settleAgentCash = async (req, res) => {
 
 
 
+// 2. POST /api/admin/orders/verify-settlement
+exports.verifySettlement = async (req, res) => {
+    const { orderId } = req.body;
+    const adminId = req.user.id;
+    try {
+        await db.query(
+            "UPDATE orders SET is_cash_settled = 1, cash_settled_at = NOW(), settled_by_admin_id = ? WHERE id = ?",
+            [adminId, orderId]
+        );
+        res.json({ status: true, message: "Cash collection verified and settled!" });
+    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
+};
 
 
-// 1. GET /api/admin/orders/pending-settlements
+// / 1. New function for "All Orders History" page
+exports.getAllOrdersHistory = async (req, res) => {
+    try {
+        const query = `
+            SELECT o.*, u.full_name as customer_name, u.mobile_number as customer_phone
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            ORDER BY o.created_at DESC`;
+        const [rows] = await db.query(query);
+        res.json({ status: true, data: rows });
+    } catch (e) {
+        res.status(500).json({ status: false, message: e.message });
+    }
+};
+
+// 2. Verified function for Cash Settlement list
 exports.getPendingSettlements = async (req, res) => {
     try {
         const query = `
@@ -282,19 +309,9 @@ exports.getPendingSettlements = async (req, res) => {
             AND o.is_cash_settled = 0
             ORDER BY o.delivered_at ASC`;
         const [rows] = await db.query(query);
-        res.json({ status: true, data: rows });
-    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
-};
-
-// 2. POST /api/admin/orders/verify-settlement
-exports.verifySettlement = async (req, res) => {
-    const { orderId } = req.body;
-    const adminId = req.user.id;
-    try {
-        await db.query(
-            "UPDATE orders SET is_cash_settled = 1, cash_settled_at = NOW(), settled_by_admin_id = ? WHERE id = ?",
-            [adminId, orderId]
-        );
-        res.json({ status: true, message: "Cash collection verified and settled!" });
-    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
+        res.status(200).json({ status: true, data: rows });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ status: false, message: "Server error. Check if is_cash_settled column exists." });
+    }
 };
