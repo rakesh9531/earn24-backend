@@ -43,26 +43,89 @@ exports.getAllPages = async (req, res) => {
     }
 };
 
+// /**
+//  * ADMIN API: Update page content
+//  */
+// exports.updatePageContent = async (req, res) => {
+//     const { key, title, content, target_app } = req.body;
+
+//     if (!key || !title || !content || !target_app) {
+//         return res.status(400).json({ status: false, message: "All fields are required." });
+//     }
+
+//     try {
+//         const query = "UPDATE app_pages SET title = ?, content = ?, target_app = ? WHERE page_key = ?";
+//         const [result] = await db.query(query, [title, content, target_app, key]);
+
+//         if (result.affectedRows === 0) {
+//             return res.status(404).json({ status: false, message: "Page not found." });
+//         }
+
+//         res.json({ status: true, message: "App page updated successfully!" });
+//     } catch (e) {
+//         res.status(500).json({ status: false, message: e.message });
+//     }
+// };
+
+
+
+
+
+
 /**
- * ADMIN API: Update page content
+ * ADMIN API: Dynamic Update Page Content
+ * Allows updating one or more fields based on the provided keys in body.
  */
 exports.updatePageContent = async (req, res) => {
     const { key, title, content, target_app } = req.body;
 
-    if (!key || !title || !content || !target_app) {
-        return res.status(400).json({ status: false, message: "All fields are required." });
+    // 1. Validation: The 'key' is mandatory to find the record
+    if (!key) {
+        return res.status(400).json({ status: false, message: "Page key is required for updating." });
     }
 
+    // 2. Dynamic Query Building
+    const fieldsToUpdate = [];
+    const queryValues = [];
+
+    if (title !== undefined) {
+        fieldsToUpdate.push("title = ?");
+        queryValues.push(title);
+    }
+
+    if (content !== undefined) {
+        fieldsToUpdate.push("content = ?");
+        queryValues.push(content);
+    }
+
+    if (target_app !== undefined) {
+        fieldsToUpdate.push("target_app = ?");
+        queryValues.push(target_app);
+    }
+
+    // 3. Safety Check: If no actual fields were sent to update
+    if (fieldsToUpdate.length === 0) {
+        return res.status(400).json({ status: false, message: "No fields provided to update." });
+    }
+
+    // 4. Finalize Query
+    // We add the 'key' at the end of the values array for the WHERE clause
+    queryValues.push(key);
+    const sqlQuery = `UPDATE app_pages SET ${fieldsToUpdate.join(", ")} WHERE page_key = ?`;
+
     try {
-        const query = "UPDATE app_pages SET title = ?, content = ?, target_app = ? WHERE page_key = ?";
-        const [result] = await db.query(query, [title, content, target_app, key]);
+        const [result] = await db.query(sqlQuery, queryValues);
 
         if (result.affectedRows === 0) {
-            return res.status(404).json({ status: false, message: "Page not found." });
+            return res.status(404).json({ status: false, message: "Document not found." });
         }
 
-        res.json({ status: true, message: "App page updated successfully!" });
+        res.status(200).json({ 
+            status: true, 
+            message: "App page updated successfully!" 
+        });
     } catch (e) {
-        res.status(500).json({ status: false, message: e.message });
+        console.error("Dynamic Update Error:", e);
+        res.status(500).json({ status: false, message: "Internal server error." });
     }
 };
