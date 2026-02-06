@@ -265,27 +265,6 @@ exports.settleAgentCash = async (req, res) => {
 
 
 
-
-
-// 1. GET /api/admin/orders/pending-settlements
-exports.getPendingSettlements = async (req, res) => {
-    try {
-        const query = `
-            SELECT o.id, o.order_number, o.total_amount, o.delivered_at,
-                   u.full_name as customer_name,
-                   da.full_name as agent_name, da.phone_number as agent_phone
-            FROM orders o
-            JOIN users u ON o.user_id = u.id
-            JOIN delivery_agents da ON o.delivery_agent_id = da.id
-            WHERE o.payment_method = 'COD' 
-            AND o.order_status = 'DELIVERED' 
-            AND o.is_cash_settled = 0
-            ORDER BY o.delivered_at ASC`;
-        const [rows] = await db.query(query);
-        res.json({ status: true, data: rows });
-    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
-};
-
 // 2. POST /api/admin/orders/verify-settlement
 exports.verifySettlement = async (req, res) => {
     const { orderId } = req.body;
@@ -300,11 +279,11 @@ exports.verifySettlement = async (req, res) => {
 };
 
 
-// 1. Get EVERY order (For All Orders History Page)
+// / 1. New function for "All Orders History" page
 exports.getAllOrdersHistory = async (req, res) => {
     try {
         const query = `
-            SELECT o.*, u.full_name as customer_name 
+            SELECT o.*, u.full_name as customer_name, u.mobile_number as customer_phone
             FROM orders o
             JOIN users u ON o.user_id = u.id
             ORDER BY o.created_at DESC`;
@@ -312,5 +291,27 @@ exports.getAllOrdersHistory = async (req, res) => {
         res.json({ status: true, data: rows });
     } catch (e) {
         res.status(500).json({ status: false, message: e.message });
+    }
+};
+
+// 2. Verified function for Cash Settlement list
+exports.getPendingSettlements = async (req, res) => {
+    try {
+        const query = `
+            SELECT o.id, o.order_number, o.total_amount, o.delivered_at,
+                   u.full_name as customer_name,
+                   da.full_name as agent_name, da.phone_number as agent_phone
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            JOIN delivery_agents da ON o.delivery_agent_id = da.id
+            WHERE o.payment_method = 'COD' 
+            AND o.order_status = 'DELIVERED' 
+            AND o.is_cash_settled = 0
+            ORDER BY o.delivered_at ASC`;
+        const [rows] = await db.query(query);
+        res.status(200).json({ status: true, data: rows });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ status: false, message: "Server error. Check if is_cash_settled column exists." });
     }
 };
