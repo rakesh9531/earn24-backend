@@ -39,4 +39,12 @@ router.get('/', can('orders:read'), adminOrderController.getOrdersByStatus);
 router.put('/:orderId/assign-delivery', can('orders:updateStatus'), adminOrderController.assignOrderForDelivery);
 router.get('/:orderId', can('orders:read'), adminOrderController.getAdminOrderDetails);
 
+
+//-----------------------------------------------------------------------------
+
+
+router.get('/pending-settlements', auth, adminOrderController.getPendingSettlements);
+router.post('/verify-settlement', auth, adminOrderController.verifySettlement);
+router.post('/settle-cash', auth, can('orders:manage'), adminOrderController.settleAgentCash);
+
 module.exports = router;
