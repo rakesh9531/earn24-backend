@@ -295,8 +295,42 @@ exports.getAllOrdersHistory = async (req, res) => {
 };
 
 // 2. Verified function for Cash Settlement list
+// exports.getPendingSettlements = async (req, res) => {
+//     try {
+//         const query = `
+//             SELECT o.id, o.order_number, o.total_amount, o.delivered_at,
+//                    u.full_name as customer_name,
+//                    da.full_name as agent_name, da.phone_number as agent_phone
+//             FROM orders o
+//             JOIN users u ON o.user_id = u.id
+//             JOIN delivery_agents da ON o.delivery_agent_id = da.id
+//             WHERE o.payment_method = 'COD' 
+//             AND o.order_status = 'DELIVERED' 
+//             AND o.is_cash_settled = 0
+//             ORDER BY o.delivered_at ASC`;
+//         const [rows] = await db.query(query);
+//         res.status(200).json({ status: true, data: rows });
+//     } catch (e) {
+//         console.error(e);
+//         res.status(500).json({ status: false, message: "Server error. Check if is_cash_settled column exists." });
+//     }
+// };
+
+
+
+
+
+
+
 exports.getPendingSettlements = async (req, res) => {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || '';
+    const offset = (page - 1) * limit;
+    const searchPattern = `%${search}%`;
+
     try {
+        // 1. Get the list of orders needing settlement
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.delivered_at,
                    u.full_name as customer_name,
@@ -307,11 +341,30 @@ exports.getPendingSettlements = async (req, res) => {
             WHERE o.payment_method = 'COD' 
             AND o.order_status = 'DELIVERED' 
             AND o.is_cash_settled = 0
-            ORDER BY o.delivered_at ASC`;
-        const [rows] = await db.query(query);
-        res.status(200).json({ status: true, data: rows });
+            AND (o.order_number LIKE ? OR da.full_name LIKE ? OR da.phone_number LIKE ?)
+            ORDER BY o.delivered_at DESC
+            LIMIT ? OFFSET ?`;
+
+        const [rows] = await db.query(query, [searchPattern, searchPattern, searchPattern, limit, offset]);
+
+        // 2. Get Total count for pagination
+        const [countRows] = await db.query(`
+            SELECT COUNT(*) as total FROM orders o 
+            JOIN delivery_agents da ON o.delivery_agent_id = da.id
+            WHERE o.payment_method = 'COD' AND o.order_status = 'DELIVERED' AND o.is_cash_settled = 0
+            AND (o.order_number LIKE ? OR da.full_name LIKE ? OR da.phone_number LIKE ?)`, 
+            [searchPattern, searchPattern, searchPattern]);
+
+        res.status(200).json({ 
+            status: true, 
+            data: rows,
+            pagination: {
+                currentPage: page,
+                totalPages: Math.ceil(countRows[0].total / limit),
+                totalRecords: countRows[0].total
+            }
+        });
     } catch (e) {
-        console.error(e);
-        res.status(500).json({ status: false, message: "Server error. Check if is_cash_settled column exists." });
+        res.status(500).json({ status: false, message: e.message });
     }
 };
