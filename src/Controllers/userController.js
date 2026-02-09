@@ -564,249 +564,214 @@ exports.resetPasswordVerify = async (req, res) => {
   }
 };
 
-// MLM Logic For Resigter controller belwo
-// exports.registerUser = async (req, res) => {
-//   try {
-//     const { error } = registerUserValidator(req.body);
-//     if (error) {
-//       return res.status(400).json({ status: false, message: 'Validation failed', errors: error.details.map(err => err.message) });
-//     }
-
-//     const {
-//       full_name,
-//       username,
-//       password,
-//       email,
-//       mobile_number,
-//       referral_code, // This is the SPONSOR's referral code
-//       device_token,
-//     } = req.body;
-
-//     const [existing] = await db.query(
-//       'SELECT * FROM users WHERE username = ? OR email = ? OR mobile_number = ? LIMIT 1',
-//       [username, email, mobile_number]
-//     );
-//     if (existing.length > 0) {
-//       return res.status(409).json({ status: false, message: 'Username, email, or mobile number already exists' });
-//     }
-
-//     // ===============================================
-//     //           YOUR FINAL, CORRECTED LOGIC
-//     // ===============================================
-//     let sponsorId = null;
-//     let userType = 'CUSTOMER'; // Default to Customer
-
-//     if (referral_code && referral_code.trim() !== '') {
-//       // A referral code was provided. This user intends to be an Affiliate.
-//       const [sponsor] = await db.query('SELECT id FROM users WHERE referral_code = ?', [referral_code.trim()]);
-
-//       if (sponsor.length === 0) {
-//         // The provided code is invalid. Stop the registration.
-//         return res.status(400).json({ status: false, message: 'Invalid referral code provided.' });
-//       }
-//       sponsorId = sponsor[0].id;
-//       userType = 'AFFILIATE'; // Upgrade the user to an Affiliate.
-
-//     }
-//     // If no referral_code is provided, sponsorId remains NULL and userType remains 'CUSTOMER'.
-//     // This is the correct behavior for a direct customer.
-//     // ===============================================
-//     //            END OF CORRECTED LOGIC
-//     // ===============================================
-
-//     const hashedPassword = await bcrypt.hash(password, 10);
-//     // The new user's own username becomes their personal referral code.
-//     const newUserReferralCode = username;
-//     const createdAt = moment().tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss');
-
-//     const [result] = await db.query(
-//       `INSERT INTO users (
-//          full_name, username, password, email, mobile_number,
-//          referral_code, sponsor_id, user_type, device_token,
-//          is_online, is_active, is_deleted, created_at, updated_at
-//        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
-//       [
-//         full_name,
-//         username,
-//         hashedPassword,
-//         email,
-//         mobile_number,
-//         newUserReferralCode,
-//         sponsorId,           // Will be NULL for Customers, or an ID for Affiliates
-//         userType,            // Will be 'CUSTOMER' or 'AFFILIATE'
-//         device_token || null,
-//         1, // is_online
-//         createdAt,
-//         createdAt
-//       ]
-//     );
-
-//     const userId = result.insertId;
-//     await db.query('INSERT INTO user_wallets (user_id) VALUES (?)', [userId]);
-
-//     const token = jwt.sign({ id: userId, username }, process.env.JWT_SECRET, { expiresIn: '30d' });
-
-//     // Fetch the newly created user to return all details
-//     const [newUserRows] = await db.query('SELECT * FROM users WHERE id = ?', [userId]);
-//     const newUserInfo = newUserRows[0];
-
-//     res.status(201).json({
-//       status: true,
-//       message: 'User registered successfully',
-//       data: {
-//         user: newUserInfo,
-//         token
-//       }
-//     });
-
-//   } catch (err) {
-//     console.error('Registration error:', err);
-//     res.status(500).json({ status: false, message: 'Server error' });
-//   }
-// };
-
-// exports.userLogin = async (req, res) => {
-//   try {
-//     // Validator is fine, no changes needed
-//     const { error } = loginUserValidator(req.body);
-//     if (error) {
-//       return res.status(400).json({
-//         status: false,
-//         message: 'Validation failed',
-//         errors: error.details.map(err => err.message)
-//       });
-//     }
-
-//     const { login, password } = req.body;
-
-//     // --- THIS IS THE FIX ---
-//     // The query now checks the 'login' input against three possible columns.
-//     const [users] = await db.query(
-//       'SELECT * FROM users WHERE username = ? OR email = ? OR mobile_number = ? LIMIT 1',
-//       [login, login, login] // Pass the same input for all three checks
-//     );
-
-//     if (users.length === 0) {
-//       return res.status(404).json({ status: false, message: 'User not found' });
-//     }
-
-//     const user = users[0];
-
-//     // Compare password
-//     const isMatch = await bcrypt.compare(password, user.password);
-//     if (!isMatch) {
-//       return res.status(401).json({ status: false, message: 'Invalid credentials' }); // More generic error
-//     }
-
-//     // Generate JWT Token
-//     const token = jwt.sign(
-//       { id: user.id, username: user.username },
-//       process.env.JWT_SECRET,
-//       { expiresIn: '30d' }
-//     );
-
-//     res.status(200).json({
-//       status: true,
-//       message: 'Login successful',
-//       token, // Send the token for the app to store
-//       data: {
-//         id: user.id,
-//         full_name: user.full_name,
-//         username: user.username,
-//         email: user.email,
-//       }
-//     });
-
-//   } catch (err) {
-//     console.error('Login error:', err);
-//     res.status(500).json({ status: false, message: 'Server error' });
-//   }
-// };
-
-// // --- Main Dashboard Summary ---
-// exports.getDashboardSummary = async (req, res) => {
-//     // const userId = req.user.id; // Get user ID from auth middleware
-//     const userId = 1
-
-//     try {
-//         // Fetch wallet balance from the users table
-//         const [userRows] = await db.query("SELECT wallet_balance FROM users WHERE id = ?", [userId]);
-
-//         // Fetch total BV earned by summing up from the ledger
-//         const [bvRows] = await db.query("SELECT SUM(bv_earned) as total_bv FROM user_business_volume WHERE user_id = ?", [userId]);
-
-//         // Fetch the count of direct referrals (Level 1)
-//         const [downlineRows] = await db.query("SELECT COUNT(id) as downline_count FROM users WHERE sponsor_id = ?", [userId]);
-
-//         res.status(200).json({
-//             status: true,
-//             data: {
-//                 walletBalance: userRows[0]?.wallet_balance || 0,
-//                 totalBv: bvRows[0]?.total_bv || 0,
-//                 directReferrals: downlineRows[0]?.downline_count || 0
-//             }
-//         });
-//     } catch (error) {
-//         console.error("Error fetching user summary:", error);
-//         res.status(500).json({ status: false, message: "An error occurred." });
-//     }
-// };
-
-// // --- Transaction Histories (Paginated) ---
-// exports.getProfitHistory = async (req, res) => {
-//     const userId = req.user.id;
-//     const page = parseInt(req.query.page, 10) || 1;
-//     const limit = parseInt(req.query.limit, 10) || 10;
-//     const offset = (page - 1) * limit;
-
-//     try {
-//         const dataQuery = `SELECT * FROM profit_distribution_ledger WHERE user_id = ? ORDER BY transaction_date DESC LIMIT ? OFFSET ?`;
-//         const [rows] = await db.query(dataQuery, [userId, limit, offset]);
-
-//         const countQuery = `SELECT COUNT(*) as total FROM profit_distribution_ledger WHERE user_id = ?`;
-//         const [countRows] = await db.query(countQuery, [userId]);
-//         const totalRecords = countRows[0].total;
-
-//         res.status(200).json({
-//             status: true, data: rows, pagination: { /* ... pagination object ... */ }
-//         });
-//     } catch (error) {
-//         console.error("Error fetching profit history:", error);
-//         res.status(500).json({ status: false, message: "An error occurred." });
-//     }
-// };
-
-// exports.getBvHistory = async (req, res) => {
-//     const userId = req.user.id;
-//     // ... similar logic to getProfitHistory, but querying `user_business_volume` table ...
-// };
-
-// // --- Downline View ---
-// exports.getDownline = async (req, res) => {
-//     const userId = req.user.id;
-//     try {
-//         // Fetches key details about the user's direct referrals
-//         const query = `SELECT id, full_name, email, created_at as join_date FROM users WHERE sponsor_id = ? ORDER BY created_at DESC`;
-//         const [downline] = await db.query(query, [userId]);
-//         res.status(200).json({ status: true, data: downline });
-//     } catch (error) {
-//         console.error("Error fetching downline:", error);
-//         res.status(500).json({ status: false, message: "An error occurred." });
-//     }
-// };
-
+//  Working before Rank
 /**
  * Gets the profile of the currently authenticated user, including their default address.
  */
+// exports.getUserProfile = async (req, res) => {
+//   try {
+//     // Your authentication middleware must set `req.user.id`.
+//     const userId = req.user.id;
+//     // const userId = 1;
+
+//     const query = `
+//             SELECT 
+//                 u.id, u.full_name, u.email, u.mobile_number,
+//                 ua.pincode, ua.address_line_1, ua.city, ua.state
+//             FROM users u
+//             LEFT JOIN user_addresses ua ON u.id = ua.user_id AND ua.is_default = TRUE
+//             WHERE u.id = ?
+//         `;
+
+//     const [rows] = await db.query(query, [userId]);
+
+//     if (rows.length === 0) {
+//       return res
+//         .status(404)
+//         .json({ status: false, message: "User not found." });
+//     }
+
+//     const user = rows[0];
+//     const userData = {
+//       id: user.id,
+//       fullName: user.full_name,
+//       email: user.email,
+//       mobileNumber: user.mobile_number,
+//       defaultAddress: user.pincode
+//         ? {
+//             // Only create address object if a default exists
+//             pincode: user.pincode,
+//             addressLine1: user.address_line_1,
+//             city: user.city,
+//             state: user.state,
+//           }
+//         : null,
+//     };
+
+//     res.status(200).json({ status: true, data: userData });
+//   } catch (error) {
+//     console.error("Error fetching user profile:", error);
+//     res.status(500).json({ status: false, message: "An error occurred." });
+//   }
+// };
+
+/**
+ * Updates user profile dynamically.
+ * Can update full_name, email, mobile_number, and profile_image.
+ */
+// exports.updateUserProfile = async (req, res) => {
+//   try {
+//     const userId = req.user.id;
+//     const { full_name, email, mobile_number } = req.body;
+
+//     // 1. INPUT VALIDATION & DUPLICATE CHECKS
+//     // If email or mobile is provided, check if they exist for OTHER users
+//     if (email || mobile_number) {
+//       const checkQuery = `
+//                 SELECT id, email, mobile_number 
+//                 FROM users 
+//                 WHERE (email = ? OR mobile_number = ?) 
+//                 AND id != ?
+//             `;
+//       const [existingUsers] = await db.query(checkQuery, [
+//         email || "",
+//         mobile_number || "",
+//         userId,
+//       ]);
+
+//       if (existingUsers.length > 0) {
+//         const conflict = existingUsers[0];
+
+//         // Remove uploaded file if validation fails to prevent junk files
+//         if (req.file) fs.unlinkSync(req.file.path);
+
+//         if (conflict.email === email) {
+//           return res
+//             .status(409)
+//             .json({
+//               status: false,
+//               message: "Email is already in use by another account.",
+//             });
+//         }
+//         if (conflict.mobile_number === mobile_number) {
+//           return res
+//             .status(409)
+//             .json({
+//               status: false,
+//               message: "Mobile number is already in use by another account.",
+//             });
+//         }
+//       }
+//     }
+
+//     // 2. PREPARE UPDATE DATA
+//     let updateFields = [];
+//     let queryValues = [];
+
+//     if (full_name) {
+//       updateFields.push("full_name = ?");
+//       queryValues.push(full_name);
+//     }
+
+//     // NOTE: In strict production apps, we usually DO NOT update email/mobile here directly.
+//     // We typically send an OTP first. (See Part 2 of my answer below).
+//     // For now, allowing direct update if it passes unique check:
+//     if (email) {
+//       updateFields.push("email = ?");
+//       queryValues.push(email);
+//     }
+
+//     // See "How to verify" section below regarding mobile_number
+//     if (mobile_number) {
+//       updateFields.push("mobile_number = ?");
+//       queryValues.push(mobile_number);
+//     }
+
+//     // 3. HANDLE IMAGE UPLOAD & CLEANUP
+//     if (req.file) {
+//       // First: Get the OLD image path so we can delete it later
+//       const [currentUser] = await db.query(
+//         "SELECT profile_image FROM users WHERE id = ?",
+//         [userId]
+//       );
+//       const oldImagePath =
+//         currentUser.length > 0 ? currentUser[0].profile_image : null;
+
+//       const newImagePath = `profiles/${req.file.filename}`;
+//       updateFields.push("profile_image = ?");
+//       queryValues.push(newImagePath);
+
+//       // Store old path in request to delete it AFTER successful DB update
+//       req.oldImageToDelete = oldImagePath;
+//     }
+
+//     // 4. FINAL VALIDATION
+//     if (updateFields.length === 0) {
+//       return res
+//         .status(400)
+//         .json({ status: false, message: "No fields provided for update." });
+//     }
+
+//     // 5. EXECUTE UPDATE
+//     const sql = `UPDATE users SET ${updateFields.join(", ")} WHERE id = ?`;
+//     queryValues.push(userId);
+
+//     const [result] = await db.query(sql, queryValues);
+
+//     if (result.affectedRows === 0) {
+//       return res
+//         .status(404)
+//         .json({ status: false, message: "User not found." });
+//     }
+
+//     // 6. DELETE OLD IMAGE (Cleanup)
+//     if (req.oldImageToDelete) {
+//       const fullOldPath = path.join(
+//         __dirname,
+//         "../uploads",
+//         req.oldImageToDelete
+//       );
+//       if (fs.existsSync(fullOldPath)) {
+//         fs.unlink(fullOldPath, (err) => {
+//           if (err) console.error("Failed to delete old image:", err);
+//         });
+//       }
+//     }
+
+//     res.status(200).json({
+//       status: true,
+//       message: "Profile updated successfully.",
+//       data: {
+//         full_name,
+//         email,
+//         mobile_number,
+//         profile_image: req.file ? `profiles/${req.file.filename}` : undefined,
+//       },
+//     });
+//   } catch (error) {
+//     // Cleanup uploaded file if server error occurs
+//     if (req.file && fs.existsSync(req.file.path)) {
+//       fs.unlinkSync(req.file.path);
+//     }
+//     console.error("Error updating profile:", error);
+//     res.status(500).json({ status: false, message: "Internal server error." });
+//   }
+// };
+
+
+
+
+/**
+ * 1. GET PROFILE (Includes Rank and Image)
+ */
 exports.getUserProfile = async (req, res) => {
   try {
-    // Your authentication middleware must set `req.user.id`.
     const userId = req.user.id;
-    // const userId = 1;
 
     const query = `
             SELECT 
-                u.id, u.full_name, u.email, u.mobile_number,
+                u.id, u.full_name, u.email, u.mobile_number, u.username,
+                u.rank, u.user_pic, -- Added these for MLM and Profile UI
                 ua.pincode, ua.address_line_1, ua.city, ua.state
             FROM users u
             LEFT JOIN user_addresses ua ON u.id = ua.user_id AND ua.is_default = TRUE
@@ -816,177 +781,85 @@ exports.getUserProfile = async (req, res) => {
     const [rows] = await db.query(query, [userId]);
 
     if (rows.length === 0) {
-      return res
-        .status(404)
-        .json({ status: false, message: "User not found." });
+      return res.status(404).json({ status: false, message: "User not found." });
     }
 
-    const user = rows[0];
-    const userData = {
-      id: user.id,
-      fullName: user.full_name,
-      email: user.email,
-      mobileNumber: user.mobile_number,
-      defaultAddress: user.pincode
-        ? {
-            // Only create address object if a default exists
-            pincode: user.pincode,
-            addressLine1: user.address_line_1,
-            city: user.city,
-            state: user.state,
-          }
-        : null,
-    };
-
-    res.status(200).json({ status: true, data: userData });
+    res.status(200).json({ status: true, data: rows[0] });
   } catch (error) {
-    console.error("Error fetching user profile:", error);
     res.status(500).json({ status: false, message: "An error occurred." });
   }
 };
 
 /**
- * Updates user profile dynamically.
- * Can update full_name, email, mobile_number, and profile_image.
+ * 2. UPDATE PROFILE (Handles Name, Email, Mobile, and Image)
  */
 exports.updateUserProfile = async (req, res) => {
   try {
     const userId = req.user.id;
     const { full_name, email, mobile_number } = req.body;
 
-    // 1. INPUT VALIDATION & DUPLICATE CHECKS
-    // If email or mobile is provided, check if they exist for OTHER users
+    // 1. UNIQUE CHECKS (Email/Mobile)
     if (email || mobile_number) {
-      const checkQuery = `
-                SELECT id, email, mobile_number 
-                FROM users 
-                WHERE (email = ? OR mobile_number = ?) 
-                AND id != ?
-            `;
-      const [existingUsers] = await db.query(checkQuery, [
-        email || "",
-        mobile_number || "",
-        userId,
-      ]);
-
-      if (existingUsers.length > 0) {
-        const conflict = existingUsers[0];
-
-        // Remove uploaded file if validation fails to prevent junk files
-        if (req.file) fs.unlinkSync(req.file.path);
-
-        if (conflict.email === email) {
-          return res
-            .status(409)
-            .json({
-              status: false,
-              message: "Email is already in use by another account.",
-            });
-        }
-        if (conflict.mobile_number === mobile_number) {
-          return res
-            .status(409)
-            .json({
-              status: false,
-              message: "Mobile number is already in use by another account.",
-            });
-        }
+      const [existing] = await db.query(
+        "SELECT id FROM users WHERE (email = ? OR mobile_number = ?) AND id != ?",
+        [email || "", mobile_number || "", userId]
+      );
+      if (existing.length > 0) {
+        if (req.file) fs.unlinkSync(req.file.path); // Delete uploaded file if check fails
+        return res.status(409).json({ status: false, message: "Email or Mobile already in use." });
       }
     }
 
-    // 2. PREPARE UPDATE DATA
     let updateFields = [];
     let queryValues = [];
 
-    if (full_name) {
-      updateFields.push("full_name = ?");
-      queryValues.push(full_name);
-    }
+    if (full_name) { updateFields.push("full_name = ?"); queryValues.push(full_name); }
+    if (email) { updateFields.push("email = ?"); queryValues.push(email); }
+    if (mobile_number) { updateFields.push("mobile_number = ?"); queryValues.push(mobile_number); }
 
-    // NOTE: In strict production apps, we usually DO NOT update email/mobile here directly.
-    // We typically send an OTP first. (See Part 2 of my answer below).
-    // For now, allowing direct update if it passes unique check:
-    if (email) {
-      updateFields.push("email = ?");
-      queryValues.push(email);
-    }
-
-    // See "How to verify" section below regarding mobile_number
-    if (mobile_number) {
-      updateFields.push("mobile_number = ?");
-      queryValues.push(mobile_number);
-    }
-
-    // 3. HANDLE IMAGE UPLOAD & CLEANUP
+    // 2. HANDLE IMAGE UPLOAD
     if (req.file) {
-      // First: Get the OLD image path so we can delete it later
-      const [currentUser] = await db.query(
-        "SELECT profile_image FROM users WHERE id = ?",
-        [userId]
-      );
-      const oldImagePath =
-        currentUser.length > 0 ? currentUser[0].profile_image : null;
+      const [currentUser] = await db.query("SELECT user_pic FROM users WHERE id = ?", [userId]);
+      const oldPic = currentUser[0]?.user_pic;
 
-      const newImagePath = `profiles/${req.file.filename}`;
-      updateFields.push("profile_image = ?");
-      queryValues.push(newImagePath);
+      const newPicPath = `/uploads/profiles/${req.file.filename}`;
+      updateFields.push("user_pic = ?");
+      queryValues.push(newPicPath);
 
-      // Store old path in request to delete it AFTER successful DB update
-      req.oldImageToDelete = oldImagePath;
-    }
-
-    // 4. FINAL VALIDATION
-    if (updateFields.length === 0) {
-      return res
-        .status(400)
-        .json({ status: false, message: "No fields provided for update." });
-    }
-
-    // 5. EXECUTE UPDATE
-    const sql = `UPDATE users SET ${updateFields.join(", ")} WHERE id = ?`;
-    queryValues.push(userId);
-
-    const [result] = await db.query(sql, queryValues);
-
-    if (result.affectedRows === 0) {
-      return res
-        .status(404)
-        .json({ status: false, message: "User not found." });
-    }
-
-    // 6. DELETE OLD IMAGE (Cleanup)
-    if (req.oldImageToDelete) {
-      const fullOldPath = path.join(
-        __dirname,
-        "../uploads",
-        req.oldImageToDelete
-      );
-      if (fs.existsSync(fullOldPath)) {
-        fs.unlink(fullOldPath, (err) => {
-          if (err) console.error("Failed to delete old image:", err);
-        });
+      // Cleanup old file from storage
+      if (oldPic) {
+        const fullOldPath = path.join(process.cwd(), oldPic);
+        if (fs.existsSync(fullOldPath)) fs.unlinkSync(fullOldPath);
       }
     }
 
-    res.status(200).json({
-      status: true,
-      message: "Profile updated successfully.",
-      data: {
-        full_name,
-        email,
-        mobile_number,
-        profile_image: req.file ? `profiles/${req.file.filename}` : undefined,
-      },
+    if (updateFields.length === 0) return res.status(400).json({ status: false, message: "Nothing to update." });
+
+    queryValues.push(userId);
+    const sql = `UPDATE users SET ${updateFields.join(", ")} WHERE id = ?`;
+    await db.query(sql, queryValues);
+
+    // 3. RETURN UPDATED USER
+    const [updatedUser] = await db.query("SELECT id, full_name, email, mobile_number, username, rank, user_pic FROM users WHERE id = ?", [userId]);
+    
+    res.status(200).json({ 
+        status: true, 
+        message: "Profile updated successfully.", 
+        user: updatedUser[0] 
     });
+
   } catch (error) {
-    // Cleanup uploaded file if server error occurs
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
-    console.error("Error updating profile:", error);
+    if (req.file) fs.unlinkSync(req.file.path);
     res.status(500).json({ status: false, message: "Internal server error." });
   }
 };
+
+
+
+
+
+
+
 
 // ===============================================
 // === Main Dashboard Summary                  ===
