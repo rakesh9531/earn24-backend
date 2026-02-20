@@ -95,7 +95,7 @@ router.post('/pages/update', auth, can('settings:manage'), pageController.update
 router.get('/public/page', pageController.getPageContent);
 
 // Dashboard Statistics (Admin Only)
-router.get('/dashboard/stats', auth, can('users:read'), adminController.getAdminDashboardStats);
+router.get('/dashboard/stats', adminController.getAdminDashboardStats);
 
 
 module.exports = router;
