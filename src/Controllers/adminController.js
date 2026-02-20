@@ -1281,20 +1281,20 @@ exports.getAdminDashboardStats = async (req, res) => {
         const [
             financialStats,
             mlmFinancials,
-            userStats, // Fixed this part
+            userStats,
             orderSummary,
             inventoryHealth,
             topPerformingPincodes,
             topSellingProducts,
             revenueTrend
         ] = await Promise.all([
-            // 1. FINANCIAL OVERVIEW (Gross Revenue, Net Profit, and Delivery Fees)
+            // 1. FINANCIAL OVERVIEW
             db.query(`
                 SELECT 
-                    SUM(total_amount) as grossRevenue,
-                    SUM(subtotal) as subtotalRevenue,
-                    SUM(delivery_fee) as totalDeliveryFeesCollected,
-                    (SELECT SUM(oi.total_price - (oi.quantity * sp.purchase_price))
+                    IFNULL(SUM(total_amount), 0) as grossRevenue,
+                    IFNULL(SUM(subtotal), 0) as subtotalRevenue,
+                    IFNULL(SUM(delivery_fee), 0) as totalDeliveryFeesCollected,
+                    (SELECT IFNULL(SUM(oi.total_price - (oi.quantity * sp.purchase_price)), 0)
                      FROM order_items oi
                      JOIN seller_products sp ON oi.seller_product_id = sp.id
                      JOIN orders o ON oi.order_id = o.id
@@ -1310,7 +1310,7 @@ exports.getAdminDashboardStats = async (req, res) => {
                     (SELECT IFNULL(SUM(amount_credited), 0) FROM commission_ledger) as totalCommissionsPaid
             `),
 
-            // 3. ✅ FIXED USER GROWTH (Counting from separate tables)
+            // 3. USER GROWTH
             db.query(`
                 SELECT 
                     (SELECT COUNT(*) FROM users WHERE is_deleted = 0) as totalUsers,
@@ -1322,7 +1322,7 @@ exports.getAdminDashboardStats = async (req, res) => {
 
             // 4. ORDER STATUS SUMMARY
             db.query(`
-                SELECT order_status, COUNT(*) as count, SUM(total_amount) as statusValue
+                SELECT order_status, COUNT(*) as count, IFNULL(SUM(total_amount), 0) as statusValue
                 FROM orders GROUP BY order_status
             `),
 
@@ -1332,34 +1332,35 @@ exports.getAdminDashboardStats = async (req, res) => {
                     COUNT(*) as totalSKUs,
                     SUM(CASE WHEN quantity = 0 THEN 1 ELSE 0 END) as outOfStockCount,
                     SUM(CASE WHEN quantity > 0 AND quantity <= low_stock_threshold THEN 1 ELSE 0 END) as lowStockCount,
-                    SUM(quantity * purchase_price) as totalInventoryValue
+                    IFNULL(SUM(quantity * purchase_price), 0) as totalInventoryValue
                 FROM seller_products WHERE is_active = 1
             `),
 
             // 6. GEOGRAPHIC SALES
             db.query(`
-                SELECT ua.pincode, COUNT(o.id) as orderCount, SUM(o.total_amount) as revenue
+                SELECT ua.pincode, COUNT(o.id) as orderCount, IFNULL(SUM(o.total_amount), 0) as revenue
                 FROM orders o
                 JOIN user_addresses ua ON o.shipping_address_id = ua.id
                 WHERE o.order_status = 'DELIVERED'
                 GROUP BY ua.pincode ORDER BY revenue DESC LIMIT 5
             `),
 
-            // 7. TOP 5 SELLING PRODUCTS
+            // 7. ✅ FIXED: TOP 5 SELLING PRODUCTS (Added product_name to GROUP BY)
             db.query(`
                 SELECT oi.product_name, SUM(oi.quantity) as totalSold, SUM(oi.total_price) as revenue
                 FROM order_items oi
                 JOIN orders o ON oi.order_id = o.id
                 WHERE o.order_status = 'DELIVERED'
-                GROUP BY oi.product_id ORDER BY totalSold DESC LIMIT 5
+                GROUP BY oi.product_id, oi.product_name 
+                ORDER BY totalSold DESC LIMIT 5
             `),
 
             // 8. 14-DAY REVENUE & BV TREND
             db.query(`
                 SELECT 
                     DATE(created_at) as date, 
-                    SUM(total_amount) as revenue,
-                    SUM(total_bv_earned) as bv
+                    IFNULL(SUM(total_amount), 0) as revenue,
+                    IFNULL(SUM(total_bv_earned), 0) as bv
                 FROM orders
                 WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
                 AND order_status != 'CANCELLED'
@@ -1367,19 +1368,18 @@ exports.getAdminDashboardStats = async (req, res) => {
             `)
         ]);
 
-        // Construct Final Response
         res.status(200).json({
             status: true,
             data: {
                 financials: {
-                    grossRevenue: financialStats[0][0].grossRevenue || 0,
-                    netProfit: financialStats[0][0].netProductProfit || 0,
-                    deliveryFees: financialStats[0][0].totalDeliveryFeesCollected || 0,
-                    mlmPayouts: mlmFinancials[0][0].totalCommissionsPaid || 0,
-                    totalBv: mlmFinancials[0][0].totalBvGenerated || 0
+                    grossRevenue: financialStats[0][0].grossRevenue,
+                    netProfit: financialStats[0][0].netProductProfit,
+                    deliveryFees: financialStats[0][0].totalDeliveryFeesCollected,
+                    mlmPayouts: mlmFinancials[0][0].totalCommissionsPaid,
+                    totalBv: mlmFinancials[0][0].totalBvGenerated
                 },
                 inventory: inventoryHealth[0][0],
-                users: userStats[0][0], // Contains the multi-table counts
+                users: userStats[0][0],
                 ordersByStatus: orderSummary[0],
                 topPincodes: topPerformingPincodes[0],
                 topProducts: topSellingProducts[0],
