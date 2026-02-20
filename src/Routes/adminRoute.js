@@ -94,5 +94,8 @@ router.post('/pages/update', auth, can('settings:manage'), pageController.update
 // Note: Register this in your top-level route.js if you want it strictly public
 router.get('/public/page', pageController.getPageContent);
 
+// Dashboard Statistics (Admin Only)
+router.get('/dashboard/stats', auth, can('users:read'), adminController.getAdminDashboardStats);
+
 
 module.exports = router;

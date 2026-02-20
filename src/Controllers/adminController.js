@@ -1273,3 +1273,145 @@ exports.getPaginatedUsers = async (req, res) => {
         res.status(500).json({ status: false, message: "Server error." });
     }
 };
+
+
+
+exports.getAdminDashboardStats = async (req, res) => {
+    try {
+        const [
+            financialStats,
+            mlmFinancials,
+            userStats,
+            orderSummary,
+            inventoryHealth,
+            topPerformingPincodes,
+            topSellingProducts,
+            revenueTrend
+        ] = await Promise.all([
+            // 1. FINANCIAL OVERVIEW (Gross Revenue, Net Profit, and Delivery Fees)
+            db.query(`
+                SELECT 
+                    SUM(total_amount) as grossRevenue,
+                    SUM(subtotal) as subtotalRevenue,
+                    SUM(delivery_fee) as totalDeliveryFeesCollected,
+                    -- Calculating actual Net Profit (Selling Price - Purchase Price)
+                    (SELECT SUM(oi.total_price - (oi.quantity * sp.purchase_price))
+                     FROM order_items oi
+                     JOIN seller_products sp ON oi.seller_product_id = sp.id
+                     JOIN orders o ON oi.order_id = o.id
+                     WHERE o.order_status = 'DELIVERED') as netProductProfit
+                FROM orders 
+                WHERE order_status != 'CANCELLED'
+            `),
+
+            // 2. MLM FINANCIALS (BV, Payouts, and Retained Company Profit)
+            db.query(`
+                SELECT 
+                    (SELECT SUM(total_bv_earned) FROM orders WHERE order_status != 'CANCELLED') as totalBvGenerated,
+                    (SELECT SUM(amount_credited) FROM commission_ledger) as totalCommissionsPaid,
+                    -- Company Net Retention (Profit after MLM Payouts)
+                    ((SELECT SUM(oi.total_price - (oi.quantity * sp.purchase_price))
+                      FROM order_items oi
+                      JOIN seller_products sp ON oi.seller_product_id = sp.id
+                      JOIN orders o ON oi.order_id = o.id
+                      WHERE o.order_status = 'DELIVERED') - (SELECT IFNULL(SUM(amount_credited), 0) FROM commission_ledger)) as companyNetRetention
+            `),
+
+            // 3. USER GROWTH & ROLE BREAKDOWN
+            db.query(`
+                SELECT 
+                    COUNT(*) as totalUsers,
+                    SUM(CASE WHEN role = 'retailer' THEN 1 ELSE 0 END) as totalRetailers,
+                    SUM(CASE WHEN role = 'merchant' THEN 1 ELSE 0 END) as totalMerchants,
+                    SUM(CASE WHEN role = 'delivery_agent' THEN 1 ELSE 0 END) as totalAgents,
+                    SUM(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) as usersJoinedThisMonth
+                FROM users WHERE is_deleted = 0
+            `),
+
+            // 4. ORDER STATUS SUMMARY
+            db.query(`
+                SELECT 
+                    order_status, 
+                    COUNT(*) as count,
+                    SUM(total_amount) as statusValue
+                FROM orders 
+                GROUP BY order_status
+            `),
+
+            // 5. INVENTORY HEALTH (Valuation and Stock Alerts)
+            db.query(`
+                SELECT 
+                    COUNT(*) as totalSKUs,
+                    SUM(CASE WHEN quantity = 0 THEN 1 ELSE 0 END) as outOfStockCount,
+                    SUM(CASE WHEN quantity > 0 AND quantity <= low_stock_threshold THEN 1 ELSE 0 END) as lowStockCount,
+                    -- Total value of stock sitting in warehouses
+                    SUM(quantity * purchase_price) as totalInventoryValue
+                FROM seller_products 
+                WHERE is_active = 1
+            `),
+
+            // 6. GEOGRAPHIC SALES (Top 5 Pincodes by Sales)
+            db.query(`
+                SELECT ua.pincode, COUNT(o.id) as orderCount, SUM(o.total_amount) as revenue
+                FROM orders o
+                JOIN user_addresses ua ON o.shipping_address_id = ua.id
+                WHERE o.order_status = 'DELIVERED'
+                GROUP BY ua.pincode
+                ORDER BY revenue DESC
+                LIMIT 5
+            `),
+
+            // 7. TOP 5 SELLING PRODUCTS
+            db.query(`
+                SELECT oi.product_name, SUM(oi.quantity) as totalSold, SUM(oi.total_price) as revenue
+                FROM order_items oi
+                JOIN orders o ON oi.order_id = o.id
+                WHERE o.order_status = 'DELIVERED'
+                GROUP BY oi.product_id
+                ORDER BY totalSold DESC
+                LIMIT 5
+            `),
+
+            // 8. 14-DAY REVENUE & BV TREND
+            db.query(`
+                SELECT 
+                    DATE(created_at) as date, 
+                    SUM(total_amount) as revenue,
+                    SUM(total_bv_earned) as bv
+                FROM orders
+                WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
+                AND order_status != 'CANCELLED'
+                GROUP BY DATE(created_at)
+                ORDER BY date ASC
+            `)
+        ]);
+
+        // Construct Final Response
+        res.status(200).json({
+            status: true,
+            data: {
+                financials: {
+                    grossRevenue: financialStats[0][0].grossRevenue || 0,
+                    netProfit: financialStats[0][0].netProductProfit || 0,
+                    deliveryFees: financialStats[0][0].totalDeliveryFeesCollected || 0,
+                    companyEarnings: mlmFinancials[0][0].companyNetRetention || 0,
+                    mlmPayouts: mlmFinancials[0][0].totalCommissionsPaid || 0,
+                    totalBv: mlmFinancials[0][0].totalBvGenerated || 0
+                },
+                inventory: {
+                    ...inventoryHealth[0][0],
+                    inventoryValue: inventoryHealth[0][0].totalInventoryValue || 0
+                },
+                users: userStats[0][0],
+                ordersByStatus: orderSummary[0],
+                topPincodes: topPerformingPincodes[0],
+                topProducts: topSellingProducts[0],
+                chartData: revenueTrend[0]
+            }
+        });
+
+    } catch (error) {
+        console.error("Dashboard CRITICAL Error:", error);
+        res.status(500).json({ status: false, message: "Failed to generate dashboard statistics." });
+    }
+};
