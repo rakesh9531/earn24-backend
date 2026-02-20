@@ -1310,12 +1310,12 @@ exports.getAdminDashboardStats = async (req, res) => {
                     (SELECT IFNULL(SUM(amount_credited), 0) FROM commission_ledger) as totalCommissionsPaid
             `),
 
-            // 3. USER GROWTH
+            // 3. ✅ FIXED: USER GROWTH (Removed is_deleted filter to avoid column errors)
             db.query(`
                 SELECT 
-                    (SELECT COUNT(*) FROM users WHERE is_deleted = 0) as totalUsers,
-                    (SELECT COUNT(*) FROM retailers WHERE is_deleted = 0) as totalRetailers,
-                    (SELECT COUNT(*) FROM merchants WHERE is_deleted = 0) as totalMerchants,
+                    (SELECT COUNT(*) FROM users) as totalUsers,
+                    (SELECT COUNT(*) FROM retailers) as totalRetailers,
+                    (SELECT COUNT(*) FROM merchants) as totalMerchants,
                     (SELECT COUNT(*) FROM delivery_agents) as totalAgents,
                     (SELECT COUNT(*) FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)) as usersJoinedThisMonth
             `),
@@ -1345,7 +1345,7 @@ exports.getAdminDashboardStats = async (req, res) => {
                 GROUP BY ua.pincode ORDER BY revenue DESC LIMIT 5
             `),
 
-            // 7. ✅ FIXED: TOP 5 SELLING PRODUCTS (Added product_name to GROUP BY)
+            // 7. TOP 5 SELLING PRODUCTS
             db.query(`
                 SELECT oi.product_name, SUM(oi.quantity) as totalSold, SUM(oi.total_price) as revenue
                 FROM order_items oi
