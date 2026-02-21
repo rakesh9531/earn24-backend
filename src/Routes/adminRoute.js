@@ -52,6 +52,16 @@ const adminController = require('../Controllers/adminController');
 const { auth, can } = require('../Middleware/auth');
 const upload = require('../Middleware/upload');
 const pageController = require('../Controllers/pageController');
+const webPageController = require('../Controllers/webPageController');
+const createUploader = require('../Middleware/uploaderFactory');
+
+// 2. CALL IT DIRECTLY
+const uploadLandingImages = createUploader('landing-images');
+
+const landingUploadMiddleware = uploadLandingImages.fields([
+    { name: 'main_image', maxCount: 1 },      // The Big Hero Banner/App Icon
+    { name: 'gallery_images', maxCount: 8 }   // Multiple App Screenshots
+]);
 
 // Public route for login is moved to authRoutes.js
 // Unprotected route to create the very first admin
@@ -96,6 +106,9 @@ router.get('/public/page', pageController.getPageContent);
 
 // Dashboard Statistics (Admin Only)
 router.get('/dashboard/stats', adminController.getAdminDashboardStats);
+router.get('/public/landing-content', webPageController.getLandingPage);
 
+// --- ADMIN ROUTE (For your admin panel) ---
+router.post('/update-landing',auth,can('settings:manage'),landingUploadMiddleware,webPageController.updateLandingPage);
 
 module.exports = router;
