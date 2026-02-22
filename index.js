@@ -34,26 +34,49 @@ const app = express();
 
 
 
+// const corsOptions = {
+//   origin: function (origin, callback) {
+//     const whitelist = [
+//       'https://newadmin.earn24.in', 
+//       'http://localhost:4200',
+//       'http://127.0.0.1:4200' // Add this
+//     ];
+//     // Allow requests with no origin (like mobile apps or curl) 
+//     // or if the origin is in the whitelist
+//     if (!origin || whitelist.indexOf(origin) !== -1) {
+//       callback(null, true);
+//     } else {
+//       callback(new Error('Not allowed by CORS'));
+//     }
+//   },
+//   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+//   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'], // Added more common headers
+//   credentials: true,
+//   optionsSuccessStatus: 200 // Some legacy browsers choke on 204
+// };
+
+
 const corsOptions = {
   origin: function (origin, callback) {
-    const whitelist = [
-      'https://newadmin.earn24.in', 
-      'http://localhost:4200',
-      'http://127.0.0.1:4200' // Add this
-    ];
-    // Allow requests with no origin (like mobile apps or curl) 
-    // or if the origin is in the whitelist
-    if (!origin || whitelist.indexOf(origin) !== -1) {
+
+    if (!origin) return callback(null, true);
+
+    if (
+      origin.endsWith('.earn24.in') ||
+      origin === 'https://earn24.in' ||
+      origin === 'http://earn24.in' ||
+      origin.includes('localhost')
+    ) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
     }
   },
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'], // Added more common headers
-  credentials: true,
-  optionsSuccessStatus: 200 // Some legacy browsers choke on 204
+
+  credentials: true
 };
+
+
 
 app.use(cors(corsOptions));
 
