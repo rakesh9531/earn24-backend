@@ -1015,24 +1015,145 @@ exports.getTrendingSearches = async (req, res) => {
 // ==========================================================
 // === THE FIXED, PRODUCTION-READY SEARCH FUNCTION        ===
 // ==========================================================
+// exports.searchProducts = async (req, res) => {
+//     try {
+
+//         console.log("call hua ree search")
+
+//         // --- 1. Get all possible parameters from the frontend ---
+//         const { query, categoryId, brandId, sortBy, page = 1, limit = 20 } = req.query;
+//         const pincode = req.query.pincode; 
+
+//         if (!query && !categoryId && !brandId) {
+//             return res.status(400).json({ status: false, message: "A search query or filter is required." });
+//         }
+
+//         // --- 2. Dynamically build the SQL query ---
+//         let whereClauses = ['sp.is_active = TRUE'];
+//         let queryParams = [];
+
+//         // Handle the text search query
+//         if (query) {
+//             const searchTerms = query.split(' ').filter(term => term); 
+//             const searchConditions = searchTerms.map(term => {
+//                 queryParams.push(`%${term}%`, `%${term}%`, `%${term}%`);
+//                 return "(p.name LIKE ? OR p.description LIKE ? OR b.name LIKE ?)";
+//             }).join(' AND ');
+//             whereClauses.push(`(${searchConditions})`);
+//         }
+
+//         // Handle filters
+//         if (categoryId) {
+//             whereClauses.push('p.category_id = ?');
+//             queryParams.push(categoryId);
+//         }
+//         if (brandId) {
+//             whereClauses.push('p.brand_id = ?');
+//             queryParams.push(brandId);
+//         }
+//         if (pincode) {
+//             whereClauses.push('spp.id IS NOT NULL');
+//         }
+        
+//         const whereString = `WHERE ${whereClauses.join(' AND ')}`;
+
+//         // --- 3. Handle Sorting ---
+//         let orderByClause = 'ORDER BY p.popularity DESC'; // Default sort
+//         switch (sortBy) {
+//             case 'price_asc':
+//                 orderByClause = 'ORDER BY sp.selling_price ASC';
+//                 break;
+//             case 'price_desc':
+//                 orderByClause = 'ORDER BY sp.selling_price DESC';
+//                 break;
+//         }
+
+//         // --- 4. Handle Pagination ---
+//         const pageNum = parseInt(page, 10);
+//         const limitNum = parseInt(limit, 10);
+//         const offset = (pageNum - 1) * limitNum;
+
+//         // --- 5. Create the FINAL queries ---
+//         // Note: We handle the parameter order carefully here.
+//         // If pincode exists, it goes into the JOIN, which is technically before the WHERE clauses in execution context,
+//         // but typically parameter binding order follows the string order.
+        
+//         const baseSelectAndJoins = `
+//             FROM seller_products sp
+//             JOIN products p ON sp.product_id = p.id
+//             LEFT JOIN brands b ON p.brand_id = b.id
+//             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
+//             ${pincode ? `JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id AND spp.pincode = ?` : ''}
+//         `;
+
+//         // IMPORTANT: The '?' for pincode is inside the JOIN, which comes BEFORE the WHERE clause.
+//         // So we must add pincode to the START of the array.
+//         if (pincode) queryParams.unshift(pincode);
+
+//         // Query to get the total count for pagination
+//         const countQuery = `SELECT COUNT(DISTINCT p.id) as total ${baseSelectAndJoins} ${whereString}`;
+//         const [countRows] = await db.query(countQuery, queryParams);
+//         const totalProducts = countRows[0].total;
+
+//         // Query to get the actual product data
+//         // ✅ FIX: Added 'p.popularity' to the SELECT list
+//         const dataQuery = `
+//             SELECT DISTINCT
+//                 p.id as product_id, 
+//                 p.name, 
+//                 p.main_image_url, 
+//                 p.description, 
+//                 p.gallery_image_urls,
+//                 b.name as brand_name, 
+//                 sp.id as offer_id, 
+//                 sp.selling_price, 
+//                 sp.mrp, 
+//                 sp.minimum_order_quantity,
+//                 p.popularity -- ✅ REQUIRED FOR ORDER BY
+//             ${baseSelectAndJoins} ${whereString} ${orderByClause} LIMIT ? OFFSET ?
+//         `;
+        
+//         // Execute the search
+//         const [products] = await db.query(dataQuery, [...queryParams, limitNum, offset]);
+
+//         // --- 6. Send the structured response ---
+//         res.status(200).json({
+//             status: true,
+//             data: {
+//                 products,
+//                 pagination: {
+//                     total: totalProducts,
+//                     page: pageNum,
+//                     limit: limitNum,
+//                     totalPages: Math.ceil(totalProducts / limitNum)
+//                 }
+//             }
+//         });
+
+//     } catch (error) {
+//         console.error("Error in searchProducts:", error);
+//         res.status(500).json({ status: false, message: "An internal server error occurred during search." });
+//     }
+// };
+
+
+// trying fixing
 exports.searchProducts = async (req, res) => {
     try {
-
-        console.log("call hua ree search")
-
-        // --- 1. Get all possible parameters from the frontend ---
-        const { query, categoryId, brandId, sortBy, page = 1, limit = 20 } = req.query;
-        const pincode = req.query.pincode; 
+        const { query, categoryId, brandId, sortBy, page = 1, limit = 20, pincode } = req.query;
 
         if (!query && !categoryId && !brandId) {
             return res.status(400).json({ status: false, message: "A search query or filter is required." });
         }
 
-        // --- 2. Dynamically build the SQL query ---
+        // --- 1. Get BV Setting (From your Home Screen logic) ---
+        const [settingsRows] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'");
+        const bvGenerationPct = settingsRows[0] ? parseFloat(settingsRows[0].setting_value) : 80.0;
+
+        // --- 2. Build WHERE Clauses ---
         let whereClauses = ['sp.is_active = TRUE'];
         let queryParams = [];
 
-        // Handle the text search query
         if (query) {
             const searchTerms = query.split(' ').filter(term => term); 
             const searchConditions = searchTerms.map(term => {
@@ -1042,42 +1163,24 @@ exports.searchProducts = async (req, res) => {
             whereClauses.push(`(${searchConditions})`);
         }
 
-        // Handle filters
-        if (categoryId) {
-            whereClauses.push('p.category_id = ?');
-            queryParams.push(categoryId);
-        }
-        if (brandId) {
-            whereClauses.push('p.brand_id = ?');
-            queryParams.push(brandId);
-        }
-        if (pincode) {
-            whereClauses.push('spp.id IS NOT NULL');
-        }
+        if (categoryId) { whereClauses.push('p.category_id = ?'); queryParams.push(categoryId); }
+        if (brandId) { whereClauses.push('p.brand_id = ?'); queryParams.push(brandId); }
+        if (pincode) { whereClauses.push('spp.id IS NOT NULL'); }
         
         const whereString = `WHERE ${whereClauses.join(' AND ')}`;
 
         // --- 3. Handle Sorting ---
-        let orderByClause = 'ORDER BY p.popularity DESC'; // Default sort
+        let orderByClause = 'ORDER BY p.popularity DESC';
         switch (sortBy) {
-            case 'price_asc':
-                orderByClause = 'ORDER BY sp.selling_price ASC';
-                break;
-            case 'price_desc':
-                orderByClause = 'ORDER BY sp.selling_price DESC';
-                break;
+            case 'price_asc': orderByClause = 'ORDER BY sp.selling_price ASC'; break;
+            case 'price_desc': orderByClause = 'ORDER BY sp.selling_price DESC'; break;
         }
 
-        // --- 4. Handle Pagination ---
         const pageNum = parseInt(page, 10);
         const limitNum = parseInt(limit, 10);
         const offset = (pageNum - 1) * limitNum;
 
-        // --- 5. Create the FINAL queries ---
-        // Note: We handle the parameter order carefully here.
-        // If pincode exists, it goes into the JOIN, which is technically before the WHERE clauses in execution context,
-        // but typically parameter binding order follows the string order.
-        
+        // --- 4. Final Data Query with BV Calculation & Attribute Subquery ---
         const baseSelectAndJoins = `
             FROM seller_products sp
             JOIN products p ON sp.product_id = p.id
@@ -1086,17 +1189,9 @@ exports.searchProducts = async (req, res) => {
             ${pincode ? `JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id AND spp.pincode = ?` : ''}
         `;
 
-        // IMPORTANT: The '?' for pincode is inside the JOIN, which comes BEFORE the WHERE clause.
-        // So we must add pincode to the START of the array.
         if (pincode) queryParams.unshift(pincode);
 
-        // Query to get the total count for pagination
-        const countQuery = `SELECT COUNT(DISTINCT p.id) as total ${baseSelectAndJoins} ${whereString}`;
-        const [countRows] = await db.query(countQuery, queryParams);
-        const totalProducts = countRows[0].total;
-
-        // Query to get the actual product data
-        // ✅ FIX: Added 'p.popularity' to the SELECT list
+        // Actual Data SQL
         const dataQuery = `
             SELECT DISTINCT
                 p.id as product_id, 
@@ -1109,18 +1204,38 @@ exports.searchProducts = async (req, res) => {
                 sp.selling_price, 
                 sp.mrp, 
                 sp.minimum_order_quantity,
-                p.popularity -- ✅ REQUIRED FOR ORDER BY
+                -- ✅ BV CALCULATION FROM HOME SCREEN
+                ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (${bvGenerationPct} / 100) as bv_earned,
+                -- ✅ ATTRIBUTES SUBQUERY FROM HOME SCREEN
+                (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                    FROM product_attributes pa
+                    JOIN attribute_values av ON pa.attribute_value_id = av.id
+                    JOIN attributes attr ON av.attribute_id = attr.id
+                    WHERE pa.product_id = p.id
+                ) as attributes
             ${baseSelectAndJoins} ${whereString} ${orderByClause} LIMIT ? OFFSET ?
         `;
-        
-        // Execute the search
-        const [products] = await db.query(dataQuery, [...queryParams, limitNum, offset]);
 
-        // --- 6. Send the structured response ---
+        const [productsRaw] = await db.query(dataQuery, [...queryParams, limitNum, offset]);
+
+        // --- 5. Process the Result (Parse JSON strings) ---
+        const processedProducts = productsRaw.map(p => ({
+            ...p,
+            bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
+            gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : [],
+            attributes: p.attributes ? JSON.parse(p.attributes) : []
+        }));
+
+        // Get total count
+        const countQuery = `SELECT COUNT(DISTINCT p.id) as total ${baseSelectAndJoins} ${whereString}`;
+        const [countRows] = await db.query(countQuery, queryParams);
+        const totalProducts = countRows[0].total;
+
         res.status(200).json({
             status: true,
             data: {
-                products,
+                products: processedProducts,
                 pagination: {
                     total: totalProducts,
                     page: pageNum,
@@ -1132,9 +1247,12 @@ exports.searchProducts = async (req, res) => {
 
     } catch (error) {
         console.error("Error in searchProducts:", error);
-        res.status(500).json({ status: false, message: "An internal server error occurred during search." });
+        res.status(500).json({ status: false, message: "Search failed." });
     }
 };
+
+
+
 
 
 
