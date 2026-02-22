@@ -1204,6 +1204,7 @@ exports.searchProducts = async (req, res) => {
                 sp.selling_price, 
                 sp.mrp, 
                 sp.minimum_order_quantity,
+                p.popularity, -- ✅ ADDED THIS to fix the ORDER BY error
                 -- ✅ BV CALCULATION FROM HOME SCREEN
                 ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (${bvGenerationPct} / 100) as bv_earned,
                 -- ✅ ATTRIBUTES SUBQUERY FROM HOME SCREEN
