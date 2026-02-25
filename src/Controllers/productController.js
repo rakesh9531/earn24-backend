@@ -629,117 +629,11 @@ const getRelativeUrl = (file) => {
   return "/" + fullPath.substring(uploadsIndex).replace(/\\/g, "/");
 };
 
-/**
- * Updates an existing master product, including its main image and gallery images.
- * New gallery images are APPENDED to the existing gallery.
- */
-// exports.updateMasterProduct = async (req, res) => {
-//     // Access both main and gallery images from req.files
-//     const newMainImage = req.files?.main_image?.[0];
-//     const newGalleryImages = req.files?.gallery_images || [];
 
-//     try {
-//         const { id } = req.params;
-//         const { name, description, brand_id, category_id, hsn_code_id, is_active } = req.body;
-
-//         // Step 1: Fetch the existing product to get old image URLs for deletion/appending.
-//         // --- CRUCIAL: Fetch gallery_image_urls as well ---
-//         const [existingRows] = await db.query('SELECT id, main_image_url, gallery_image_urls FROM products WHERE id = ?', [id]);
-//         if (existingRows.length === 0) {
-//             // If product not found, delete any uploaded files
-//             if (newMainImage) deleteFile(newMainImage.path);
-//             newGalleryImages.forEach(file => deleteFile(file.path));
-//             return res.status(404).json({ status: false, message: "Product not found." });
-//         }
-//         const existingProduct = existingRows[0];
-
-//         const fields = [];
-//         const values = [];
-
-//         // Step 2: Handle main image update (same as before)
-//         if (newMainImage) {
-//             const newImageUrl = getRelativeUrl(newMainImage);
-//             fields.push('main_image_url = ?');
-//             values.push(newImageUrl);
-//             if (existingProduct.main_image_url) {
-//                 deleteFile(existingProduct.main_image_url);
-//             }
-//         }
-
-//         // --- Step 2.5: Handle Gallery Image Update ---
-//         if (newGalleryImages.length > 0) {
-//             // a) Get the URLs of the newly uploaded gallery images
-//             const newGalleryUrls = newGalleryImages.map(getRelativeUrl);
-
-//             // b) Get the existing gallery URLs, parsing the JSON string from the DB
-//             let existingGalleryUrls = [];
-//             if (existingProduct.gallery_image_urls) {
-//                 try {
-//                     // It's stored as a JSON string, so we must parse it
-//                     existingGalleryUrls = JSON.parse(existingProduct.gallery_image_urls);
-//                 } catch (e) {
-//                     console.error("Could not parse existing gallery URLs, starting fresh.", e);
-//                     existingGalleryUrls = [];
-//                 }
-//             }
-
-//             // c) Combine old and new URLs
-//             const combinedGalleryUrls = [...existingGalleryUrls, ...newGalleryUrls];
-
-//             // d) Add the stringified array to the fields to be updated
-//             fields.push('gallery_image_urls = ?');
-//             values.push(JSON.stringify(combinedGalleryUrls));
-//         }
-
-//         // Step 3: Handle text field updates (same as before)
-//         if (name !== undefined) {
-//             fields.push('name = ?');
-//             values.push(name);
-//             const slug = slugify(name, { lower: true, strict: true });
-//             fields.push('slug = ?');
-//             values.push(slug);
-//         }
-//         if (description !== undefined) { fields.push('description = ?'); values.push(description); }
-//         if (brand_id !== undefined) { fields.push('brand_id = ?'); values.push(brand_id); }
-//         if (category_id !== undefined) { fields.push('category_id = ?'); values.push(category_id); }
-//         if (hsn_code_id !== undefined) { fields.push('hsn_code_id = ?'); values.push(hsn_code_id); }
-//         if (is_active !== undefined) { fields.push('is_active = ?'); values.push(is_active === true || is_active === 'true' ? 1 : 0); }
-
-//         // Step 4: Check if there's anything to update.
-//         if (fields.length === 0) {
-//             return res.status(400).json({ status: false, message: "No fields provided to update." });
-//         }
-
-//         // Step 5: Construct and execute the final UPDATE query.
-//         const query = `UPDATE products SET ${fields.join(', ')} WHERE id = ?`;
-//         values.push(id);
-
-//         await db.query(query, values);
-
-//         res.status(200).json({ status: true, message: "Product updated successfully." });
-
-//     } catch (error) {
-//         // --- Step 6: Extended Error Cleanup ---
-//         // If any error occurs, delete ALL newly uploaded files to prevent orphans.
-//         if (newMainImage) {
-//             deleteFile(newMainImage.path);
-//         }
-//         if (newGalleryImages.length > 0) {
-//             newGalleryImages.forEach(file => deleteFile(file.path));
-//         }
-
-//         if (error.code === 'ER_DUP_ENTRY') {
-//             return res.status(409).json({ status: false, message: "A product with this name or slug already exists." });
-//         }
-//         console.error("Error updating master product:", error);
-//         res.status(500).json({ status: false, message: "An error occurred." });
-//     }
-// };
+// ------this is with gallery array working
 
 
-
-//  This is final workign before gallary
-// --- NEW: `updateMasterProduct` function ---
+// --- FULL PRODUCTION-READY updateMasterProduct ---
 // exports.updateMasterProduct = async (req, res) => {
 //   const { id } = req.params;
 //   const {
@@ -751,32 +645,33 @@ const getRelativeUrl = (file) => {
 //     hsnCodeId,
 //     attributeValueIds,
 //   } = req.body;
+
+//   // FIX: Read files using the bracket notation to match Multer config
 //   const newMainImage = req.files?.main_image?.[0];
-//   const newGalleryImages = req.files?.gallery_images || [];
+//   const newGalleryImages = req.files?.['gallery_images[]'] || [];
 
 //   const connection = await db.getConnection();
 //   try {
 //     await connection.beginTransaction();
 
-//     const [existingRows] = await db.query(
+//     // Fetch existing data for file cleanup later
+//     const [existingRows] = await connection.query(
 //       "SELECT main_image_url, gallery_image_urls FROM products WHERE id = ?",
 //       [id],
 //     );
+    
 //     if (existingRows.length === 0) {
 //       await connection.rollback();
 //       if (newMainImage) deleteFile(newMainImage.path);
 //       newGalleryImages.forEach((file) => deleteFile(file.path));
-//       return res
-//         .status(404)
-//         .json({ status: false, message: "Product not found." });
+//       return res.status(404).json({ status: false, message: "Product not found." });
 //     }
+    
 //     const existingProduct = existingRows[0];
-
-//     // --- Update Logic ---
 //     const fields = [];
 //     const values = [];
 
-//     // Handle text fields and slug
+//     // --- 1. Basic Info Update ---
 //     if (name) {
 //       fields.push("name = ?", "slug = ?");
 //       values.push(name, slugify(name, { lower: true, strict: true }));
@@ -802,42 +697,37 @@ const getRelativeUrl = (file) => {
 //       values.push(hsnCodeId);
 //     }
 
-//     // Handle main image update
+//     // --- 2. Main Image Update ---
 //     if (newMainImage) {
 //       fields.push("main_image_url = ?");
 //       values.push(getRelativeUrl(newMainImage));
-//       deleteFile(existingProduct.main_image_url);
+//       // deleteFile of old image happens after commit for safety
 //     }
 
-//     // Handle gallery update (replace entire gallery)
+//     // --- 3. Gallery Images Update ---
 //     if (newGalleryImages.length > 0) {
-//       const existingGalleryUrls = JSON.parse(
-//         existingProduct.gallery_image_urls || "[]",
-//       );
-//       existingGalleryUrls.forEach(deleteFile);
 //       const newGalleryUrls = newGalleryImages.map(getRelativeUrl);
 //       fields.push("gallery_image_urls = ?");
 //       values.push(JSON.stringify(newGalleryUrls));
 //     }
 
-//     // --- Attribute Update (Delete and Re-insert) ---
-//     await connection.query(
-//       "DELETE FROM product_attributes WHERE product_id = ?",
-//       [id],
-//     );
-//     const parsedAttributeIds = attributeValueIds
-//       ? JSON.parse(attributeValueIds)
-//       : [];
-//     if (parsedAttributeIds.length > 0) {
-//       const productAttributeQuery = `INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`;
-//       const productAttributeValues = parsedAttributeIds.map((valueId) => [
-//         id,
-//         valueId,
-//       ]);
-//       await connection.query(productAttributeQuery, [productAttributeValues]);
+//     // --- 4. Attribute Logic (Crucial for Snapshotting) ---
+//     // If attributes are provided, we replace the existing mappings
+//     if (attributeValueIds) {
+//       await connection.query("DELETE FROM product_attributes WHERE product_id = ?", [id]);
+      
+//       const parsedAttributeIds = typeof attributeValueIds === 'string' 
+//         ? JSON.parse(attributeValueIds) 
+//         : attributeValueIds;
+
+//       if (parsedAttributeIds.length > 0) {
+//         const productAttributeQuery = `INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`;
+//         const productAttributeValues = parsedAttributeIds.map((valueId) => [id, valueId]);
+//         await connection.query(productAttributeQuery, [productAttributeValues]);
+//       }
 //     }
 
-//     // --- Finalize Update Query ---
+//     // --- 5. Execute Update Query ---
 //     if (fields.length > 0) {
 //       const query = `UPDATE products SET ${fields.join(", ")} WHERE id = ?`;
 //       values.push(id);
@@ -845,139 +735,140 @@ const getRelativeUrl = (file) => {
 //     }
 
 //     await connection.commit();
-//     res
-//       .status(200)
-//       .json({ status: true, message: "Product updated successfully." });
+
+//     // --- 6. Post-Commit File Cleanup ---
+//     if (newMainImage && existingProduct.main_image_url) {
+//       deleteFile(existingProduct.main_image_url);
+//     }
+//     if (newGalleryImages.length > 0 && existingProduct.gallery_image_urls) {
+//       const oldGallery = JSON.parse(existingProduct.gallery_image_urls || "[]");
+//       oldGallery.forEach(deleteFile);
+//     }
+
+//     res.status(200).json({ status: true, message: "Product updated successfully." });
+
 //   } catch (error) {
 //     await connection.rollback();
-//     // Clean up any newly uploaded files if the transaction fails
+//     // Cleanup newly uploaded files on failure
 //     if (newMainImage) deleteFile(newMainImage.path);
 //     newGalleryImages.forEach((file) => deleteFile(file.path));
 
-//     if (error.code === "ER_DUP_ENTRY") {
-//       return res
-//         .status(409)
-//         .json({
-//           status: false,
-//           message: "A product with this name already exists.",
-//         });
-//     }
 //     console.error("Error updating master product:", error);
-//     res
-//       .status(500)
-//       .json({
-//         status: false,
-//         message: "An error occurred during product update.",
-//       });
+//     res.status(500).json({ status: false, message: error.message || "An error occurred during product update." });
 //   } finally {
-//     if (connection) connection.release();
+//     connection.release();
 //   }
 // };
 
 
 
+//  New with Video 
 
 
+// --- UTILITIES ---
+const NewdeleteFile = (filePath) => {
+    if (!filePath) return;
+    const fullPath = path.join(
+        process.cwd(),
+        filePath.startsWith("/") ? filePath.substring(1) : filePath,
+    );
+    if (fs.existsSync(fullPath)) {
+        fs.unlink(fullPath, (err) => {
+            if (err) console.error("Error deleting file:", fullPath, err);
+        });
+    }
+};
+
+const NewgetRelativeUrl = (file) => {
+    if (!file) return null;
+    const fullPath = file.path;
+    const uploadsIndex = fullPath.indexOf("uploads");
+    if (uploadsIndex === -1) return null;
+    return "/" + fullPath.substring(uploadsIndex).replace(/\\/g, "/");
+};
 
 
-// ------this is with gallery array
-
-
-// --- FULL PRODUCTION-READY updateMasterProduct ---
+// --- UPDATE MASTER PRODUCT (Supporting Image & Video Gallery) ---
 exports.updateMasterProduct = async (req, res) => {
   const { id } = req.params;
   const {
-    name,
-    description,
-    categoryId,
-    subcategoryId,
-    brandId,
-    hsnCodeId,
+    name, description, categoryId, subcategoryId, brandId, hsnCodeId,
     attributeValueIds,
+    existingGalleryUrls // List of URLs (images/videos) to keep
   } = req.body;
 
-  // FIX: Read files using the bracket notation to match Multer config
   const newMainImage = req.files?.main_image?.[0];
-  const newGalleryImages = req.files?.['gallery_images[]'] || [];
+  const newGalleryMedia = req.files?.['gallery_images[]'] || [];
 
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
 
-    // Fetch existing data for file cleanup later
     const [existingRows] = await connection.query(
-      "SELECT main_image_url, gallery_image_urls FROM products WHERE id = ?",
-      [id],
+      "SELECT main_image_url, gallery_image_urls FROM products WHERE id = ?", [id]
     );
-    
     if (existingRows.length === 0) {
       await connection.rollback();
-      if (newMainImage) deleteFile(newMainImage.path);
-      newGalleryImages.forEach((file) => deleteFile(file.path));
       return res.status(404).json({ status: false, message: "Product not found." });
     }
-    
     const existingProduct = existingRows[0];
     const fields = [];
     const values = [];
 
-    // --- 1. Basic Info Update ---
+    // --- 1. Basic Fields ---
     if (name) {
       fields.push("name = ?", "slug = ?");
       values.push(name, slugify(name, { lower: true, strict: true }));
     }
-    if (description !== undefined) {
-      fields.push("description = ?");
-      values.push(description);
-    }
-    if (categoryId) {
-      fields.push("category_id = ?");
-      values.push(categoryId);
-    }
-    if (subcategoryId !== undefined) {
-      fields.push("subcategory_id = ?");
-      values.push(subcategoryId || null);
-    }
-    if (brandId) {
-      fields.push("brand_id = ?");
-      values.push(brandId);
-    }
-    if (hsnCodeId) {
-      fields.push("hsn_code_id = ?");
-      values.push(hsnCodeId);
-    }
+    if (description !== undefined) { fields.push("description = ?"); values.push(description); }
+    if (categoryId) { fields.push("category_id = ?"); values.push(categoryId); }
+    if (subcategoryId !== undefined) { fields.push("subcategory_id = ?"); values.push(subcategoryId || null); }
+    if (brandId) { fields.push("brand_id = ?"); values.push(brandId); }
+    if (hsnCodeId) { fields.push("hsn_code_id = ?"); values.push(hsnCodeId); }
 
-    // --- 2. Main Image Update ---
+    // --- 2. Main Image ---
     if (newMainImage) {
       fields.push("main_image_url = ?");
-      values.push(getRelativeUrl(newMainImage));
-      // deleteFile of old image happens after commit for safety
+      values.push(NewgetRelativeUrl(newMainImage));
+      NewdeleteFile(existingProduct.main_image_url);
     }
 
-    // --- 3. Gallery Images Update ---
-    if (newGalleryImages.length > 0) {
-      const newGalleryUrls = newGalleryImages.map(getRelativeUrl);
-      fields.push("gallery_image_urls = ?");
-      values.push(JSON.stringify(newGalleryUrls));
+    // --- 3. ROBUST GALLERY LOGIC (Images + Videos) ---
+    let finalGallery = [];
+    const currentDbGallery = JSON.parse(existingProduct.gallery_image_urls || "[]");
+
+    if (existingGalleryUrls) {
+      const keptUrls = typeof existingGalleryUrls === 'string' ? JSON.parse(existingGalleryUrls) : existingGalleryUrls;
+      const toDelete = currentDbGallery.filter(url => !keptUrls.includes(url));
+      toDelete.forEach(url => NewdeleteFile(url));
+      finalGallery = [...keptUrls];
+    } else {
+       if (newGalleryMedia.length > 0) {
+           currentDbGallery.forEach(url => NewdeleteFile(url));
+       } else {
+           finalGallery = [...currentDbGallery];
+       }
     }
 
-    // --- 4. Attribute Logic (Crucial for Snapshotting) ---
-    // If attributes are provided, we replace the existing mappings
+    if (newGalleryMedia.length > 0) {
+      const newUrls = newGalleryMedia.map(NewgetRelativeUrl);
+      finalGallery = [...finalGallery, ...newUrls];
+    }
+
+    fields.push("gallery_image_urls = ?");
+    values.push(JSON.stringify(finalGallery));
+
+    // --- 4. Attributes ---
     if (attributeValueIds) {
-      await connection.query("DELETE FROM product_attributes WHERE product_id = ?", [id]);
-      
-      const parsedAttributeIds = typeof attributeValueIds === 'string' 
-        ? JSON.parse(attributeValueIds) 
-        : attributeValueIds;
-
-      if (parsedAttributeIds.length > 0) {
-        const productAttributeQuery = `INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`;
-        const productAttributeValues = parsedAttributeIds.map((valueId) => [id, valueId]);
-        await connection.query(productAttributeQuery, [productAttributeValues]);
-      }
+        await connection.query("DELETE FROM product_attributes WHERE product_id = ?", [id]);
+        const parsedIds = typeof attributeValueIds === 'string' ? JSON.parse(attributeValueIds) : attributeValueIds;
+        if (parsedIds.length > 0) {
+            const productAttributeValues = parsedIds.map((vId) => [id, vId]);
+            await connection.query(`INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`, [productAttributeValues]);
+        }
     }
 
-    // --- 5. Execute Update Query ---
+    // --- 5. Execute ---
     if (fields.length > 0) {
       const query = `UPDATE products SET ${fields.join(", ")} WHERE id = ?`;
       values.push(id);
@@ -985,33 +876,17 @@ exports.updateMasterProduct = async (req, res) => {
     }
 
     await connection.commit();
-
-    // --- 6. Post-Commit File Cleanup ---
-    if (newMainImage && existingProduct.main_image_url) {
-      deleteFile(existingProduct.main_image_url);
-    }
-    if (newGalleryImages.length > 0 && existingProduct.gallery_image_urls) {
-      const oldGallery = JSON.parse(existingProduct.gallery_image_urls || "[]");
-      oldGallery.forEach(deleteFile);
-    }
-
     res.status(200).json({ status: true, message: "Product updated successfully." });
 
   } catch (error) {
     await connection.rollback();
-    // Cleanup newly uploaded files on failure
-    if (newMainImage) deleteFile(newMainImage.path);
-    newGalleryImages.forEach((file) => deleteFile(file.path));
-
-    console.error("Error updating master product:", error);
-    res.status(500).json({ status: false, message: error.message || "An error occurred during product update." });
+    if (newMainImage) NewdeleteFile(newMainImage.path);
+    newGalleryMedia.forEach((f) => NewdeleteFile(f.path));
+    res.status(500).json({ status: false, message: error.message });
   } finally {
     connection.release();
   }
 };
-
-
-
 
 
 
