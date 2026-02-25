@@ -83,8 +83,8 @@
 // //     const [countRows] = await db.query(countQuery, [searchPattern, searchPattern]);
 // //     const totalRecords = countRows[0].total;
 
-// //     res.status(200).json({ 
-// //         status: true, 
+// //     res.status(200).json({
+// //         status: true,
 // //         data: rows,
 // //         pagination: {
 // //             currentPage: page,
@@ -98,7 +98,6 @@
 // //   }
 // // };
 
-
 // // Get all master products with search, pagination, and GST percentage
 // exports.getAllMasterProducts = async (req, res) => {
 //   try {
@@ -110,21 +109,21 @@
 
 //     // The query now joins with hsn_codes to get the gst_percentage
 //     const dataQuery = `
-//         SELECT 
-//             p.id, 
-//             p.name, 
-//             b.name as brand_name, 
-//             c.name as category_name, 
-//             p.is_approved, 
+//         SELECT
+//             p.id,
+//             p.name,
+//             b.name as brand_name,
+//             c.name as category_name,
+//             p.is_approved,
 //             p.is_active,
 //             h.gst_percentage
 //         FROM products p
 //         LEFT JOIN brands b ON p.brand_id = b.id
 //         LEFT JOIN product_categories c ON p.category_id = c.id
 //         LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-//         WHERE 
-//             p.is_deleted = FALSE 
-//             AND p.is_active = TRUE 
+//         WHERE
+//             p.is_deleted = FALSE
+//             AND p.is_active = TRUE
 //             AND p.is_approved = TRUE
 //             AND (p.name LIKE ? OR b.name LIKE ?)
 //         ORDER BY p.created_at DESC
@@ -133,20 +132,20 @@
 //     const [rows] = await db.query(dataQuery, [searchPattern, searchPattern, limit, offset]);
 
 //     const countQuery = `
-//         SELECT COUNT(*) as total 
+//         SELECT COUNT(*) as total
 //         FROM products p
 //         LEFT JOIN brands b ON p.brand_id = b.id
-//         WHERE 
-//             p.is_deleted = FALSE 
-//             AND p.is_active = TRUE 
+//         WHERE
+//             p.is_deleted = FALSE
+//             AND p.is_active = TRUE
 //             AND p.is_approved = TRUE
 //             AND (p.name LIKE ? OR b.name LIKE ?)
 //     `;
 //     const [countRows] = await db.query(countQuery, [searchPattern, searchPattern]);
 //     const totalRecords = countRows[0].total;
 
-//     res.status(200).json({ 
-//         status: true, 
+//     res.status(200).json({
+//         status: true,
 //         data: rows,
 //         pagination: {
 //             currentPage: page,
@@ -161,28 +160,24 @@
 //   }
 // };
 
-
-
-
-
-
-
-
-const db = require('../../db');
-const Product = require('../Models/productModel');
-const slugify = require('../utils/slugify');
-const path = require('path');
-const fs = require('fs');
+const db = require("../../db");
+const Product = require("../Models/productModel");
+const slugify = require("../utils/slugify");
+const path = require("path");
+const fs = require("fs");
 
 // Helper function to safely delete files
 const deleteFile = (filePath) => {
-    if (!filePath) return;
-    const fullPath = path.join(process.cwd(), filePath.startsWith('/') ? filePath.substring(1) : filePath);
-    if (fs.existsSync(fullPath)) {
-        fs.unlink(fullPath, (err) => {
-            if (err) console.error("Error deleting file:", fullPath, err);
-        });
-    }
+  if (!filePath) return;
+  const fullPath = path.join(
+    process.cwd(),
+    filePath.startsWith("/") ? filePath.substring(1) : filePath,
+  );
+  if (fs.existsSync(fullPath)) {
+    fs.unlink(fullPath, (err) => {
+      if (err) console.error("Error deleting file:", fullPath, err);
+    });
+  }
 };
 
 // Admin adds a new product type to the master catalog--- Old before server
@@ -262,120 +257,159 @@ const deleteFile = (filePath) => {
 //     }
 // };
 
-
-
-
 // Admin adds a new product type to the master catalog
 exports.createMasterProduct = async (req, res) => {
-    try {
-        const {
-            name, categoryId, subcategoryId, brandId, hsnCodeId, description, attributeValueIds
-        } = req.body;
+  try {
+    const {
+      name,
+      categoryId,
+      subcategoryId,
+      brandId,
+      hsnCodeId,
+      description,
+      attributeValueIds,
+    } = req.body;
 
-        const mainImage = req.files?.main_image?.[0];
-        const galleryImages = req.files?.gallery_images || [];
+    const mainImage = req.files?.main_image?.[0];
+    const galleryImages = req.files?.gallery_images || [];
 
-        // 1. Basic Validation
-        if (!name || !categoryId || !brandId || !hsnCodeId || !mainImage) {
-            if (mainImage) deleteFile(mainImage.path);
-            galleryImages.forEach(file => deleteFile(file.path));
-            return res.status(400).json({ status: false, message: 'Name, Category, Brand, HSN, and a Main Image are required.' });
-        }
-
-        const slug = slugify(name, { lower: true, strict: true });
-
-        // 2. Check for Duplicates
-        const [existing] = await db.query('SELECT id FROM products WHERE slug = ? AND is_deleted = FALSE', [slug]);
-        if (existing.length > 0) {
-            if (mainImage) deleteFile(mainImage.path);
-            galleryImages.forEach(file => deleteFile(file.path));
-            return res.status(409).json({ status: false, message: 'A product with this name already exists.' });
-        }
-
-        // 3. Helper to format Image URLs
-        const getRelativeUrl = (file) => {
-            const fullPath = file.path;
-            const uploadsIndex = fullPath.indexOf('uploads');
-            if (uploadsIndex === -1) return null;
-            return '/' + fullPath.substring(uploadsIndex).replace(/\\/g, '/');
-        };
-
-        const mainImageUrl = getRelativeUrl(mainImage);
-        const galleryImageUrls = galleryImages.map(file => getRelativeUrl(file));
-
-        const connection = await db.getConnection();
-        try {
-            await connection.beginTransaction();
-
-            // 4. Insert Product
-            const productQuery = `INSERT INTO products (name, slug, category_id, subcategory_id, brand_id, hsn_code_id, description, main_image_url, gallery_image_urls, is_approved, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-            const [result] = await connection.query(productQuery, [name, slug, categoryId, subcategoryId, brandId, hsnCodeId, description, mainImageUrl, JSON.stringify(galleryImageUrls), true, true]);
-            const newProductId = result.insertId;
-
-            // 5. Handle Attributes (CORRECTED LOGIC)
-            if (attributeValueIds) {
-                let ids = attributeValueIds;
-
-                // FIX: FormData often sends arrays as JSON strings (e.g., '["6"]') or single strings (e.g., "6")
-                if (typeof ids === 'string') {
-                    try {
-                        // Check if it looks like a JSON array
-                        if (ids.trim().startsWith('[')) {
-                            ids = JSON.parse(ids);
-                        } else {
-                            // It's a single value string
-                            ids = [ids];
-                        }
-                    } catch (e) {
-                        // Fallback: If parse fails, treat as single value
-                        ids = [ids];
-                    }
-                } else if (!Array.isArray(ids)) {
-                    // It's a single number/value, wrap in array
-                    ids = [ids];
-                }
-
-                // Sanitize: Filter out empty values
-                ids = ids.filter(val => val !== null && val !== '' && val !== undefined);
-
-                if (ids.length > 0) {
-                    const productAttributeQuery = `INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`;
-                    
-                    // Map to [[productId, valueId], [productId, valueId]]
-                    const productAttributeValues = ids.map(valueId => {
-                        // Extra safety: If valueId is still an array (e.g. [[6]]), grab the first element
-                        const finalId = Array.isArray(valueId) ? valueId[0] : valueId;
-                        return [newProductId, finalId];
-                    });
-
-                    await connection.query(productAttributeQuery, [productAttributeValues]);
-                }
-            }
-
-            await connection.commit();
-            res.status(201).json({ status: true, message: "Master product created successfully", productId: newProductId });
-
-        } catch (error) {
-            await connection.rollback();
-            throw error; // Re-throw to be caught by outer catch
-        } finally {
-            if (connection) connection.release();
-        }
-
-    } catch (error) {
-        // Cleanup files on error
-        if (req.files?.main_image?.[0]) deleteFile(req.files.main_image[0].path);
-        (req.files?.gallery_images || []).forEach(file => deleteFile(file.path));
-
-        console.error("Error creating master product:", error);
-        res.status(500).json({ status: false, message: "An error occurred during product creation.", error: error.message });
+    // 1. Basic Validation
+    if (!name || !categoryId || !brandId || !hsnCodeId || !mainImage) {
+      if (mainImage) deleteFile(mainImage.path);
+      galleryImages.forEach((file) => deleteFile(file.path));
+      return res
+        .status(400)
+        .json({
+          status: false,
+          message: "Name, Category, Brand, HSN, and a Main Image are required.",
+        });
     }
+
+    const slug = slugify(name, { lower: true, strict: true });
+
+    // 2. Check for Duplicates
+    const [existing] = await db.query(
+      "SELECT id FROM products WHERE slug = ? AND is_deleted = FALSE",
+      [slug],
+    );
+    if (existing.length > 0) {
+      if (mainImage) deleteFile(mainImage.path);
+      galleryImages.forEach((file) => deleteFile(file.path));
+      return res
+        .status(409)
+        .json({
+          status: false,
+          message: "A product with this name already exists.",
+        });
+    }
+
+    // 3. Helper to format Image URLs
+    const getRelativeUrl = (file) => {
+      const fullPath = file.path;
+      const uploadsIndex = fullPath.indexOf("uploads");
+      if (uploadsIndex === -1) return null;
+      return "/" + fullPath.substring(uploadsIndex).replace(/\\/g, "/");
+    };
+
+    const mainImageUrl = getRelativeUrl(mainImage);
+    const galleryImageUrls = galleryImages.map((file) => getRelativeUrl(file));
+
+    const connection = await db.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      // 4. Insert Product
+      const productQuery = `INSERT INTO products (name, slug, category_id, subcategory_id, brand_id, hsn_code_id, description, main_image_url, gallery_image_urls, is_approved, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      const [result] = await connection.query(productQuery, [
+        name,
+        slug,
+        categoryId,
+        subcategoryId,
+        brandId,
+        hsnCodeId,
+        description,
+        mainImageUrl,
+        JSON.stringify(galleryImageUrls),
+        true,
+        true,
+      ]);
+      const newProductId = result.insertId;
+
+      // 5. Handle Attributes (CORRECTED LOGIC)
+      if (attributeValueIds) {
+        let ids = attributeValueIds;
+
+        // FIX: FormData often sends arrays as JSON strings (e.g., '["6"]') or single strings (e.g., "6")
+        if (typeof ids === "string") {
+          try {
+            // Check if it looks like a JSON array
+            if (ids.trim().startsWith("[")) {
+              ids = JSON.parse(ids);
+            } else {
+              // It's a single value string
+              ids = [ids];
+            }
+          } catch (e) {
+            // Fallback: If parse fails, treat as single value
+            ids = [ids];
+          }
+        } else if (!Array.isArray(ids)) {
+          // It's a single number/value, wrap in array
+          ids = [ids];
+        }
+
+        // Sanitize: Filter out empty values
+        ids = ids.filter(
+          (val) => val !== null && val !== "" && val !== undefined,
+        );
+
+        if (ids.length > 0) {
+          const productAttributeQuery = `INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`;
+
+          // Map to [[productId, valueId], [productId, valueId]]
+          const productAttributeValues = ids.map((valueId) => {
+            // Extra safety: If valueId is still an array (e.g. [[6]]), grab the first element
+            const finalId = Array.isArray(valueId) ? valueId[0] : valueId;
+            return [newProductId, finalId];
+          });
+
+          await connection.query(productAttributeQuery, [
+            productAttributeValues,
+          ]);
+        }
+      }
+
+      await connection.commit();
+      res
+        .status(201)
+        .json({
+          status: true,
+          message: "Master product created successfully",
+          productId: newProductId,
+        });
+    } catch (error) {
+      await connection.rollback();
+      throw error; // Re-throw to be caught by outer catch
+    } finally {
+      if (connection) connection.release();
+    }
+  } catch (error) {
+    // Cleanup files on error
+    if (req.files?.main_image?.[0]) deleteFile(req.files.main_image[0].path);
+    (req.files?.gallery_images || []).forEach((file) => deleteFile(file.path));
+
+    console.error("Error creating master product:", error);
+    res
+      .status(500)
+      .json({
+        status: false,
+        message: "An error occurred during product creation.",
+        error: error.message,
+      });
+  }
 };
 
-
-
-
-// === THIS IS THE FINAL, COMPLETE, AND CORRECT VERSION OF THIS FUNCTION === local code perfect working 
+// === THIS IS THE FINAL, COMPLETE, AND CORRECT VERSION OF THIS FUNCTION === local code perfect working
 // exports.getAllMasterProducts = async (req, res) => {
 //   try {
 //     const page = parseInt(req.query.page, 10) || 1;
@@ -387,12 +421,12 @@ exports.createMasterProduct = async (req, res) => {
 //     // --- THIS IS THE CORRECTED DATA QUERY ---
 //     // It now correctly selects ALL required fields: main_image_url, description, and the aggregated attributes.
 //     const dataQuery = `
-//       SELECT 
-//           p.id, 
-//           p.name, 
+//       SELECT
+//           p.id,
+//           p.name,
 //           p.description,
 //           p.main_image_url,
-//           b.name as brand_name, 
+//           b.name as brand_name,
 //           h.gst_percentage,
 //           c.name as category_name,
 //           sc.name as subcategory_name,
@@ -401,10 +435,10 @@ exports.createMasterProduct = async (req, res) => {
 //           (
 //             SELECT CONCAT('[', GROUP_CONCAT(
 //               JSON_OBJECT(
-//                 'attribute_name', attr.name, 
+//                 'attribute_name', attr.name,
 //                 'value', av.value
 //               )
-//             ), ']') 
+//             ), ']')
 //             FROM product_attributes pa
 //             JOIN attribute_values av ON pa.attribute_value_id = av.id
 //             JOIN attributes attr ON av.attribute_id = a.id
@@ -429,8 +463,8 @@ exports.createMasterProduct = async (req, res) => {
 //       LEFT JOIN product_subcategories sc ON p.subcategory_id = sc.id
 //       LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
 //       LEFT JOIN attributes a ON TRUE -- This is a trick to make the alias 'a' available in the subquery
-//       WHERE 
-//           p.is_deleted = FALSE 
+//       WHERE
+//           p.is_deleted = FALSE
 //           AND p.is_approved = TRUE
 //           AND (p.name LIKE ? OR b.name LIKE ?)
 //       GROUP BY p.id -- Grouping is essential for the GROUP_CONCAT to work correctly
@@ -438,7 +472,7 @@ exports.createMasterProduct = async (req, res) => {
 //       LIMIT ? OFFSET ?
 //     `;
 //     const [rows] = await db.query(dataQuery, [searchPattern, searchPattern, limit, offset]);
-    
+
 //     // Parse the attributes string back into a JSON object for each product
 //     const dataWithParsedAttributes = rows.map(product => ({
 //         ...product,
@@ -448,19 +482,19 @@ exports.createMasterProduct = async (req, res) => {
 //     }));
 
 //     const countQuery = `
-//         SELECT COUNT(*) as total 
+//         SELECT COUNT(*) as total
 //         FROM products p
 //         LEFT JOIN brands b ON p.brand_id = b.id
-//         WHERE 
-//             p.is_deleted = FALSE 
+//         WHERE
+//             p.is_deleted = FALSE
 //             AND p.is_approved = TRUE
 //             AND (p.name LIKE ? OR b.name LIKE ?)
 //     `;
 //     const [countRows] = await db.query(countQuery, [searchPattern, searchPattern]);
 //     const totalRecords = countRows[0].total;
 
-//     res.status(200).json({ 
-//         status: true, 
+//     res.status(200).json({
+//         status: true,
 //         data: dataWithParsedAttributes, // Send the parsed data
 //         pagination: {
 //             currentPage: page,
@@ -475,13 +509,12 @@ exports.createMasterProduct = async (req, res) => {
 //   }
 // };
 
-
 // === THIS IS THE FIXED, PRODUCTION-READY VERSION ===
 exports.getAllMasterProducts = async (req, res) => {
   try {
     const page = parseInt(req.query.page, 10) || 1;
     const limit = parseInt(req.query.limit, 10) || 10;
-    const search = req.query.search || '';
+    const search = req.query.search || "";
     const offset = (page - 1) * limit;
     const searchPattern = `%${search}%`;
 
@@ -544,11 +577,16 @@ exports.getAllMasterProducts = async (req, res) => {
       LIMIT ? OFFSET ?
     `;
 
-    const [rows] = await db.query(dataQuery, [searchPattern, searchPattern, limit, offset]);
-    
-    const dataWithParsedAttributes = rows.map(product => ({
-        ...product,
-        attributes: product.attributes ? JSON.parse(product.attributes) : []
+    const [rows] = await db.query(dataQuery, [
+      searchPattern,
+      searchPattern,
+      limit,
+      offset,
+    ]);
+
+    const dataWithParsedAttributes = rows.map((product) => ({
+      ...product,
+      attributes: product.attributes ? JSON.parse(product.attributes) : [],
     }));
 
     const countQuery = `
@@ -560,18 +598,21 @@ exports.getAllMasterProducts = async (req, res) => {
             AND p.is_approved = TRUE
             AND (p.name LIKE ? OR b.name LIKE ?)
     `;
-    const [countRows] = await db.query(countQuery, [searchPattern, searchPattern]);
+    const [countRows] = await db.query(countQuery, [
+      searchPattern,
+      searchPattern,
+    ]);
     const totalRecords = countRows[0].total;
 
-    res.status(200).json({ 
-        status: true, 
-        data: dataWithParsedAttributes,
-        pagination: {
-            currentPage: page,
-            totalPages: Math.ceil(totalRecords / limit),
-            totalRecords: totalRecords,
-            limit: limit
-        }
+    res.status(200).json({
+      status: true,
+      data: dataWithParsedAttributes,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalRecords / limit),
+        totalRecords: totalRecords,
+        limit: limit,
+      },
     });
   } catch (error) {
     console.error("Error fetching master products:", error);
@@ -579,16 +620,14 @@ exports.getAllMasterProducts = async (req, res) => {
   }
 };
 
-
 // Helper to get a web-accessible relative URL from multer's absolute path
 const getRelativeUrl = (file) => {
-    if (!file) return null;
-    const fullPath = file.path;
-    const uploadsIndex = fullPath.indexOf('uploads');
-    if (uploadsIndex === -1) return null;
-    return '/' + fullPath.substring(uploadsIndex).replace(/\\/g, '/');
+  if (!file) return null;
+  const fullPath = file.path;
+  const uploadsIndex = fullPath.indexOf("uploads");
+  if (uploadsIndex === -1) return null;
+  return "/" + fullPath.substring(uploadsIndex).replace(/\\/g, "/");
 };
-
 
 /**
  * Updates an existing master product, including its main image and gallery images.
@@ -652,7 +691,6 @@ const getRelativeUrl = (file) => {
 //             values.push(JSON.stringify(combinedGalleryUrls));
 //         }
 
-
 //         // Step 3: Handle text field updates (same as before)
 //         if (name !== undefined) {
 //             fields.push('name = ?');
@@ -698,100 +736,140 @@ const getRelativeUrl = (file) => {
 //     }
 // };
 
-
-
-
-
-
 // --- NEW: `updateMasterProduct` function ---
 exports.updateMasterProduct = async (req, res) => {
-    const { id } = req.params;
-    const { name, description, categoryId, subcategoryId, brandId, hsnCodeId, attributeValueIds } = req.body;
-    const newMainImage = req.files?.main_image?.[0];
-    const newGalleryImages = req.files?.gallery_images || [];
+  const { id } = req.params;
+  const {
+    name,
+    description,
+    categoryId,
+    subcategoryId,
+    brandId,
+    hsnCodeId,
+    attributeValueIds,
+  } = req.body;
+  const newMainImage = req.files?.main_image?.[0];
+  const newGalleryImages = req.files?.gallery_images || [];
 
-    const connection = await db.getConnection();
-    try {
-        await connection.beginTransaction();
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
 
-        const [existingRows] = await db.query('SELECT main_image_url, gallery_image_urls FROM products WHERE id = ?', [id]);
-        if (existingRows.length === 0) {
-            await connection.rollback();
-            if (newMainImage) deleteFile(newMainImage.path);
-            newGalleryImages.forEach(file => deleteFile(file.path));
-            return res.status(404).json({ status: false, message: "Product not found." });
-        }
-        const existingProduct = existingRows[0];
-
-        // --- Update Logic ---
-        const fields = [];
-        const values = [];
-
-        // Handle text fields and slug
-        if (name) {
-            fields.push('name = ?', 'slug = ?');
-            values.push(name, slugify(name, { lower: true, strict: true }));
-        }
-        if (description !== undefined) { fields.push('description = ?'); values.push(description); }
-        if (categoryId) { fields.push('category_id = ?'); values.push(categoryId); }
-        if (subcategoryId !== undefined) { fields.push('subcategory_id = ?'); values.push(subcategoryId || null); }
-        if (brandId) { fields.push('brand_id = ?'); values.push(brandId); }
-        if (hsnCodeId) { fields.push('hsn_code_id = ?'); values.push(hsnCodeId); }
-
-        // Handle main image update
-        if (newMainImage) {
-            fields.push('main_image_url = ?');
-            values.push(getRelativeUrl(newMainImage));
-            deleteFile(existingProduct.main_image_url);
-        }
-
-        // Handle gallery update (replace entire gallery)
-        if (newGalleryImages.length > 0) {
-            const existingGalleryUrls = JSON.parse(existingProduct.gallery_image_urls || '[]');
-            existingGalleryUrls.forEach(deleteFile);
-            const newGalleryUrls = newGalleryImages.map(getRelativeUrl);
-            fields.push('gallery_image_urls = ?');
-            values.push(JSON.stringify(newGalleryUrls));
-        }
-
-        // --- Attribute Update (Delete and Re-insert) ---
-        await connection.query('DELETE FROM product_attributes WHERE product_id = ?', [id]);
-        const parsedAttributeIds = attributeValueIds ? JSON.parse(attributeValueIds) : [];
-        if (parsedAttributeIds.length > 0) {
-            const productAttributeQuery = `INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`;
-            const productAttributeValues = parsedAttributeIds.map(valueId => [id, valueId]);
-            await connection.query(productAttributeQuery, [productAttributeValues]);
-        }
-
-        // --- Finalize Update Query ---
-        if (fields.length > 0) {
-            const query = `UPDATE products SET ${fields.join(', ')} WHERE id = ?`;
-            values.push(id);
-            await connection.query(query, values);
-        }
-
-        await connection.commit();
-        res.status(200).json({ status: true, message: "Product updated successfully." });
-
-    } catch (error) {
-        await connection.rollback();
-        // Clean up any newly uploaded files if the transaction fails
-        if (newMainImage) deleteFile(newMainImage.path);
-        newGalleryImages.forEach(file => deleteFile(file.path));
-
-        if (error.code === 'ER_DUP_ENTRY') {
-            return res.status(409).json({ status: false, message: "A product with this name already exists." });
-        }
-        console.error("Error updating master product:", error);
-        res.status(500).json({ status: false, message: "An error occurred during product update." });
-    } finally {
-        if (connection) connection.release();
+    const [existingRows] = await db.query(
+      "SELECT main_image_url, gallery_image_urls FROM products WHERE id = ?",
+      [id],
+    );
+    if (existingRows.length === 0) {
+      await connection.rollback();
+      if (newMainImage) deleteFile(newMainImage.path);
+      newGalleryImages.forEach((file) => deleteFile(file.path));
+      return res
+        .status(404)
+        .json({ status: false, message: "Product not found." });
     }
+    const existingProduct = existingRows[0];
+
+    // --- Update Logic ---
+    const fields = [];
+    const values = [];
+
+    // Handle text fields and slug
+    if (name) {
+      fields.push("name = ?", "slug = ?");
+      values.push(name, slugify(name, { lower: true, strict: true }));
+    }
+    if (description !== undefined) {
+      fields.push("description = ?");
+      values.push(description);
+    }
+    if (categoryId) {
+      fields.push("category_id = ?");
+      values.push(categoryId);
+    }
+    if (subcategoryId !== undefined) {
+      fields.push("subcategory_id = ?");
+      values.push(subcategoryId || null);
+    }
+    if (brandId) {
+      fields.push("brand_id = ?");
+      values.push(brandId);
+    }
+    if (hsnCodeId) {
+      fields.push("hsn_code_id = ?");
+      values.push(hsnCodeId);
+    }
+
+    // Handle main image update
+    if (newMainImage) {
+      fields.push("main_image_url = ?");
+      values.push(getRelativeUrl(newMainImage));
+      deleteFile(existingProduct.main_image_url);
+    }
+
+    // Handle gallery update (replace entire gallery)
+    if (newGalleryImages.length > 0) {
+      const existingGalleryUrls = JSON.parse(
+        existingProduct.gallery_image_urls || "[]",
+      );
+      existingGalleryUrls.forEach(deleteFile);
+      const newGalleryUrls = newGalleryImages.map(getRelativeUrl);
+      fields.push("gallery_image_urls = ?");
+      values.push(JSON.stringify(newGalleryUrls));
+    }
+
+    // --- Attribute Update (Delete and Re-insert) ---
+    await connection.query(
+      "DELETE FROM product_attributes WHERE product_id = ?",
+      [id],
+    );
+    const parsedAttributeIds = attributeValueIds
+      ? JSON.parse(attributeValueIds)
+      : [];
+    if (parsedAttributeIds.length > 0) {
+      const productAttributeQuery = `INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`;
+      const productAttributeValues = parsedAttributeIds.map((valueId) => [
+        id,
+        valueId,
+      ]);
+      await connection.query(productAttributeQuery, [productAttributeValues]);
+    }
+
+    // --- Finalize Update Query ---
+    if (fields.length > 0) {
+      const query = `UPDATE products SET ${fields.join(", ")} WHERE id = ?`;
+      values.push(id);
+      await connection.query(query, values);
+    }
+
+    await connection.commit();
+    res
+      .status(200)
+      .json({ status: true, message: "Product updated successfully." });
+  } catch (error) {
+    await connection.rollback();
+    // Clean up any newly uploaded files if the transaction fails
+    if (newMainImage) deleteFile(newMainImage.path);
+    newGalleryImages.forEach((file) => deleteFile(file.path));
+
+    if (error.code === "ER_DUP_ENTRY") {
+      return res
+        .status(409)
+        .json({
+          status: false,
+          message: "A product with this name already exists.",
+        });
+    }
+    console.error("Error updating master product:", error);
+    res
+      .status(500)
+      .json({
+        status: false,
+        message: "An error occurred during product update.",
+      });
+  } finally {
+    if (connection) connection.release();
+  }
 };
-
-
-
-
 
 // --- Your existing `getAllMasterProducts` function ---
 // exports.getAllMasterProducts = async (req, res) => {
@@ -833,10 +911,10 @@ exports.updateMasterProduct = async (req, res) => {
 
 // --- NEW: `getMasterProductById` function ---
 exports.getMasterProductById = async (req, res) => {
-    const { id } = req.params;
-    try {
-        // Fetch main product details
-        const productSql = `
+  const { id } = req.params;
+  try {
+    // Fetch main product details
+    const productSql = `
             SELECT p.*, b.name as brand_name, c.name as category_name, sc.name as subcategory_name
             FROM products p
             LEFT JOIN brands b ON p.brand_id = b.id
@@ -844,60 +922,59 @@ exports.getMasterProductById = async (req, res) => {
             LEFT JOIN product_subcategories sc ON p.subcategory_id = sc.id
             WHERE p.id = ? AND p.is_deleted = FALSE
         `;
-        const [productRows] = await db.query(productSql, [id]);
+    const [productRows] = await db.query(productSql, [id]);
 
-        if (productRows.length === 0) {
-            return res.status(404).json({ status: false, message: "Product not found." });
-        }
-        const product = productRows[0];
+    if (productRows.length === 0) {
+      return res
+        .status(404)
+        .json({ status: false, message: "Product not found." });
+    }
+    const product = productRows[0];
 
-        // Parse gallery URLs string into a proper array
-        product.gallery_image_urls = JSON.parse(product.gallery_image_urls || '[]');
+    // Parse gallery URLs string into a proper array
+    product.gallery_image_urls = JSON.parse(product.gallery_image_urls || "[]");
 
-        // Fetch associated attributes for the product
-        const attributesSql = `
+    // Fetch associated attributes for the product
+    const attributesSql = `
             SELECT pa.attribute_value_id, a.name as attribute_name
             FROM product_attributes pa
             JOIN attribute_values av ON pa.attribute_value_id = av.id
             JOIN attributes a ON av.attribute_id = a.id
             WHERE pa.product_id = ?
         `;
-        const [attributes] = await db.query(attributesSql, [id]);
-        product.attributes = attributes;
+    const [attributes] = await db.query(attributesSql, [id]);
+    product.attributes = attributes;
 
-        res.status(200).json({ status: true, data: product });
-    } catch (error) {
-        console.error("Error fetching product details:", error);
-        res.status(500).json({ status: false, message: "Failed to fetch product details." });
-    }
+    res.status(200).json({ status: true, data: product });
+  } catch (error) {
+    console.error("Error fetching product details:", error);
+    res
+      .status(500)
+      .json({ status: false, message: "Failed to fetch product details." });
+  }
 };
-
-
-
 
 exports.getTrendingSearches = async (req, res) => {
-    try {
-        // --- THIS IS THE FIX ---
-        // We are now ordering by the category's ID in descending order, which is a
-        // good way to show the newest categories as "trending".
-        // If you have a 'display_order' column, that would be even better to use.
-        const [trending] = await db.query(
-            `SELECT name FROM product_categories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY id DESC LIMIT 8`
-        );
-        
-        // This part remains the same
-        const trendingTerms = trending.map(t => t.name);
+  try {
+    // --- THIS IS THE FIX ---
+    // We are now ordering by the category's ID in descending order, which is a
+    // good way to show the newest categories as "trending".
+    // If you have a 'display_order' column, that would be even better to use.
+    const [trending] = await db.query(
+      `SELECT name FROM product_categories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY id DESC LIMIT 8`,
+    );
 
-        res.status(200).json({ status: true, data: trendingTerms });
-    } catch (error) {
-        console.error("Error fetching trending searches:", error);
-        res.status(500).json({ status: false, message: "Could not fetch trending searches." });
-    }
+    // This part remains the same
+    const trendingTerms = trending.map((t) => t.name);
+
+    res.status(200).json({ status: true, data: trendingTerms });
+  } catch (error) {
+    console.error("Error fetching trending searches:", error);
+    res
+      .status(500)
+      .json({ status: false, message: "Could not fetch trending searches." });
+  }
 };
-
-
-
-
 
 // ==========================================================
 // === THE NEW, PRODUCTION-READY SEARCH FUNCTION          === old before server
@@ -942,7 +1019,7 @@ exports.getTrendingSearches = async (req, res) => {
 //             // Ensure we only show products available in the user's pincode
 //             whereClauses.push('spp.id IS NOT NULL');
 //         }
-        
+
 //         const whereString = `WHERE ${whereClauses.join(' AND ')}`;
 
 //         // --- 3. Handle Sorting ---
@@ -982,7 +1059,7 @@ exports.getTrendingSearches = async (req, res) => {
 //         const dataQuery = `
 //             SELECT DISTINCT
 //                 p.id as product_id, p.name, p.main_image_url, p.description, p.gallery_image_urls,
-//                 b.name as brand_name, 
+//                 b.name as brand_name,
 //                 sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity
 //             ${baseSelectAndJoins} ${whereString} ${orderByClause} LIMIT ? OFFSET ?
 //         `;
@@ -1010,8 +1087,6 @@ exports.getTrendingSearches = async (req, res) => {
 //     }
 // };
 
-
-
 // ==========================================================
 // === THE FIXED, PRODUCTION-READY SEARCH FUNCTION        ===
 // ==========================================================
@@ -1022,7 +1097,7 @@ exports.getTrendingSearches = async (req, res) => {
 
 //         // --- 1. Get all possible parameters from the frontend ---
 //         const { query, categoryId, brandId, sortBy, page = 1, limit = 20 } = req.query;
-//         const pincode = req.query.pincode; 
+//         const pincode = req.query.pincode;
 
 //         if (!query && !categoryId && !brandId) {
 //             return res.status(400).json({ status: false, message: "A search query or filter is required." });
@@ -1034,7 +1109,7 @@ exports.getTrendingSearches = async (req, res) => {
 
 //         // Handle the text search query
 //         if (query) {
-//             const searchTerms = query.split(' ').filter(term => term); 
+//             const searchTerms = query.split(' ').filter(term => term);
 //             const searchConditions = searchTerms.map(term => {
 //                 queryParams.push(`%${term}%`, `%${term}%`, `%${term}%`);
 //                 return "(p.name LIKE ? OR p.description LIKE ? OR b.name LIKE ?)";
@@ -1054,7 +1129,7 @@ exports.getTrendingSearches = async (req, res) => {
 //         if (pincode) {
 //             whereClauses.push('spp.id IS NOT NULL');
 //         }
-        
+
 //         const whereString = `WHERE ${whereClauses.join(' AND ')}`;
 
 //         // --- 3. Handle Sorting ---
@@ -1077,7 +1152,7 @@ exports.getTrendingSearches = async (req, res) => {
 //         // Note: We handle the parameter order carefully here.
 //         // If pincode exists, it goes into the JOIN, which is technically before the WHERE clauses in execution context,
 //         // but typically parameter binding order follows the string order.
-        
+
 //         const baseSelectAndJoins = `
 //             FROM seller_products sp
 //             JOIN products p ON sp.product_id = p.id
@@ -1099,20 +1174,20 @@ exports.getTrendingSearches = async (req, res) => {
 //         // ✅ FIX: Added 'p.popularity' to the SELECT list
 //         const dataQuery = `
 //             SELECT DISTINCT
-//                 p.id as product_id, 
-//                 p.name, 
-//                 p.main_image_url, 
-//                 p.description, 
+//                 p.id as product_id,
+//                 p.name,
+//                 p.main_image_url,
+//                 p.description,
 //                 p.gallery_image_urls,
-//                 b.name as brand_name, 
-//                 sp.id as offer_id, 
-//                 sp.selling_price, 
-//                 sp.mrp, 
+//                 b.name as brand_name,
+//                 sp.id as offer_id,
+//                 sp.selling_price,
+//                 sp.mrp,
 //                 sp.minimum_order_quantity,
 //                 p.popularity -- ✅ REQUIRED FOR ORDER BY
 //             ${baseSelectAndJoins} ${whereString} ${orderByClause} LIMIT ? OFFSET ?
 //         `;
-        
+
 //         // Execute the search
 //         const [products] = await db.query(dataQuery, [...queryParams, limitNum, offset]);
 
@@ -1136,63 +1211,93 @@ exports.getTrendingSearches = async (req, res) => {
 //     }
 // };
 
-
 // trying fixing
 exports.searchProducts = async (req, res) => {
-    try {
-        const { query, categoryId, brandId, sortBy, page = 1, limit = 20, pincode } = req.query;
+  try {
+    const {
+      query,
+      categoryId,
+      brandId,
+      sortBy,
+      page = 1,
+      limit = 20,
+      pincode,
+    } = req.query;
 
-        if (!query && !categoryId && !brandId) {
-            return res.status(400).json({ status: false, message: "A search query or filter is required." });
-        }
+    if (!query && !categoryId && !brandId) {
+      return res
+        .status(400)
+        .json({
+          status: false,
+          message: "A search query or filter is required.",
+        });
+    }
 
-        // --- 1. Get BV Setting (From your Home Screen logic) ---
-        const [settingsRows] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'");
-        const bvGenerationPct = settingsRows[0] ? parseFloat(settingsRows[0].setting_value) : 80.0;
+    // --- 1. Get BV Setting (From your Home Screen logic) ---
+    const [settingsRows] = await db.query(
+      "SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'",
+    );
+    const bvGenerationPct = settingsRows[0]
+      ? parseFloat(settingsRows[0].setting_value)
+      : 80.0;
 
-        // --- 2. Build WHERE Clauses ---
-        let whereClauses = ['sp.is_active = TRUE'];
-        let queryParams = [];
+    // --- 2. Build WHERE Clauses ---
+    let whereClauses = ["sp.is_active = TRUE"];
+    let queryParams = [];
 
-        if (query) {
-            const searchTerms = query.split(' ').filter(term => term); 
-            const searchConditions = searchTerms.map(term => {
-                queryParams.push(`%${term}%`, `%${term}%`, `%${term}%`);
-                return "(p.name LIKE ? OR p.description LIKE ? OR b.name LIKE ?)";
-            }).join(' AND ');
-            whereClauses.push(`(${searchConditions})`);
-        }
+    if (query) {
+      const searchTerms = query.split(" ").filter((term) => term);
+      const searchConditions = searchTerms
+        .map((term) => {
+          queryParams.push(`%${term}%`, `%${term}%`, `%${term}%`);
+          return "(p.name LIKE ? OR p.description LIKE ? OR b.name LIKE ?)";
+        })
+        .join(" AND ");
+      whereClauses.push(`(${searchConditions})`);
+    }
 
-        if (categoryId) { whereClauses.push('p.category_id = ?'); queryParams.push(categoryId); }
-        if (brandId) { whereClauses.push('p.brand_id = ?'); queryParams.push(brandId); }
-        if (pincode) { whereClauses.push('spp.id IS NOT NULL'); }
-        
-        const whereString = `WHERE ${whereClauses.join(' AND ')}`;
+    if (categoryId) {
+      whereClauses.push("p.category_id = ?");
+      queryParams.push(categoryId);
+    }
+    if (brandId) {
+      whereClauses.push("p.brand_id = ?");
+      queryParams.push(brandId);
+    }
+    if (pincode) {
+      whereClauses.push("spp.id IS NOT NULL");
+    }
 
-        // --- 3. Handle Sorting ---
-        let orderByClause = 'ORDER BY p.popularity DESC';
-        switch (sortBy) {
-            case 'price_asc': orderByClause = 'ORDER BY sp.selling_price ASC'; break;
-            case 'price_desc': orderByClause = 'ORDER BY sp.selling_price DESC'; break;
-        }
+    const whereString = `WHERE ${whereClauses.join(" AND ")}`;
 
-        const pageNum = parseInt(page, 10);
-        const limitNum = parseInt(limit, 10);
-        const offset = (pageNum - 1) * limitNum;
+    // --- 3. Handle Sorting ---
+    let orderByClause = "ORDER BY p.popularity DESC";
+    switch (sortBy) {
+      case "price_asc":
+        orderByClause = "ORDER BY sp.selling_price ASC";
+        break;
+      case "price_desc":
+        orderByClause = "ORDER BY sp.selling_price DESC";
+        break;
+    }
 
-        // --- 4. Final Data Query with BV Calculation & Attribute Subquery ---
-        const baseSelectAndJoins = `
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const offset = (pageNum - 1) * limitNum;
+
+    // --- 4. Final Data Query with BV Calculation & Attribute Subquery ---
+    const baseSelectAndJoins = `
             FROM seller_products sp
             JOIN products p ON sp.product_id = p.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-            ${pincode ? `JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id AND spp.pincode = ?` : ''}
+            ${pincode ? `JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id AND spp.pincode = ?` : ""}
         `;
 
-        if (pincode) queryParams.unshift(pincode);
+    if (pincode) queryParams.unshift(pincode);
 
-        // Actual Data SQL
-        const dataQuery = `
+    // Actual Data SQL
+    const dataQuery = `
             SELECT DISTINCT
                 p.id as product_id, 
                 p.name, 
@@ -1218,78 +1323,79 @@ exports.searchProducts = async (req, res) => {
             ${baseSelectAndJoins} ${whereString} ${orderByClause} LIMIT ? OFFSET ?
         `;
 
-        const [productsRaw] = await db.query(dataQuery, [...queryParams, limitNum, offset]);
+    const [productsRaw] = await db.query(dataQuery, [
+      ...queryParams,
+      limitNum,
+      offset,
+    ]);
 
-        // --- 5. Process the Result (Parse JSON strings) ---
-        const processedProducts = productsRaw.map(p => ({
-            ...p,
-            bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
-            gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : [],
-            attributes: p.attributes ? JSON.parse(p.attributes) : []
-        }));
+    // --- 5. Process the Result (Parse JSON strings) ---
+    const processedProducts = productsRaw.map((p) => ({
+      ...p,
+      bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
+      gallery_image_urls: p.gallery_image_urls
+        ? JSON.parse(p.gallery_image_urls)
+        : [],
+      attributes: p.attributes ? JSON.parse(p.attributes) : [],
+    }));
 
-        // Get total count
-        const countQuery = `SELECT COUNT(DISTINCT p.id) as total ${baseSelectAndJoins} ${whereString}`;
-        const [countRows] = await db.query(countQuery, queryParams);
-        const totalProducts = countRows[0].total;
+    // Get total count
+    const countQuery = `SELECT COUNT(DISTINCT p.id) as total ${baseSelectAndJoins} ${whereString}`;
+    const [countRows] = await db.query(countQuery, queryParams);
+    const totalProducts = countRows[0].total;
 
-        res.status(200).json({
-            status: true,
-            data: {
-                products: processedProducts,
-                pagination: {
-                    total: totalProducts,
-                    page: pageNum,
-                    limit: limitNum,
-                    totalPages: Math.ceil(totalProducts / limitNum)
-                }
-            }
-        });
-
-    } catch (error) {
-        console.error("Error in searchProducts:", error);
-        res.status(500).json({ status: false, message: "Search failed." });
-    }
+    res.status(200).json({
+      status: true,
+      data: {
+        products: processedProducts,
+        pagination: {
+          total: totalProducts,
+          page: pageNum,
+          limit: limitNum,
+          totalPages: Math.ceil(totalProducts / limitNum),
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Error in searchProducts:", error);
+    res.status(500).json({ status: false, message: "Search failed." });
+  }
 };
-
-
-
-
-
 
 exports.getSearchSuggestions = async (req, res) => {
-    const { query } = req.query;
+  const { query } = req.query;
 
-    if (!query || query.trim().length < 2) {
-        return res.status(200).json({ status: true, data: [] });
-    }
+  if (!query || query.trim().length < 2) {
+    return res.status(200).json({ status: true, data: [] });
+  }
 
-    try {
-        const searchTerm = query.trim();
-        
-        // --- THIS IS THE FIX ---
-        // We use the LOWER() function on both the column and the search term
-        // to ensure the search is always case-insensitive.
-        const [suggestions] = await db.query(
-            `SELECT DISTINCT name FROM products WHERE LOWER(name) LIKE ? AND is_active = TRUE LIMIT 5`,
-            [`%${searchTerm.toLowerCase()}%`] // We also convert the search term to lowercase here
-        );
-        
-        res.status(200).json({ status: true, data: suggestions });
-    } catch (error) {
-        console.error("Error fetching search suggestions:", error);
-        res.status(500).json({ status: false, message: "Could not fetch suggestions." });
-    }
+  try {
+    const searchTerm = query.trim();
+
+    // --- THIS IS THE FIX ---
+    // We use the LOWER() function on both the column and the search term
+    // to ensure the search is always case-insensitive.
+    const [suggestions] = await db.query(
+      `SELECT DISTINCT name FROM products WHERE LOWER(name) LIKE ? AND is_active = TRUE LIMIT 5`,
+      [`%${searchTerm.toLowerCase()}%`], // We also convert the search term to lowercase here
+    );
+
+    res.status(200).json({ status: true, data: suggestions });
+  } catch (error) {
+    console.error("Error fetching search suggestions:", error);
+    res
+      .status(500)
+      .json({ status: false, message: "Could not fetch suggestions." });
+  }
 };
-
 
 // --- NEW PUBLIC CONTROLLER FUNCTION for Product Details ---
 exports.getProductForUser = async (req, res) => {
-    const { id } = req.params;
-    const { pincode } = req.query; // Pincode is optional here
+  const { id } = req.params;
+  const { pincode } = req.query; // Pincode is optional here
 
-    try {
-        const query = `
+  try {
+    const query = `
             SELECT 
                 p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
                 b.name as brand_name,
@@ -1311,27 +1417,35 @@ exports.getProductForUser = async (req, res) => {
             ORDER BY sp.selling_price ASC
             LIMIT 1;
         `;
-        
-        const [productRows] = await db.query(query, [id]);
 
-        if (productRows.length === 0) {
-            return res.status(404).json({ status: false, message: "Product not found or is currently unavailable." });
-        }
+    const [productRows] = await db.query(query, [id]);
 
-        const product = productRows[0];
-        // Parse JSON string fields into arrays for the frontend
-        product.gallery_image_urls = product.gallery_image_urls ? JSON.parse(product.gallery_image_urls) : [];
-        product.attributes = product.attributes ? JSON.parse(product.attributes) : [];
-
-        res.status(200).json({ status: true, data: product });
-
-    } catch (error) {
-        console.error("Error fetching product for user:", error);
-        res.status(500).json({ status: false, message: "An internal server error occurred." });
+    if (productRows.length === 0) {
+      return res
+        .status(404)
+        .json({
+          status: false,
+          message: "Product not found or is currently unavailable.",
+        });
     }
+
+    const product = productRows[0];
+    // Parse JSON string fields into arrays for the frontend
+    product.gallery_image_urls = product.gallery_image_urls
+      ? JSON.parse(product.gallery_image_urls)
+      : [];
+    product.attributes = product.attributes
+      ? JSON.parse(product.attributes)
+      : [];
+
+    res.status(200).json({ status: true, data: product });
+  } catch (error) {
+    console.error("Error fetching product for user:", error);
+    res
+      .status(500)
+      .json({ status: false, message: "An internal server error occurred." });
+  }
 };
-
-
 
 /**
  * @desc   Fetch products by sub-category ID, available at a specific pincode.
@@ -1339,21 +1453,30 @@ exports.getProductForUser = async (req, res) => {
  * @access Public
  */
 exports.getProductsByCategory = async (req, res) => {
-    try {
-        const { categoryId } = req.params;
-        const { pincode, page = 1 } = req.query;
-        const limit = 20;
-        const offset = (page - 1) * limit;
+  try {
+    const { categoryId } = req.params;
+    const { pincode, page = 1 } = req.query;
+    const limit = 20;
+    const offset = (page - 1) * limit;
 
-        if (!categoryId || !pincode) {
-            return res.status(400).json({ status: false, message: 'Category ID and Pincode are required.' });
-        }
+    if (!categoryId || !pincode) {
+      return res
+        .status(400)
+        .json({
+          status: false,
+          message: "Category ID and Pincode are required.",
+        });
+    }
 
-        const [settingsRows] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'");
-        const bvSetting = settingsRows[0];
-        const bvGenerationPct = bvSetting ? parseFloat(bvSetting.setting_value) : 80.0;
+    const [settingsRows] = await db.query(
+      "SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'",
+    );
+    const bvSetting = settingsRows[0];
+    const bvGenerationPct = bvSetting
+      ? parseFloat(bvSetting.setting_value)
+      : 80.0;
 
-        const query = `
+    const query = `
             SELECT 
                 p.id, 
                 p.name, 
@@ -1383,15 +1506,29 @@ exports.getProductsByCategory = async (req, res) => {
             OFFSET ?;
         `;
 
-        const [products] = await db.query(query, [bvGenerationPct, categoryId, pincode, limit, offset]);
+    const [products] = await db.query(query, [
+      bvGenerationPct,
+      categoryId,
+      pincode,
+      limit,
+      offset,
+    ]);
 
-        res.status(200).json({
-            status: true,
-            data: products,
-        });
+    // res.status(200).json({
+    //     status: true,
+    //     data: products,
+    // });
 
-    } catch (error) {
-        console.error("Error in getProductsByCategory:", error);
-        res.status(500).json({ status: false, message: 'Internal server error.' });
-    }
+    const response = {
+      status: true,
+      data: products,
+    };
+
+    console.log("API Response:", response);
+
+    res.status(200).json(response);
+  } catch (error) {
+    console.error("Error in getProductsByCategory:", error);
+    res.status(500).json({ status: false, message: "Internal server error." });
+  }
 };
