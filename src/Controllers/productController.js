@@ -1452,6 +1452,98 @@ exports.getProductForUser = async (req, res) => {
  * @route  GET /api/products/by-category/:categoryId
  * @access Public
  */
+// exports.getProductsByCategory = async (req, res) => {
+//   try {
+//     const { categoryId } = req.params;
+//     const { pincode, page = 1 } = req.query;
+//     const limit = 20;
+//     const offset = (page - 1) * limit;
+
+//     if (!categoryId || !pincode) {
+//       return res
+//         .status(400)
+//         .json({
+//           status: false,
+//           message: "Category ID and Pincode are required.",
+//         });
+//     }
+
+//     const [settingsRows] = await db.query(
+//       "SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'",
+//     );
+//     const bvSetting = settingsRows[0];
+//     const bvGenerationPct = bvSetting
+//       ? parseFloat(bvSetting.setting_value)
+//       : 80.0;
+
+//     const query = `
+//             SELECT 
+//                 p.id, 
+//                 p.name, 
+//                 p.slug, 
+//                 p.description,
+//                 p.main_image_url,
+//                 sp.selling_price, 
+//                 sp.mrp, 
+//                 sp.minimum_order_quantity,
+//                 ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * (? / 100) as bv_earned
+//             FROM 
+//                 products AS p
+//             JOIN 
+//                 seller_products AS sp ON p.id = sp.product_id
+//             JOIN 
+//                 seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
+//             LEFT JOIN 
+//                 hsn_codes AS h ON p.hsn_code_id = h.id
+//             WHERE 
+//                 p.subcategory_id = ? 
+//                 AND spp.pincode = ?
+//                 AND p.is_active = 1
+//                 AND p.is_deleted = 0
+//                 AND sp.is_active = 1
+//                 AND sp.selling_price > 0 -- This line is crucial to hide bad data
+//             LIMIT ?
+//             OFFSET ?;
+//         `;
+
+//     const [products] = await db.query(query, [
+//       bvGenerationPct,
+//       categoryId,
+//       pincode,
+//       limit,
+//       offset,
+//     ]);
+
+//     // res.status(200).json({
+//     //     status: true,
+//     //     data: products,
+//     // });
+
+//     const response = {
+//       status: true,
+//       data: products,
+//     };
+
+//     console.log("API Response:", response);
+
+//     res.status(200).json(response);
+//   } catch (error) {
+//     console.error("Error in getProductsByCategory:", error);
+//     res.status(500).json({ status: false, message: "Internal server error." });
+//   }
+// };
+
+
+
+
+// Testing with image
+
+
+/**
+ * @desc   Fetch products by sub-category ID, available at a specific pincode.
+ * @route  GET /api/products/by-category/:categoryId
+ * @access Public
+ */
 exports.getProductsByCategory = async (req, res) => {
   try {
     const { categoryId } = req.params;
@@ -1460,39 +1552,50 @@ exports.getProductsByCategory = async (req, res) => {
     const offset = (page - 1) * limit;
 
     if (!categoryId || !pincode) {
-      return res
-        .status(400)
-        .json({
-          status: false,
-          message: "Category ID and Pincode are required.",
-        });
+      return res.status(400).json({
+        status: false,
+        message: "Category ID and Pincode are required.",
+      });
     }
 
+    // 1. Fetch BV Percentage setting from DB
     const [settingsRows] = await db.query(
       "SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'",
     );
     const bvSetting = settingsRows[0];
-    const bvGenerationPct = bvSetting
-      ? parseFloat(bvSetting.setting_value)
-      : 80.0;
+    const bvGenerationPct = bvSetting ? parseFloat(bvSetting.setting_value) : 80.0;
 
     const query = `
             SELECT 
-                p.id, 
+                p.id as product_id, -- Use product_id for frontend consistency
                 p.name, 
                 p.slug, 
                 p.description,
                 p.main_image_url,
+                p.gallery_image_urls,
+                b.name as brand_name,
+                sp.id as offer_id,
                 sp.selling_price, 
                 sp.mrp, 
                 sp.minimum_order_quantity,
-                ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * (? / 100) as bv_earned
+                -- 2. BV Calculation
+                ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
+                -- 3. THE MISSING ATTRIBUTES SUBQUERY (Fixes the "Standard" variant issue)
+                (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                    FROM product_attributes pa
+                    JOIN attribute_values av ON pa.attribute_value_id = av.id
+                    JOIN attributes attr ON av.attribute_id = attr.id
+                    WHERE pa.product_id = p.id
+                ) as attributes
             FROM 
                 products AS p
             JOIN 
                 seller_products AS sp ON p.id = sp.product_id
             JOIN 
                 seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
+            LEFT JOIN 
+                brands AS b ON p.brand_id = b.id
             LEFT JOIN 
                 hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE 
@@ -1501,7 +1604,8 @@ exports.getProductsByCategory = async (req, res) => {
                 AND p.is_active = 1
                 AND p.is_deleted = 0
                 AND sp.is_active = 1
-                AND sp.selling_price > 0 -- This line is crucial to hide bad data
+                AND sp.selling_price > 0 
+            GROUP BY sp.id
             LIMIT ?
             OFFSET ?;
         `;
@@ -1514,17 +1618,26 @@ exports.getProductsByCategory = async (req, res) => {
       offset,
     ]);
 
-    // res.status(200).json({
-    //     status: true,
-    //     data: products,
-    // });
+    /**
+     * 4. FORMAT DATA: Turn JSON strings into real Arrays
+     * This is critical because MySQL returns attributes as a string.
+     * React Native needs a real array to map through attributes.
+     */
+    const formattedProducts = products.map(p => ({
+        ...p,
+        bv_earned: parseFloat(p.bv_earned || 0),
+        // Ensure strings are parsed into real arrays
+        gallery_image_urls: p.gallery_image_urls ? (typeof p.gallery_image_urls === 'string' ? JSON.parse(p.gallery_image_urls) : p.gallery_image_urls) : [],
+        attributes: p.attributes ? (typeof p.attributes === 'string' ? JSON.parse(p.attributes) : p.attributes) : []
+    }));
 
     const response = {
       status: true,
-      data: products,
+      data: formattedProducts,
     };
 
-    console.log("API Response:", response);
+    // Logging the response to confirm 'attributes' array exists
+    console.log("API Response (Category Data):", JSON.stringify(response.data[0]?.attributes));
 
     res.status(200).json(response);
   } catch (error) {
