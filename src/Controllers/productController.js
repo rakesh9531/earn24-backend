@@ -736,7 +736,154 @@ const getRelativeUrl = (file) => {
 //     }
 // };
 
+
+
+//  This is final workign before gallary
 // --- NEW: `updateMasterProduct` function ---
+// exports.updateMasterProduct = async (req, res) => {
+//   const { id } = req.params;
+//   const {
+//     name,
+//     description,
+//     categoryId,
+//     subcategoryId,
+//     brandId,
+//     hsnCodeId,
+//     attributeValueIds,
+//   } = req.body;
+//   const newMainImage = req.files?.main_image?.[0];
+//   const newGalleryImages = req.files?.gallery_images || [];
+
+//   const connection = await db.getConnection();
+//   try {
+//     await connection.beginTransaction();
+
+//     const [existingRows] = await db.query(
+//       "SELECT main_image_url, gallery_image_urls FROM products WHERE id = ?",
+//       [id],
+//     );
+//     if (existingRows.length === 0) {
+//       await connection.rollback();
+//       if (newMainImage) deleteFile(newMainImage.path);
+//       newGalleryImages.forEach((file) => deleteFile(file.path));
+//       return res
+//         .status(404)
+//         .json({ status: false, message: "Product not found." });
+//     }
+//     const existingProduct = existingRows[0];
+
+//     // --- Update Logic ---
+//     const fields = [];
+//     const values = [];
+
+//     // Handle text fields and slug
+//     if (name) {
+//       fields.push("name = ?", "slug = ?");
+//       values.push(name, slugify(name, { lower: true, strict: true }));
+//     }
+//     if (description !== undefined) {
+//       fields.push("description = ?");
+//       values.push(description);
+//     }
+//     if (categoryId) {
+//       fields.push("category_id = ?");
+//       values.push(categoryId);
+//     }
+//     if (subcategoryId !== undefined) {
+//       fields.push("subcategory_id = ?");
+//       values.push(subcategoryId || null);
+//     }
+//     if (brandId) {
+//       fields.push("brand_id = ?");
+//       values.push(brandId);
+//     }
+//     if (hsnCodeId) {
+//       fields.push("hsn_code_id = ?");
+//       values.push(hsnCodeId);
+//     }
+
+//     // Handle main image update
+//     if (newMainImage) {
+//       fields.push("main_image_url = ?");
+//       values.push(getRelativeUrl(newMainImage));
+//       deleteFile(existingProduct.main_image_url);
+//     }
+
+//     // Handle gallery update (replace entire gallery)
+//     if (newGalleryImages.length > 0) {
+//       const existingGalleryUrls = JSON.parse(
+//         existingProduct.gallery_image_urls || "[]",
+//       );
+//       existingGalleryUrls.forEach(deleteFile);
+//       const newGalleryUrls = newGalleryImages.map(getRelativeUrl);
+//       fields.push("gallery_image_urls = ?");
+//       values.push(JSON.stringify(newGalleryUrls));
+//     }
+
+//     // --- Attribute Update (Delete and Re-insert) ---
+//     await connection.query(
+//       "DELETE FROM product_attributes WHERE product_id = ?",
+//       [id],
+//     );
+//     const parsedAttributeIds = attributeValueIds
+//       ? JSON.parse(attributeValueIds)
+//       : [];
+//     if (parsedAttributeIds.length > 0) {
+//       const productAttributeQuery = `INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`;
+//       const productAttributeValues = parsedAttributeIds.map((valueId) => [
+//         id,
+//         valueId,
+//       ]);
+//       await connection.query(productAttributeQuery, [productAttributeValues]);
+//     }
+
+//     // --- Finalize Update Query ---
+//     if (fields.length > 0) {
+//       const query = `UPDATE products SET ${fields.join(", ")} WHERE id = ?`;
+//       values.push(id);
+//       await connection.query(query, values);
+//     }
+
+//     await connection.commit();
+//     res
+//       .status(200)
+//       .json({ status: true, message: "Product updated successfully." });
+//   } catch (error) {
+//     await connection.rollback();
+//     // Clean up any newly uploaded files if the transaction fails
+//     if (newMainImage) deleteFile(newMainImage.path);
+//     newGalleryImages.forEach((file) => deleteFile(file.path));
+
+//     if (error.code === "ER_DUP_ENTRY") {
+//       return res
+//         .status(409)
+//         .json({
+//           status: false,
+//           message: "A product with this name already exists.",
+//         });
+//     }
+//     console.error("Error updating master product:", error);
+//     res
+//       .status(500)
+//       .json({
+//         status: false,
+//         message: "An error occurred during product update.",
+//       });
+//   } finally {
+//     if (connection) connection.release();
+//   }
+// };
+
+
+
+
+
+
+
+// ------this is with gallery array
+
+
+// --- FULL PRODUCTION-READY updateMasterProduct ---
 exports.updateMasterProduct = async (req, res) => {
   const { id } = req.params;
   const {
@@ -748,32 +895,33 @@ exports.updateMasterProduct = async (req, res) => {
     hsnCodeId,
     attributeValueIds,
   } = req.body;
+
+  // FIX: Read files using the bracket notation to match Multer config
   const newMainImage = req.files?.main_image?.[0];
-  const newGalleryImages = req.files?.gallery_images || [];
+  const newGalleryImages = req.files?.['gallery_images[]'] || [];
 
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
 
-    const [existingRows] = await db.query(
+    // Fetch existing data for file cleanup later
+    const [existingRows] = await connection.query(
       "SELECT main_image_url, gallery_image_urls FROM products WHERE id = ?",
       [id],
     );
+    
     if (existingRows.length === 0) {
       await connection.rollback();
       if (newMainImage) deleteFile(newMainImage.path);
       newGalleryImages.forEach((file) => deleteFile(file.path));
-      return res
-        .status(404)
-        .json({ status: false, message: "Product not found." });
+      return res.status(404).json({ status: false, message: "Product not found." });
     }
+    
     const existingProduct = existingRows[0];
-
-    // --- Update Logic ---
     const fields = [];
     const values = [];
 
-    // Handle text fields and slug
+    // --- 1. Basic Info Update ---
     if (name) {
       fields.push("name = ?", "slug = ?");
       values.push(name, slugify(name, { lower: true, strict: true }));
@@ -799,42 +947,37 @@ exports.updateMasterProduct = async (req, res) => {
       values.push(hsnCodeId);
     }
 
-    // Handle main image update
+    // --- 2. Main Image Update ---
     if (newMainImage) {
       fields.push("main_image_url = ?");
       values.push(getRelativeUrl(newMainImage));
-      deleteFile(existingProduct.main_image_url);
+      // deleteFile of old image happens after commit for safety
     }
 
-    // Handle gallery update (replace entire gallery)
+    // --- 3. Gallery Images Update ---
     if (newGalleryImages.length > 0) {
-      const existingGalleryUrls = JSON.parse(
-        existingProduct.gallery_image_urls || "[]",
-      );
-      existingGalleryUrls.forEach(deleteFile);
       const newGalleryUrls = newGalleryImages.map(getRelativeUrl);
       fields.push("gallery_image_urls = ?");
       values.push(JSON.stringify(newGalleryUrls));
     }
 
-    // --- Attribute Update (Delete and Re-insert) ---
-    await connection.query(
-      "DELETE FROM product_attributes WHERE product_id = ?",
-      [id],
-    );
-    const parsedAttributeIds = attributeValueIds
-      ? JSON.parse(attributeValueIds)
-      : [];
-    if (parsedAttributeIds.length > 0) {
-      const productAttributeQuery = `INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`;
-      const productAttributeValues = parsedAttributeIds.map((valueId) => [
-        id,
-        valueId,
-      ]);
-      await connection.query(productAttributeQuery, [productAttributeValues]);
+    // --- 4. Attribute Logic (Crucial for Snapshotting) ---
+    // If attributes are provided, we replace the existing mappings
+    if (attributeValueIds) {
+      await connection.query("DELETE FROM product_attributes WHERE product_id = ?", [id]);
+      
+      const parsedAttributeIds = typeof attributeValueIds === 'string' 
+        ? JSON.parse(attributeValueIds) 
+        : attributeValueIds;
+
+      if (parsedAttributeIds.length > 0) {
+        const productAttributeQuery = `INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`;
+        const productAttributeValues = parsedAttributeIds.map((valueId) => [id, valueId]);
+        await connection.query(productAttributeQuery, [productAttributeValues]);
+      }
     }
 
-    // --- Finalize Update Query ---
+    // --- 5. Execute Update Query ---
     if (fields.length > 0) {
       const query = `UPDATE products SET ${fields.join(", ")} WHERE id = ?`;
       values.push(id);
@@ -842,34 +985,36 @@ exports.updateMasterProduct = async (req, res) => {
     }
 
     await connection.commit();
-    res
-      .status(200)
-      .json({ status: true, message: "Product updated successfully." });
+
+    // --- 6. Post-Commit File Cleanup ---
+    if (newMainImage && existingProduct.main_image_url) {
+      deleteFile(existingProduct.main_image_url);
+    }
+    if (newGalleryImages.length > 0 && existingProduct.gallery_image_urls) {
+      const oldGallery = JSON.parse(existingProduct.gallery_image_urls || "[]");
+      oldGallery.forEach(deleteFile);
+    }
+
+    res.status(200).json({ status: true, message: "Product updated successfully." });
+
   } catch (error) {
     await connection.rollback();
-    // Clean up any newly uploaded files if the transaction fails
+    // Cleanup newly uploaded files on failure
     if (newMainImage) deleteFile(newMainImage.path);
     newGalleryImages.forEach((file) => deleteFile(file.path));
 
-    if (error.code === "ER_DUP_ENTRY") {
-      return res
-        .status(409)
-        .json({
-          status: false,
-          message: "A product with this name already exists.",
-        });
-    }
     console.error("Error updating master product:", error);
-    res
-      .status(500)
-      .json({
-        status: false,
-        message: "An error occurred during product update.",
-      });
+    res.status(500).json({ status: false, message: error.message || "An error occurred during product update." });
   } finally {
-    if (connection) connection.release();
+    connection.release();
   }
 };
+
+
+
+
+
+
 
 // --- Your existing `getAllMasterProducts` function ---
 // exports.getAllMasterProducts = async (req, res) => {
