@@ -1486,7 +1486,7 @@ exports.getProductsByCategory = async (req, res) => {
                 sp.selling_price, 
                 sp.mrp, 
                 sp.minimum_order_quantity,
-                ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * (? / 100) as bv_value
+                ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * (? / 100) as bv_earned
             FROM 
                 products AS p
             JOIN 
