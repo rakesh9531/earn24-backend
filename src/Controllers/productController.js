@@ -1606,16 +1606,34 @@ exports.getProductsByCategory = async (req, res) => {
 
     const [products] = await db.query(query, [bvGenerationPct, categoryId, pincode, limit, offset]);
 
-    // Simple return without a separate variable. 
-    // We just parse the JSON strings so the UI can read them as arrays.
-    res.status(200).json({
-      status: true,
-      data: products.map(p => ({
-        ...p,
-        attributes: p.attributes ? JSON.parse(p.attributes) : [],
-        gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : []
-      }))
-    });
+    // // Simple return without a separate variable. 
+    // // We just parse the JSON strings so the UI can read them as arrays.
+    // res.status(200).json({
+    //   status: true,
+    //   data: products.map(p => ({
+    //     ...p,
+    //     attributes: p.attributes ? JSON.parse(p.attributes) : [],
+    //     gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : []
+    //   }))
+    // });
+
+
+    const formattedProducts = products.map(p => ({
+  ...p,
+  attributes: p.attributes ? JSON.parse(p.attributes) : [],
+  gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : []
+}));
+
+const response = {
+  status: true,
+  data: formattedProducts
+};
+
+// 🔥 Console the final response
+console.log("Final API Response:\n", JSON.stringify(response, null, 2));
+
+
+
 
   } catch (error) {
     console.error("Error in getProductsByCategory:", error);
