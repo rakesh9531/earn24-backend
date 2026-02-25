@@ -1632,7 +1632,7 @@ const response = {
 // 🔥 Console the final response
 console.log("Final API Response:\n", JSON.stringify(response, null, 2));
 
-
+res.status(200).json(response);
 
 
   } catch (error) {
