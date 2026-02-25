@@ -71,7 +71,7 @@ const { auth, can } = require('../Middleware/auth');
 const uploadProductImages = createUploader('product-images');
 const productUploadMiddleware = uploadProductImages.fields([
     { name: 'main_image', maxCount: 1 },
-    { name: 'gallery_images', maxCount: 5 }
+    { name: 'gallery_images[]', maxCount: 5 }
 ]);
 
 
