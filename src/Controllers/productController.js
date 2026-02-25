@@ -1552,22 +1552,17 @@ exports.getProductsByCategory = async (req, res) => {
     const offset = (page - 1) * limit;
 
     if (!categoryId || !pincode) {
-      return res.status(400).json({
-        status: false,
-        message: "Category ID and Pincode are required.",
-      });
+      return res.status(400).json({ status: false, message: "Category ID and Pincode are required." });
     }
 
-    // 1. Fetch BV Percentage setting from DB
     const [settingsRows] = await db.query(
       "SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'",
     );
-    const bvSetting = settingsRows[0];
-    const bvGenerationPct = bvSetting ? parseFloat(bvSetting.setting_value) : 80.0;
+    const bvGenerationPct = settingsRows[0] ? parseFloat(settingsRows[0].setting_value) : 80.0;
 
     const query = `
             SELECT 
-                p.id as product_id, -- Use product_id for frontend consistency
+                p.id, -- Fixed: Changed back to 'id' to stop the mobile app crash
                 p.name, 
                 p.slug, 
                 p.description,
@@ -1578,9 +1573,8 @@ exports.getProductsByCategory = async (req, res) => {
                 sp.selling_price, 
                 sp.mrp, 
                 sp.minimum_order_quantity,
-                -- 2. BV Calculation
                 ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
-                -- 3. THE MISSING ATTRIBUTES SUBQUERY (Fixes the "Standard" variant issue)
+                -- Dynamic Attributes Subquery
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                     FROM product_attributes pa
@@ -1604,42 +1598,25 @@ exports.getProductsByCategory = async (req, res) => {
                 AND p.is_active = 1
                 AND p.is_deleted = 0
                 AND sp.is_active = 1
-                AND sp.selling_price > 0 
+                AND sp.selling_price > 0
             GROUP BY sp.id
             LIMIT ?
             OFFSET ?;
         `;
 
-    const [products] = await db.query(query, [
-      bvGenerationPct,
-      categoryId,
-      pincode,
-      limit,
-      offset,
-    ]);
+    const [products] = await db.query(query, [bvGenerationPct, categoryId, pincode, limit, offset]);
 
-    /**
-     * 4. FORMAT DATA: Turn JSON strings into real Arrays
-     * This is critical because MySQL returns attributes as a string.
-     * React Native needs a real array to map through attributes.
-     */
-    const formattedProducts = products.map(p => ({
-        ...p,
-        bv_earned: parseFloat(p.bv_earned || 0),
-        // Ensure strings are parsed into real arrays
-        gallery_image_urls: p.gallery_image_urls ? (typeof p.gallery_image_urls === 'string' ? JSON.parse(p.gallery_image_urls) : p.gallery_image_urls) : [],
-        attributes: p.attributes ? (typeof p.attributes === 'string' ? JSON.parse(p.attributes) : p.attributes) : []
-    }));
-
-    const response = {
+    // Simple return without a separate variable. 
+    // We just parse the JSON strings so the UI can read them as arrays.
+    res.status(200).json({
       status: true,
-      data: formattedProducts,
-    };
+      data: products.map(p => ({
+        ...p,
+        attributes: p.attributes ? JSON.parse(p.attributes) : [],
+        gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : []
+      }))
+    });
 
-    // Logging the response to confirm 'attributes' array exists
-    console.log("API Response (Category Data):", JSON.stringify(response.data[0]?.attributes));
-
-    res.status(200).json(response);
   } catch (error) {
     console.error("Error in getProductsByCategory:", error);
     res.status(500).json({ status: false, message: "Internal server error." });
