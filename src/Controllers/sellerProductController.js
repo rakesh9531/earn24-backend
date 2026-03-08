@@ -839,7 +839,7 @@ exports.getHomeScreenData = async (req, res) => {
 
     try {
         const [banners] = await db.query(`SELECT id, image_url, link_to, title FROM banners WHERE is_active = TRUE ORDER BY display_order ASC`);
-        const [parentCategories] = await db.query(`SELECT id, name, image_url FROM product_categories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY display_order ASC`);
+        const [parentCategories] = await db.query(`SELECT id, name, image_url FROM product_categories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY id ASC`);
         const [subCategories] = await db.query(`SELECT id, category_id, name, image_url FROM product_subcategories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY name ASC`);
         
         const categoryTree = parentCategories.map(parent => ({
