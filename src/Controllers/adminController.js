@@ -502,28 +502,95 @@ exports.addCategory = async (req, res) => {
     }
 };
 
+// exports.getAllCategories = async (req, res) => {
+//     try {
+//         const {
+//             page = 1,
+//             limit = 10,
+//             search = '',
+//             sortBy = 'created_at',
+//             sortOrder = 'desc',
+//             is_active,
+//         } = req.query;
+
+//         const offset = (page - 1) * limit;
+//         const filters = ['is_deleted = 0'];
+//         const values = [];
+
+//         // Add search condition
+//         if (search) {
+//             filters.push('(name LIKE ? OR slug LIKE ?)');
+//             values.push(`%${search}%`, `%${search}%`);
+//         }
+
+//         // Add is_active filter
+//         if (is_active === '1' || is_active === '0') {
+//             filters.push('is_active = ?');
+//             values.push(is_active);
+//         }
+
+//         const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+
+//         // Get total count
+//         const [countRows] = await db.query(
+//             `SELECT COUNT(*) as total FROM product_categories ${whereClause}`,
+//             values
+//         );
+//         const total = countRows[0].total;
+//         const totalPages = Math.ceil(total / limit);
+
+//         // Get paginated results
+//         const [rows] = await db.query(
+//             `SELECT * FROM product_categories 
+//        ${whereClause} 
+//        ORDER BY ${db.escapeId(sortBy)} ${sortOrder.toUpperCase()} 
+//        LIMIT ? OFFSET ?`,
+//             [...values, parseInt(limit), parseInt(offset)]
+//         );
+
+//         res.status(200).json({
+//             status: true,
+//             message: 'Categories fetched successfully.',
+//             currentPage: parseInt(page),
+//             totalPages,
+//             totalItems: total,
+//             limit: parseInt(limit),
+//             data: rows,
+//         });
+
+//     } catch (error) {
+//         console.error('Error in getAllCategories:', error);
+//         res.status(500).json({
+//             status: false,
+//             message: 'Server error',
+//             error: error.message,
+//         });
+//     }
+// };
+
+
+
+
+//   Full Updated Function (No Limit)
+
 exports.getAllCategories = async (req, res) => {
     try {
+
         const {
-            page = 1,
-            limit = 10,
             search = '',
             sortBy = 'created_at',
             sortOrder = 'desc',
             is_active,
         } = req.query;
 
-        const offset = (page - 1) * limit;
         const filters = ['is_deleted = 0'];
         const values = [];
 
-        // Add search condition
         if (search) {
             filters.push('(name LIKE ? OR slug LIKE ?)');
             values.push(`%${search}%`, `%${search}%`);
         }
 
-        // Add is_active filter
         if (is_active === '1' || is_active === '0') {
             filters.push('is_active = ?');
             values.push(is_active);
@@ -531,30 +598,17 @@ exports.getAllCategories = async (req, res) => {
 
         const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
 
-        // Get total count
-        const [countRows] = await db.query(
-            `SELECT COUNT(*) as total FROM product_categories ${whereClause}`,
-            values
-        );
-        const total = countRows[0].total;
-        const totalPages = Math.ceil(total / limit);
-
-        // Get paginated results
         const [rows] = await db.query(
-            `SELECT * FROM product_categories 
-       ${whereClause} 
-       ORDER BY ${db.escapeId(sortBy)} ${sortOrder.toUpperCase()} 
-       LIMIT ? OFFSET ?`,
-            [...values, parseInt(limit), parseInt(offset)]
+            `SELECT * FROM product_categories
+             ${whereClause}
+             ORDER BY ${db.escapeId(sortBy)} ${sortOrder.toUpperCase()}`,
+            values
         );
 
         res.status(200).json({
             status: true,
-            message: 'Categories fetched successfully.',
-            currentPage: parseInt(page),
-            totalPages,
-            totalItems: total,
-            limit: parseInt(limit),
+            message: 'All categories fetched successfully.',
+            totalItems: rows.length,
             data: rows,
         });
 
