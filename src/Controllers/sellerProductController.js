@@ -723,7 +723,7 @@ exports.getAllSellerOffers = async (req, res) => {
         const dataQuery = `
             SELECT 
                 sp.id, sp.sku, sp.mrp, sp.selling_price, sp.purchase_price, sp.quantity,
-                sp.is_active, sp.low_stock_threshold,
+                sp.is_active, sp.low_stock_threshold, sp.minimum_order_quantity,
                 p.id AS product_id, p.name AS product_name, p.main_image_url, p.description,
                 s.display_name AS seller_name, h.gst_percentage,
                 (SELECT GROUP_CONCAT(pincode) FROM seller_product_pincodes WHERE seller_product_id = sp.id) AS pincodes,
