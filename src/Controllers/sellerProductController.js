@@ -615,7 +615,7 @@ exports.addSellerOffer = async (req, res) => {
     try {
         const {
             productId, sku, mrp, sellingPrice, purchasePrice, quantity,
-            pincodes, low_stock_threshold
+            pincodes, low_stock_threshold, minimum_order_quantity
         } = req.body;
 
         const [sellerRows] = await connection.query(
@@ -631,7 +631,7 @@ exports.addSellerOffer = async (req, res) => {
         }
         const sellerId = sellerRows[0].id;
 
-        if (!productId || !mrp || !sellingPrice || !quantity || !Array.isArray(pincodes) || pincodes.length === 0 || low_stock_threshold === undefined) {
+        if (!productId || !mrp || !sellingPrice || !quantity || !Array.isArray(pincodes) || pincodes.length === 0 || low_stock_threshold === undefined || minimum_order_quantity === undefined) {
             return res.status(400).json({ status: false, message: "Product, price, quantity, pincodes, and low stock threshold are required." });
         }
 
@@ -639,10 +639,10 @@ exports.addSellerOffer = async (req, res) => {
 
         const offerQuery = `
             INSERT INTO seller_products 
-              (seller_id, product_id, sku, mrp, selling_price, purchase_price, quantity, low_stock_threshold) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              (seller_id, product_id, sku, mrp, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?,?)
         `;
-        const [result] = await connection.query(offerQuery, [sellerId, productId, sku, mrp, sellingPrice, purchasePrice, quantity, low_stock_threshold]);
+        const [result] = await connection.query(offerQuery, [sellerId, productId, sku, mrp, sellingPrice, purchasePrice, quantity, low_stock_threshold, minimum_order_quantity]);
         const newOfferId = result.insertId;
 
         const pincodeValues = pincodes.map(pincode => [newOfferId, pincode.trim()]);
@@ -775,7 +775,7 @@ exports.getAllSellerOffers = async (req, res) => {
 
 exports.updateSellerOffer = async (req, res) => {
     const { id } = req.params;
-    const { sku, mrp, sellingPrice, purchasePrice, quantity, is_active, pincodes, low_stock_threshold } = req.body;
+    const { sku, mrp, sellingPrice, purchasePrice, quantity, is_active, pincodes, low_stock_threshold, minimum_order_quantity } = req.body;
     const connection = await db.getConnection();
 
     try {
@@ -790,6 +790,12 @@ exports.updateSellerOffer = async (req, res) => {
         if (quantity !== undefined) { fields.push('quantity = ?'); values.push(quantity); }
         if (is_active !== undefined) { fields.push('is_active = ?'); values.push(Boolean(is_active)); }
         if (low_stock_threshold !== undefined) { fields.push('low_stock_threshold = ?'); values.push(low_stock_threshold); }
+
+        // 2. Add the dynamic update for the new field
+        if (minimum_order_quantity !== undefined) { 
+            fields.push('minimum_order_quantity = ?'); 
+            values.push(minimum_order_quantity); 
+        }
 
         if (fields.length > 0) {
             const updateQuery = `UPDATE seller_products SET ${fields.join(', ')} WHERE id = ?`;
