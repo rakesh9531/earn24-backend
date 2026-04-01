@@ -21,13 +21,13 @@ async function runMonthlyQualificationCheck() {
         `);
 
         // Step 3: Reset all non-blocked users' qualified rank for the new month
-        await connection.query(`UPDATE users SET current_monthly_qualified_rank = rank WHERE is_blocked = FALSE`);
+        await connection.query(`UPDATE users SET current_monthly_qualified_rank = \`rank\` WHERE is_blocked = FALSE`);
         
         // Step 4: Check qualifications for "Leaders and above"
         const leaderIndex = MLM_CONFIG.RANKS.indexOf('LEADER');
         const ranksToCheck = MLM_CONFIG.RANKS.slice(leaderIndex);
         
-        const [usersToCheck] = await connection.query(`SELECT id, rank, last_12_months_repurchase_bv FROM users WHERE rank IN (?) AND is_blocked = FALSE`, [ranksToCheck]);
+        const [usersToCheck] = await connection.query(`SELECT id, \`rank\`, last_12_months_repurchase_bv FROM users WHERE \`rank\` IN (?) AND is_blocked = FALSE`, [ranksToCheck]);
 
         for (const user of usersToCheck) {
             let isQualified = false;
