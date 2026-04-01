@@ -1620,6 +1620,7 @@ exports.getProductsByCategory = async (req, res) => {
                 AND sp.is_active = 1
                 AND sp.selling_price > 0
             GROUP BY sp.id
+            ORDER BY p.popularity DESC
             LIMIT ?
             OFFSET ?;
         `;
