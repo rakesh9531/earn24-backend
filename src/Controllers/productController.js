@@ -1588,6 +1588,7 @@ exports.getProductsByCategory = async (req, res) => {
                 p.description,
                 p.main_image_url,
                 p.gallery_image_urls,
+                p.popularity,
                 b.name as brand_name,
                 sp.id as offer_id,
                 sp.selling_price, 
