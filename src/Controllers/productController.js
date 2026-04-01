@@ -1402,8 +1402,8 @@ exports.getSearchSuggestions = async (req, res) => {
     // to ensure the search is always case-insensitive. We order by popularity so the best items show up first.
     // We expanded the LIMIT to 50 so practically "all" relevant items show, without crashing the frontend.
     const [suggestions] = await db.query(
-      `SELECT DISTINCT name FROM products WHERE LOWER(name) LIKE ? AND is_active = 1 AND is_deleted = 0 ORDER BY popularity DESC LIMIT 50`,
-      [`%${searchTerm.toLowerCase()}%`], // We also convert the search term to lowercase here
+      `SELECT name, MAX(popularity) as pop FROM products WHERE LOWER(name) LIKE ? AND is_active = 1 AND is_deleted = 0 GROUP BY name ORDER BY pop DESC LIMIT 50`,
+      [`%${searchTerm.toLowerCase()}%`], 
     );
 
     res.status(200).json({ status: true, data: suggestions });
