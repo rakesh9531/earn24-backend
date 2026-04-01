@@ -1262,7 +1262,12 @@ exports.searchProducts = async (req, res) => {
       : 80.0;
 
     // --- 2. Build WHERE Clauses ---
-    let whereClauses = ["sp.is_active = TRUE"];
+    let whereClauses = [
+      "sp.is_active = TRUE", 
+      "p.is_active = 1", 
+      "p.is_deleted = 0", 
+      "sp.selling_price > 0"
+    ];
     let queryParams = [];
 
     if (query) {
@@ -1394,9 +1399,10 @@ exports.getSearchSuggestions = async (req, res) => {
 
     // --- THIS IS THE FIX ---
     // We use the LOWER() function on both the column and the search term
-    // to ensure the search is always case-insensitive.
+    // to ensure the search is always case-insensitive. We order by popularity so the best items show up first.
+    // We expanded the LIMIT to 50 so practically "all" relevant items show, without crashing the frontend.
     const [suggestions] = await db.query(
-      `SELECT DISTINCT name FROM products WHERE LOWER(name) LIKE ? AND is_active = TRUE LIMIT 5`,
+      `SELECT DISTINCT name FROM products WHERE LOWER(name) LIKE ? AND is_active = 1 AND is_deleted = 0 ORDER BY popularity DESC LIMIT 50`,
       [`%${searchTerm.toLowerCase()}%`], // We also convert the search term to lowercase here
     );
 
