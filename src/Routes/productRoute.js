@@ -81,6 +81,7 @@ router.get('/search', productController.searchProducts);
 router.get('/suggestions', productController.getSearchSuggestions);
 router.get('/:id', productController.getProductForUser);
 router.get('/by-category/:categoryId', productController.getProductsByCategory);
+router.get('/by-subcategory/:subcategoryId', productController.getProductsBySubcategory);
 
 // All master product routes require authentication and specific permissions
 router.use(auth);

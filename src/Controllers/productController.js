@@ -1662,3 +1662,90 @@ res.status(200).json(response);
     res.status(500).json({ status: false, message: "Internal server error." });
   }
 };
+
+/**
+ * @desc   Fetch products by sub-category ID, available at a specific pincode.
+ * @route  GET /api/products/by-subcategory/:subcategoryId
+ * @access Public
+ */
+exports.getProductsBySubcategory = async (req, res) => {
+  try {
+    const { subcategoryId } = req.params;
+    const { pincode, page = 1 } = req.query;
+    const limit = 20;
+    const offset = (page - 1) * limit;
+
+    if (!subcategoryId || !pincode) {
+      return res.status(400).json({ status: false, message: "Subcategory ID and Pincode are required." });
+    }
+
+    const [settingsRows] = await db.query(
+      "SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'",
+    );
+    const bvGenerationPct = settingsRows[0] ? parseFloat(settingsRows[0].setting_value) : 80.0;
+
+    const query = `
+            SELECT 
+                p.id, 
+                p.name, 
+                p.slug, 
+                p.description,
+                p.main_image_url,
+                p.gallery_image_urls,
+                p.popularity,
+                b.name as brand_name,
+                sp.id as offer_id,
+                sp.selling_price, 
+                sp.mrp, 
+                sp.minimum_order_quantity,
+                ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
+                (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                    FROM product_attributes pa
+                    JOIN attribute_values av ON pa.attribute_value_id = av.id
+                    JOIN attributes attr ON av.attribute_id = attr.id
+                    WHERE pa.product_id = p.id
+                ) as attributes
+            FROM 
+                products AS p
+            JOIN 
+                seller_products AS sp ON p.id = sp.product_id
+            JOIN 
+                seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
+            LEFT JOIN 
+                brands AS b ON p.brand_id = b.id
+            LEFT JOIN 
+                hsn_codes AS h ON p.hsn_code_id = h.id
+            WHERE 
+                p.subcategory_id = ? 
+                AND spp.pincode = ?
+                AND p.is_active = 1
+                AND p.is_deleted = 0
+                AND sp.is_active = 1
+                AND sp.selling_price > 0
+            GROUP BY sp.id
+            ORDER BY p.popularity DESC
+            LIMIT ?
+            OFFSET ?;
+        `;
+
+    const [products] = await db.query(query, [bvGenerationPct, subcategoryId, pincode, limit, offset]);
+
+    const formattedProducts = products.map(p => ({
+      ...p,
+      attributes: p.attributes ? JSON.parse(p.attributes) : [],
+      gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : []
+    }));
+
+    const response = {
+      status: true,
+      data: formattedProducts
+    };
+
+    res.status(200).json(response);
+
+  } catch (error) {
+    console.error("Error in getProductsBySubcategory:", error);
+    res.status(500).json({ status: false, message: "Internal server error." });
+  }
+};
