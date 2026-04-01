@@ -1613,7 +1613,7 @@ exports.getProductsByCategory = async (req, res) => {
             LEFT JOIN 
                 hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE 
-                p.subcategory_id = ? 
+                p.category_id = ? 
                 AND spp.pincode = ?
                 AND p.is_active = 1
                 AND p.is_deleted = 0
