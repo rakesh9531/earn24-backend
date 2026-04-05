@@ -1,0 +1,176 @@
+// src/Services/distributionService.js
+const db = require('../../db');
+
+/**
+ * Main Central Service for Profit-Based MLM Distribution (15 Funds Model)
+ * Based on 80% Distributable Profit (Net Profit - 20% Admin Share)
+ */
+
+exports.processOrderDistribution = async (connection, orderId) => {
+    try {
+        console.log(`[MLM Distribution] Starting processing for Order ID: ${orderId}`);
+
+        // 1. Fetch Order Items & Profit Details
+        const [orderRows] = await connection.query("SELECT o.user_id, u.sponsor_id, u.rank FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?", [orderId]);
+        if (!orderRows.length) return;
+
+        const buyerId = orderRows[0].user_id;
+        const buyerSponsorId = orderRows[0].sponsor_id;
+        const buyerRank = orderRows[0].rank || 'CUSTOMER';
+
+        // 2. Fetch All Distribution Rules from app_settings
+        const [settingsRows] = await connection.query("SELECT setting_key, setting_value FROM app_settings");
+        const settings = settingsRows.reduce((acc, s) => { acc[s.setting_key] = parseFloat(s.setting_value); return acc; }, {});
+
+        const companySharePct = settings.profit_company_share_pct || 20.0;
+        const yearMonth = new Date().getFullYear() * 100 + (new Date().getMonth() + 1);
+
+        // 3. Get Order Items
+        const [items] = await connection.query(`
+            SELECT oi.id as order_item_id, oi.price_per_unit, oi.quantity, sp.purchase_price, p.gst_percentage
+            FROM order_items oi
+            JOIN seller_products sp ON oi.seller_product_id = sp.id
+            JOIN products p ON sp.product_id = p.id
+            WHERE oi.order_id = ?`, [orderId]);
+
+        for (const item of items) {
+            // A. Calculate Net Profit on Item (Anti-Tax Base Price)
+            const basePrice = item.price_per_unit / (1 + ((item.gst_percentage || 0) / 100));
+            const netProfitOnItem = (basePrice - item.purchase_price) * item.quantity;
+
+            if (netProfitOnItem <= 0) continue;
+
+            // B. Calculate Distributable Profit (80% by default)
+            const distributableProfit = netProfitOnItem * ((100 - companySharePct) / 100);
+
+            // --- 4. START 15-FUNDS DISTRIBUTION ---
+
+            // FUND 1: CASHBACK (29% Instant to Buyer)
+            const cashbackAmt = distributableProfit * (settings.profit_dist_cashback_pct / 100);
+            await recordProfitEntry(connection, buyerId, item.order_item_id, 'CASHBACK', netProfitOnItem, distributableProfit, settings.profit_dist_cashback_pct, cashbackAmt);
+            await updateWallet(connection, buyerId, cashbackAmt);
+
+            // FUND 2: PERFORMANCE BONUS (4.5% Budget - Differential Logic)
+            await distributeDifferentialBonus(connection, buyerId, buyerSponsorId, item.order_item_id, netProfitOnItem, distributableProfit, settings.profit_dist_performance_bonus_pct);
+
+            // FUND 3: ROYALTY FUND (2.0% Budget - Rank Level Logic)
+            await distributeRoyaltyBonus(connection, buyerId, buyerSponsorId, item.order_item_id, netProfitOnItem, distributableProfit, settings.profit_dist_royalty_pct);
+
+            // REMAINING 12 FUNDS -> UPDATE MONTHLY POOLS
+            const poolUpdates = {
+                binary_income_fund: (distributableProfit * (settings.profit_dist_binary_income_pct || 0)) / 100,
+                gift_reward_fund: (distributableProfit * (settings.profit_dist_gift_reward_pct || 0)) / 100,
+                leadership_fund: (distributableProfit * (settings.profit_dist_leadership_pct || 0)) / 100,
+                travel_fund: (distributableProfit * (settings.profit_dist_travel_pct || 0)) / 100,
+                bike_fund: (distributableProfit * (settings.profit_dist_bike_pct || 0)) / 100,
+                car_fund: (distributableProfit * (settings.profit_dist_car_pct || 0)) / 100,
+                house_fund: (distributableProfit * (settings.profit_dist_house_pct || 0)) / 100,
+                insurance_fund: (distributableProfit * (settings.profit_dist_insurance_pct || 0)) / 100,
+                bonus_relief_fund: (distributableProfit * (settings.profit_dist_bonus_relief_pct || 0)) / 100,
+                company_tour_fund: (distributableProfit * (settings.profit_dist_company_tour_pct || 0)) / 100,
+                company_programme_fund: (distributableProfit * (settings.profit_dist_company_programme_pct || 0)) / 100,
+                company_misc_expenses_fund: (distributableProfit * (settings.profit_dist_misc_expenses_pct || 0)) / 100,
+                retailer_fund: (distributableProfit * (settings.profit_dist_retailer_merchandise_pct || 0)) / 100
+            };
+
+            await updateMonthlyPools(connection, yearMonth, poolUpdates);
+        }
+
+        console.log(`[MLM Distribution] Successfully completed for Order ID: ${orderId}`);
+    } catch (err) {
+        console.error(`[MLM Distribution Error] Order ID: ${orderId}:`, err);
+        throw err;
+    }
+};
+
+/**
+ * PERFORMANCE BONUS (Differential Gap Logic)
+ * Silver: 1/3, Gold: 2/3, Diamond+: 3/3 of the 4.5% budget.
+ */
+async function distributeDifferentialBonus(connection, buyerId, sponsorId, orderItemId, netProfit, distributableProfit, totalBudgetPct) {
+    let lastPaidPct = 0;
+    let currentSponsorId = sponsorId;
+
+    const rankRates = { 'CUSTOMER': 0, 'DISTRIBUTOR_SILVER': 1, 'DISTRIBUTOR_GOLD': 2, 'DISTRIBUTOR_DIAMOND': 3 }; // Multipliers for 1/3 steps
+
+    while (currentSponsorId) {
+        const [sponsors] = await connection.query("SELECT id, sponsor_id, rank FROM users WHERE id = ?", [currentSponsorId]);
+        if (!sponsors.length) break;
+
+        const sponsor = sponsors[0];
+        const multiplier = rankRates[sponsor.rank] || 3; // Diamond and above is 3/3 (Full Budget)
+        const sponsorMaxPct = (multiplier * (totalBudgetPct / 3));
+        const gapPct = sponsorMaxPct - lastPaidPct;
+
+        if (gapPct > 0) {
+            const amt = distributableProfit * (gapPct / 100);
+            await recordProfitEntry(connection, sponsor.id, orderItemId, 'PERFORMANCE_BONUS', netProfit, distributableProfit, gapPct, amt);
+            await updateWallet(connection, sponsor.id, amt);
+            lastPaidPct = sponsorMaxPct;
+        }
+
+        if (lastPaidPct >= totalBudgetPct) break; // Budget fully consumed
+        currentSponsorId = sponsor.sponsor_id;
+    }
+}
+
+/**
+ * ROYALTY BONUS (Diamond Level Logic)
+ * 1st Level: 1.0%, 2nd Level: 0.6%, 3rd Level: 0.4% (of the 2.0% budget)
+ */
+async function distributeRoyaltyBonus(connection, buyerId, sponsorId, orderItemId, netProfit, distributableProfit, totalBudgetPct) {
+    let level = 1;
+    let currentSponsorId = sponsorId;
+    const royaltyLevels = { 1: 1.0, 2: 0.6, 3: 0.4 }; // Total 2%
+
+    while (currentSponsorId && level <= 3) {
+        const [sponsors] = await connection.query("SELECT id, sponsor_id, rank FROM users WHERE id = ?", [currentSponsorId]);
+        if (!sponsors.length) break;
+
+        const sponsor = sponsors[0];
+        if (['DISTRIBUTOR_DIAMOND', 'LEADER', 'TEAM_LEADER', 'ASSISTANT_SUPERVISOR', 'SUPERVISOR', 'ASSISTANT_MANAGER', 'MANAGER', 'SR_MANAGER', 'DIRECTOR'].includes(sponsor.rank)) {
+            const rate = royaltyLevels[level] || 0;
+            if (rate > 0) {
+                const amt = distributableProfit * (rate / 100);
+                await recordProfitEntry(connection, sponsor.id, orderItemId, `ROYALTY_L${level}`, netProfit, distributableProfit, rate, amt);
+                await updateWallet(connection, sponsor.id, amt);
+            }
+            level++;
+        }
+        currentSponsorId = sponsor.sponsor_id;
+    }
+}
+
+/**
+ * HELPER: Record Entry in Ledger
+ */
+async function recordProfitEntry(connection, userId, orderItemId, type, netProfit, distributableAmt, pctApplied, amtCredited) {
+    if (amtCredited <= 0) return;
+    await connection.query(
+        `INSERT INTO profit_distribution_ledger (order_item_id, user_id, distribution_type, total_profit_on_item, distributable_amount, percentage_applied, amount_credited) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [orderItemId, userId, type, netProfit, distributableAmt, pctApplied, amtCredited]
+    );
+}
+
+/**
+ * HELPER: Update User Wallet
+ */
+async function updateWallet(connection, userId, amount) {
+    if (amount <= 0) return;
+    await connection.query('UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?', [amount, userId]);
+}
+
+/**
+ * HELPER: Update Monthly Company Pools
+ */
+async function updateMonthlyPools(connection, yearMonth, pools) {
+    const updateParts = Object.keys(pools).map(key => `${key} = ${key} + ?`).join(', ');
+    const values = Object.values(pools);
+    
+    await connection.query(
+        `INSERT INTO monthly_company_pools (year_month, ${Object.keys(pools).join(', ')})
+         VALUES (?, ${Object.keys(pools).map(() => '?').join(', ')})
+         ON DUPLICATE KEY UPDATE ${updateParts}`,
+        [yearMonth, ...values, ...values]
+    );
+}
