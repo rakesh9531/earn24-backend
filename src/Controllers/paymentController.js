@@ -1333,7 +1333,11 @@ exports.verifyPayment = async (req, res) => {
                 if (txn.length > 0) {
                     await connection.query('UPDATE payment_transactions SET status = "SUCCESS", gateway_payment_id = ? WHERE transaction_id = ?', [mihpayid, txnid]);
                     await connection.query("UPDATE orders SET order_status = 'CONFIRMED', payment_status = 'COMPLETED' WHERE id = ?", [txn[0].order_id]);
-                    await processOrderCommissions(connection, txn[0].order_id);
+                    
+                    // New 15-Fund Distribution Service
+                    const distributionService = require('../Services/distributionService');
+                    await distributionService.processOrderDistribution(connection, txn[0].order_id);
+                    
                     await connection.commit();
                     return res.send("<h1>Payment Success</h1><script>setTimeout(() => window.location.href='https://newapi.earn24.in/payment-success', 1000);</script>");
                 }
@@ -1352,7 +1356,11 @@ exports.verifyPayment = async (req, res) => {
                 if (txn.length > 0) {
                     await connection.query('UPDATE payment_transactions SET status = "SUCCESS", gateway_payment_id = ? WHERE transaction_id = ?', [razorpay_payment_id, razorpay_order_id]);
                     await connection.query("UPDATE orders SET order_status = 'CONFIRMED', payment_status = 'COMPLETED' WHERE id = ?", [txn[0].order_id]);
-                    await processOrderCommissions(connection, txn[0].order_id);
+                    
+                    // New 15-Fund Distribution Service
+                    const distributionService = require('../Services/distributionService');
+                    await distributionService.processOrderDistribution(connection, txn[0].order_id);
+                    
                     await connection.commit();
                     return res.status(200).json({ status: true, message: "Verified" });
                 }
@@ -1388,7 +1396,12 @@ exports.checkPhonePeStatus = async (req, res) => {
             if (txn.length > 0) {
                 await connection.query('UPDATE payment_transactions SET status = "SUCCESS" WHERE transaction_id = ?', [transactionId]);
                 await connection.query("UPDATE orders SET order_status = 'CONFIRMED', payment_status = 'COMPLETED' WHERE id = ?", [txn[0].order_id]);
-                await processOrderCommissions(connection, txn[0].order_id);
+                // Old Distribution Logic commented out
+                // await processOrderCommissions(connection, txn[0].order_id);
+                
+                // New 15-Fund Distribution Service
+                const distributionService = require('../Services/distributionService');
+                await distributionService.processOrderDistribution(connection, txn[0].order_id);
             }
             await connection.commit();
             return res.status(200).json({ status: true, message: "Success" });
@@ -1465,8 +1478,12 @@ exports.payuWebhook = async (req, res) => {
             );
 
             // C. DISTRIBUTE EARNINGS (MLM Logic)
-            // This calls the helper function defined in your main controller
-            await processOrderCommissions(connection, orderId);
+            // Old Distribution Logic commented out
+            // await processOrderCommissions(connection, orderId);
+            
+            // New 15-Fund Distribution Service
+            const distributionService = require('../Services/distributionService');
+            await distributionService.processOrderDistribution(connection, orderId);
 
             console.log(`[Webhook Success] Order ${orderId} processed via Webhook.`);
             await connection.commit();
@@ -1498,12 +1515,7 @@ exports.payuWebhook = async (req, res) => {
 
 
 
-
-
-
-/**
- * MLM COMMISSION HELPERS
- */
+/*
 async function processOrderCommissions(connection, orderId) {
     const [orderRows] = await connection.query("SELECT o.user_id, u.sponsor_id FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?", [orderId]);
     const [settingsRows] = await connection.query("SELECT setting_key, setting_value FROM app_settings");
@@ -1541,3 +1553,4 @@ async function distributeEarnings(connection, { userId, sponsorId, orderItemId, 
         await connection.query('UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?', [amt, sponsorId]);
     }
 }
+*/
