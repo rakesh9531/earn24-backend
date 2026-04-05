@@ -42,11 +42,13 @@ exports.processOrderDistribution = async (connection, orderId) => {
 
             // B. Calculate Distributable Profit (80% by default)
             const distributableProfit = netProfitOnItem * ((100 - companySharePct) / 100);
+            console.log(`[MLM] Item Profit: ${netProfitOnItem}, Distributable (80%): ${distributableProfit}`);
 
             // --- 4. START 15-FUNDS DISTRIBUTION ---
 
             // FUND 1: CASHBACK (29% Instant to Buyer)
             const cashbackAmt = distributableProfit * (settings.profit_dist_cashback_pct / 100);
+            console.log(`[MLM] Cashback (29%): ${cashbackAmt} to User ${buyerId}`);
             await recordProfitEntry(connection, buyerId, item.order_item_id, 'CASHBACK', netProfitOnItem, distributableProfit, settings.profit_dist_cashback_pct, cashbackAmt);
             await updateWallet(connection, buyerId, cashbackAmt);
 
@@ -73,6 +75,7 @@ exports.processOrderDistribution = async (connection, orderId) => {
                 retailer_fund: (distributableProfit * (settings.profit_dist_retailer_merchandise_pct || 0)) / 100
             };
 
+            console.log(`[MLM] Updating Pools for Month ${yearMonth}:`, poolUpdates);
             await updateMonthlyPools(connection, yearMonth, poolUpdates);
         }
 

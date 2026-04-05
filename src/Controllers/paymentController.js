@@ -1332,12 +1332,12 @@ exports.verifyPayment = async (req, res) => {
                 const [txn] = await connection.query("SELECT order_id FROM payment_transactions WHERE transaction_id = ?", [txnid]);
                 if (txn.length > 0) {
                     await connection.query('UPDATE payment_transactions SET status = "SUCCESS", gateway_payment_id = ? WHERE transaction_id = ?', [mihpayid, txnid]);
-                    await connection.query("UPDATE orders SET order_status = 'CONFIRMED', payment_status = 'COMPLETED' WHERE id = ?", [txn[0].order_id]);
-                    
-                    // New 15-Fund Distribution Service
+                    // New Distribution Service
+                    const commissionService = require('../Services/commissionService');
                     const distributionService = require('../Services/distributionService');
+                    await commissionService.processOrderForCommissions(connection, txn[0].order_id);
                     await distributionService.processOrderDistribution(connection, txn[0].order_id);
-                    
+
                     await connection.commit();
                     return res.send("<h1>Payment Success</h1><script>setTimeout(() => window.location.href='https://newapi.earn24.in/payment-success', 1000);</script>");
                 }
@@ -1355,10 +1355,10 @@ exports.verifyPayment = async (req, res) => {
                 const [txn] = await connection.query("SELECT order_id FROM payment_transactions WHERE transaction_id = ?", [razorpay_order_id]);
                 if (txn.length > 0) {
                     await connection.query('UPDATE payment_transactions SET status = "SUCCESS", gateway_payment_id = ? WHERE transaction_id = ?', [razorpay_payment_id, razorpay_order_id]);
-                    await connection.query("UPDATE orders SET order_status = 'CONFIRMED', payment_status = 'COMPLETED' WHERE id = ?", [txn[0].order_id]);
-                    
-                    // New 15-Fund Distribution Service
+                    // New Distribution Service
+                    const commissionService = require('../Services/commissionService');
                     const distributionService = require('../Services/distributionService');
+                    await commissionService.processOrderForCommissions(connection, txn[0].order_id);
                     await distributionService.processOrderDistribution(connection, txn[0].order_id);
                     
                     await connection.commit();
@@ -1396,11 +1396,10 @@ exports.checkPhonePeStatus = async (req, res) => {
             if (txn.length > 0) {
                 await connection.query('UPDATE payment_transactions SET status = "SUCCESS" WHERE transaction_id = ?', [transactionId]);
                 await connection.query("UPDATE orders SET order_status = 'CONFIRMED', payment_status = 'COMPLETED' WHERE id = ?", [txn[0].order_id]);
-                // Old Distribution Logic commented out
-                // await processOrderCommissions(connection, txn[0].order_id);
-                
-                // New 15-Fund Distribution Service
+                // New Distribution Service
+                const commissionService = require('../Services/commissionService');
                 const distributionService = require('../Services/distributionService');
+                await commissionService.processOrderForCommissions(connection, txn[0].order_id);
                 await distributionService.processOrderDistribution(connection, txn[0].order_id);
             }
             await connection.commit();
@@ -1478,10 +1477,12 @@ exports.payuWebhook = async (req, res) => {
             );
 
             // C. DISTRIBUTE EARNINGS (MLM Logic)
-            // Old Distribution Logic commented out
-            // await processOrderCommissions(connection, orderId);
             
-            // New 15-Fund Distribution Service
+            // 1. BV & Rank Tracking (Old Commission Service handles this)
+            const commissionService = require('../Services/commissionService');
+            await commissionService.processOrderForCommissions(connection, orderId);
+
+            // 2. New 15-Fund Profit Distribution Service
             const distributionService = require('../Services/distributionService');
             await distributionService.processOrderDistribution(connection, orderId);
 
