@@ -3,7 +3,7 @@ const db = require('../../db');
 
 /**
  * Main Central Service for Profit-Based MLM Distribution (15 Funds Model)
- * Based on 80% Distributable Profit (Net Profit - 20% Admin Share)
+ * Mapping correctly to actual User Rank names.
  */
 
 exports.processOrderDistribution = async (connection, orderId) => {
@@ -16,7 +16,7 @@ exports.processOrderDistribution = async (connection, orderId) => {
 
         const buyerId = orderRows[0].user_id;
         const buyerSponsorId = orderRows[0].sponsor_id;
-        const buyerRank = orderRows[0].rank || 'CUSTOMER';
+        const buyerRank = orderRows[0].rank || 'Customer';
 
         // 2. Fetch All Distribution Rules from app_settings
         const [settingsRows] = await connection.query("SELECT setting_key, setting_value FROM app_settings");
@@ -37,20 +37,25 @@ exports.processOrderDistribution = async (connection, orderId) => {
             // A. Calculate Net Profit on Item (Anti-Tax Base Price)
             const basePrice = item.price_per_unit / (1 + ((item.gst_percentage || 0) / 100));
             const netProfitOnItem = (basePrice - item.purchase_price) * item.quantity;
-
-            if (netProfitOnItem <= 0) continue;
+            
+            if (netProfitOnItem <= 0) {
+                console.log(`[MLM] Skipping Distribution: Profit on item ${item.order_item_id} is 0 or negative.`);
+                continue;
+            }
 
             // B. Calculate Distributable Profit (80% by default)
             const distributableProfit = netProfitOnItem * ((100 - companySharePct) / 100);
-            console.log(`[MLM] Item Profit: ${netProfitOnItem}, Distributable (80%): ${distributableProfit}`);
+            console.log(`[MLM] Net Profit: ${netProfitOnItem.toFixed(2)}, Distributable (80%): ${distributableProfit.toFixed(2)}`);
 
             // --- 4. START 15-FUNDS DISTRIBUTION ---
 
             // FUND 1: CASHBACK (29% Instant to Buyer)
             const cashbackAmt = distributableProfit * (settings.profit_dist_cashback_pct / 100);
-            console.log(`[MLM] Cashback (29%): ${cashbackAmt} to User ${buyerId}`);
-            await recordProfitEntry(connection, buyerId, item.order_item_id, 'CASHBACK', netProfitOnItem, distributableProfit, settings.profit_dist_cashback_pct, cashbackAmt);
-            await updateWallet(connection, buyerId, cashbackAmt);
+            if (cashbackAmt > 0) {
+                console.log(`[MLM] Cashback: ₹${cashbackAmt.toFixed(2)} to User ID ${buyerId}`);
+                await recordProfitEntry(connection, buyerId, item.order_item_id, 'CASHBACK', netProfitOnItem, distributableProfit, settings.profit_dist_cashback_pct, cashbackAmt);
+                await updateWallet(connection, buyerId, cashbackAmt);
+            }
 
             // FUND 2: PERFORMANCE BONUS (4.5% Budget - Differential Logic)
             await distributeDifferentialBonus(connection, buyerId, buyerSponsorId, item.order_item_id, netProfitOnItem, distributableProfit, settings.profit_dist_performance_bonus_pct);
@@ -75,7 +80,6 @@ exports.processOrderDistribution = async (connection, orderId) => {
                 retailer_fund: (distributableProfit * (settings.profit_dist_retailer_merchandise_pct || 0)) / 100
             };
 
-            console.log(`[MLM] Updating Pools for Month ${yearMonth}:`, poolUpdates);
             await updateMonthlyPools(connection, yearMonth, poolUpdates);
         }
 
@@ -87,54 +91,73 @@ exports.processOrderDistribution = async (connection, orderId) => {
 };
 
 /**
- * PERFORMANCE BONUS (Differential Gap Logic)
- * Silver: 1/3, Gold: 2/3, Diamond+: 3/3 of the 4.5% budget.
+ * PERFORMANCE BONUS (Differential Gap Logic) using exact Rank Names
  */
 async function distributeDifferentialBonus(connection, buyerId, sponsorId, orderItemId, netProfit, distributableProfit, totalBudgetPct) {
     let lastPaidPct = 0;
     let currentSponsorId = sponsorId;
 
-    const rankRates = { 'CUSTOMER': 0, 'DISTRIBUTOR_SILVER': 1, 'DISTRIBUTOR_GOLD': 2, 'DISTRIBUTOR_DIAMOND': 3 }; // Multipliers for 1/3 steps
+    // Mapping exact Rank Names (Silver=1 step, Gold=2 steps, Diamond+=3 steps of the 4.5% budget)
+    const rankMultipliers = {
+        'Customer': 0,
+        'Distributor (Silver)': 1,
+        'Distributor (Gold)': 2,
+        'Distributor (Diamond)': 3,
+        'Leader': 3,
+        'Team Leader': 3,
+        'Assistant Supervisor': 3,
+        'Supervisor': 3,
+        'Assistant Manager': 3,
+        'Manager': 3,
+        'Sr. Manager': 3,
+        'Director (Branch Head)': 3
+    };
 
     while (currentSponsorId) {
         const [sponsors] = await connection.query("SELECT id, sponsor_id, rank FROM users WHERE id = ?", [currentSponsorId]);
         if (!sponsors.length) break;
 
         const sponsor = sponsors[0];
-        const multiplier = rankRates[sponsor.rank] || 3; // Diamond and above is 3/3 (Full Budget)
+        const multiplier = rankMultipliers[sponsor.rank] || 0; 
         const sponsorMaxPct = (multiplier * (totalBudgetPct / 3));
         const gapPct = sponsorMaxPct - lastPaidPct;
 
         if (gapPct > 0) {
             const amt = distributableProfit * (gapPct / 100);
+            console.log(`[MLM] Performance Bonus: ₹${amt.toFixed(2)} to ${sponsor.rank} (ID: ${sponsor.id})`);
             await recordProfitEntry(connection, sponsor.id, orderItemId, 'PERFORMANCE_BONUS', netProfit, distributableProfit, gapPct, amt);
             await updateWallet(connection, sponsor.id, amt);
             lastPaidPct = sponsorMaxPct;
         }
 
-        if (lastPaidPct >= totalBudgetPct) break; // Budget fully consumed
+        if (lastPaidPct >= totalBudgetPct) break; 
         currentSponsorId = sponsor.sponsor_id;
     }
 }
 
 /**
- * ROYALTY BONUS (Diamond Level Logic)
- * 1st Level: 1.0%, 2nd Level: 0.6%, 3rd Level: 0.4% (of the 2.0% budget)
+ * ROYALTY BONUS (Diamond Level Logic) using exact Rank Names
  */
 async function distributeRoyaltyBonus(connection, buyerId, sponsorId, orderItemId, netProfit, distributableProfit, totalBudgetPct) {
     let level = 1;
     let currentSponsorId = sponsorId;
-    const royaltyLevels = { 1: 1.0, 2: 0.6, 3: 0.4 }; // Total 2%
+    const royaltyLevels = { 1: 1.0, 2: 0.6, 3: 0.4 }; 
+
+    const diamondAndAbove = [
+        'Distributor (Diamond)', 'Leader', 'Team Leader', 'Assistant Supervisor', 
+        'Supervisor', 'Assistant Manager', 'Manager', 'Sr. Manager', 'Director (Branch Head)'
+    ];
 
     while (currentSponsorId && level <= 3) {
         const [sponsors] = await connection.query("SELECT id, sponsor_id, rank FROM users WHERE id = ?", [currentSponsorId]);
         if (!sponsors.length) break;
 
         const sponsor = sponsors[0];
-        if (['DISTRIBUTOR_DIAMOND', 'LEADER', 'TEAM_LEADER', 'ASSISTANT_SUPERVISOR', 'SUPERVISOR', 'ASSISTANT_MANAGER', 'MANAGER', 'SR_MANAGER', 'DIRECTOR'].includes(sponsor.rank)) {
+        if (diamondAndAbove.includes(sponsor.rank)) {
             const rate = royaltyLevels[level] || 0;
             if (rate > 0) {
                 const amt = distributableProfit * (rate / 100);
+                console.log(`[MLM] Royalty L${level}: ₹${amt.toFixed(2)} to User ID ${sponsor.id}`);
                 await recordProfitEntry(connection, sponsor.id, orderItemId, `ROYALTY_L${level}`, netProfit, distributableProfit, rate, amt);
                 await updateWallet(connection, sponsor.id, amt);
             }
@@ -167,13 +190,21 @@ async function updateWallet(connection, userId, amount) {
  * HELPER: Update Monthly Company Pools
  */
 async function updateMonthlyPools(connection, yearMonth, pools) {
-    const updateParts = Object.keys(pools).map(key => `${key} = ${key} + ?`).join(', ');
+    const keys = Object.keys(pools);
     const values = Object.values(pools);
     
+    // Check if total pool contribution is positive to avoid redundant queries
+    const totalPoolAmt = values.reduce((sum, v) => sum + v, 0);
+    if (totalPoolAmt <= 0) return;
+
+    const updateParts = keys.map(key => `${key} = ${key} + VALUES(${key})`).join(', ');
+    const columns = ['year_month', ...keys].join(', ');
+    const placeholders = ['?', ...keys.map(() => '?')].join(', ');
+    
     await connection.query(
-        `INSERT INTO monthly_company_pools (year_month, ${Object.keys(pools).join(', ')})
-         VALUES (?, ${Object.keys(pools).map(() => '?').join(', ')})
+        `INSERT INTO monthly_company_pools (${columns})
+         VALUES (${placeholders})
          ON DUPLICATE KEY UPDATE ${updateParts}`,
-        [yearMonth, ...values, ...values]
+        [yearMonth, ...values]
     );
 }
