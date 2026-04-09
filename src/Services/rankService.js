@@ -11,7 +11,8 @@ function getNextRank(currentRank) {
 }
 
 exports.checkAndPromoteUser = async (userId) => {
-    const [users] = await db.query('SELECT id, sponsor_id, rank, aggregate_personal_bv, last_12_months_repurchase_bv, has_graduation_degree FROM users WHERE id = ?', [userId]);
+    // Wrapped 'rank' in backticks because it is a reserved keyword in some MySQL versions
+    const [users] = await db.query('SELECT id, sponsor_id, `rank`, aggregate_personal_bv, last_12_months_repurchase_bv, has_graduation_degree FROM users WHERE id = ?', [userId]);
     if (!users.length) return;
     const user = users[0];
 
@@ -22,7 +23,7 @@ exports.checkAndPromoteUser = async (userId) => {
 
     // Check downline rank requirement
     const [downline] = await db.query(
-        'SELECT COUNT(id) as count FROM users WHERE sponsor_id = ? AND rank IN (?)',
+        'SELECT COUNT(id) as count FROM users WHERE sponsor_id = ? AND `rank` IN (?)',
         [userId, criteria.downline_rank_required]
     );
     if (downline[0].count < criteria.count) return;
@@ -35,7 +36,7 @@ exports.checkAndPromoteUser = async (userId) => {
     if (criteria.degree_required && !user.has_graduation_degree) return;
 
     // --- QUALIFIED! ---
-    await db.query('UPDATE users SET rank = ? WHERE id = ?', [nextRank, userId]);
+    await db.query('UPDATE users SET `rank` = ? WHERE id = ?', [nextRank, userId]);
     console.log(`[MLM] User ${userId} has been PROMOTED to ${nextRank}!`);
 
     if (user.sponsor_id) {
