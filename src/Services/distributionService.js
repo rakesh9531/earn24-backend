@@ -54,18 +54,21 @@ exports.processOrderDistribution = async (connection, orderId) => {
             const cashbackAmt = distributableProfit * (settings.profit_dist_cashback_pct / 100);
             if (cashbackAmt > 0) {
                 console.log(`[MLM] Cashback: ₹${cashbackAmt.toFixed(2)} to User ID ${buyerId}`);
-                await recordProfitEntry(connection, buyerId, item.order_item_id, 'CASHBACK', netProfitOnItem, distributableProfit, settings.profit_dist_cashback_pct, cashbackAmt);
+                await recordProfitEntry(connection, buyerId, item.order_item_id, 'CASHBACK', netProfitOnItem, distributableProfit, settings.profit_dist_cashback_pct, cashbackAmt, buyerId, orderId);
                 await updateWallet(connection, buyerId, cashbackAmt);
             }
 
             // FUND 2: PERFORMANCE BONUS (4.5% Budget - Differential Logic)
-            await distributeDifferentialBonus(connection, buyerId, buyerSponsorId, item.order_item_id, netProfitOnItem, distributableProfit, settings.profit_dist_performance_bonus_pct);
+            await distributeDifferentialBonus(connection, buyerId, buyerSponsorId, item.order_item_id, netProfitOnItem, distributableProfit, settings.profit_dist_performance_bonus_pct, orderId);
 
             // FUND 3: ROYALTY FUND (2.0% Budget - Rank Level Logic)
-            await distributeRoyaltyBonus(connection, buyerId, buyerSponsorId, item.order_item_id, netProfitOnItem, distributableProfit, settings.profit_dist_royalty_pct);
+            await distributeRoyaltyBonus(connection, buyerId, buyerSponsorId, item.order_item_id, netProfitOnItem, distributableProfit, settings.profit_dist_royalty_pct, orderId);
 
-            // REMAINING 12 FUNDS -> UPDATE MONTHLY POOLS
+            // REMAINING FUNDS -> UPDATE MONTHLY POOLS
             const poolUpdates = {
+                cash_back_fund: (distributableProfit * (settings.profit_dist_cashback_pct || 0)) / 100,
+                performance_bonus_fund: (distributableProfit * (settings.profit_dist_performance_bonus_pct || 0)) / 100,
+                royalty_fund: (distributableProfit * (settings.profit_dist_royalty_pct || 0)) / 100,
                 binary_income_fund: (distributableProfit * (settings.profit_dist_binary_income_pct || 0)) / 100,
                 gift_reward_fund: (distributableProfit * (settings.profit_dist_gift_reward_pct || 0)) / 100,
                 leadership_fund: (distributableProfit * (settings.profit_dist_leadership_pct || 0)) / 100,
@@ -94,7 +97,7 @@ exports.processOrderDistribution = async (connection, orderId) => {
 /**
  * PERFORMANCE BONUS (Differential Gap Logic) using exact Rank Names
  */
-async function distributeDifferentialBonus(connection, buyerId, sponsorId, orderItemId, netProfit, distributableProfit, totalBudgetPct) {
+async function distributeDifferentialBonus(connection, buyerId, sponsorId, orderItemId, netProfit, distributableProfit, totalBudgetPct, orderId) {
     let lastPaidPct = 0;
     let currentSponsorId = sponsorId;
 
@@ -126,7 +129,7 @@ async function distributeDifferentialBonus(connection, buyerId, sponsorId, order
         if (gapPct > 0) {
             const amt = distributableProfit * (gapPct / 100);
             console.log(`[MLM] Performance Bonus: ₹${amt.toFixed(2)} to ${sponsor.rank} (ID: ${sponsor.id})`);
-            await recordProfitEntry(connection, sponsor.id, orderItemId, 'PERFORMANCE_BONUS', netProfit, distributableProfit, gapPct, amt);
+            await recordProfitEntry(connection, sponsor.id, orderItemId, 'PERFORMANCE_BONUS', netProfit, distributableProfit, gapPct, amt, buyerId, orderId);
             await updateWallet(connection, sponsor.id, amt);
             lastPaidPct = sponsorMaxPct;
         }
@@ -139,7 +142,7 @@ async function distributeDifferentialBonus(connection, buyerId, sponsorId, order
 /**
  * ROYALTY BONUS (Diamond Level Logic) using exact Rank Names
  */
-async function distributeRoyaltyBonus(connection, buyerId, sponsorId, orderItemId, netProfit, distributableProfit, totalBudgetPct) {
+async function distributeRoyaltyBonus(connection, buyerId, sponsorId, orderItemId, netProfit, distributableProfit, totalBudgetPct, orderId) {
     let level = 1;
     let currentSponsorId = sponsorId;
     const royaltyLevels = { 1: 1.0, 2: 0.6, 3: 0.4 }; 
@@ -159,7 +162,7 @@ async function distributeRoyaltyBonus(connection, buyerId, sponsorId, orderItemI
             if (rate > 0) {
                 const amt = distributableProfit * (rate / 100);
                 console.log(`[MLM] Royalty L${level}: ₹${amt.toFixed(2)} to User ID ${sponsor.id}`);
-                await recordProfitEntry(connection, sponsor.id, orderItemId, `ROYALTY_L${level}`, netProfit, distributableProfit, rate, amt);
+                await recordProfitEntry(connection, sponsor.id, orderItemId, `ROYALTY_L${level}`, netProfit, distributableProfit, rate, amt, buyerId, orderId);
                 await updateWallet(connection, sponsor.id, amt);
             }
             level++;
@@ -171,11 +174,20 @@ async function distributeRoyaltyBonus(connection, buyerId, sponsorId, orderItemI
 /**
  * HELPER: Record Entry in Ledger
  */
-async function recordProfitEntry(connection, userId, orderItemId, type, netProfit, distributableAmt, pctApplied, amtCredited) {
+async function recordProfitEntry(connection, userId, orderItemId, type, netProfit, distributableAmt, pctApplied, amtCredited, buyerId, orderId) {
     if (amtCredited <= 0) return;
+
+    // 1. Record in Legacy Profit Ledger (Existing)
     await connection.query(
         `INSERT INTO profit_distribution_ledger (order_item_id, user_id, distribution_type, total_profit_on_item, distributable_amount, percentage_applied, amount_credited) VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [orderItemId, userId, type, netProfit, distributableAmt, pctApplied, amtCredited]
+    );
+
+    // 2. Record in Unified Commission Ledger (New - used by Admin Reports)
+    // We use total_profit_on_item as base_bv for now if real BV isn't passed here
+    await connection.query(
+        `INSERT INTO commission_ledger (user_id, source_user_id, source_order_id, commission_type, base_bv, percentage_applied, amount_credited, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [userId, buyerId, orderId, type, netProfit, pctApplied, amtCredited, `Profit from Order Item #${orderItemId}`]
     );
 }
 
