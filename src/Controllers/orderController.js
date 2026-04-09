@@ -148,12 +148,10 @@ exports.createOrder = async (req, res) => {
         const deleteQuery = `DELETE FROM cart_items WHERE cart_id = ?` + (cartItemIds ? ` AND id IN (?)` : ``);
         await connection.query(deleteQuery, cartItemIds ? [cartId, cartItemIds] : [cartId]);
 
-        // 9. Trigger MLM & BV Distribution (Wallet/COD)
-        if (paymentMethod === 'WALLET' || paymentMethod === 'COD') {
-            await commissionService.processOrderForCommissions(connection, orderId);
-            await distributionService.processOrderDistribution(connection, orderId);
-        }
-
+        // 9. MLM & BV Distribution triggers have been REMOVED from here to prevent double-BV.
+        // Distribution now happens ONLY in deliveryAppController.completeDelivery 
+        // when the customer successfully receives the order via OTP.
+        
         await connection.commit();
         res.status(201).json({ status: true, message: 'Order Placed!', data: { orderId, orderNumber, totalAmount } });
 
