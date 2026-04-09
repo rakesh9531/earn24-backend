@@ -10,74 +10,13 @@ const getOrCreateCart = async (connection, userId) => {
     return cart[0].id;
 };
 
-// // GET / - Get all items in the user's cart
-// exports.getCart = async (req, res) => {
-//     const userId = req.user.id; // From authMiddleware
-//     // const userId = 1; // From authMiddleware
-
-//     try {
-//         const cartId = await getOrCreateCart(db, userId);
-
-//         // --- NEW: Fetch BV Setting ---
-//         const [settingsRows] = await db.query("SELECT setting_key, setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'");
-//         const bvSetting = settingsRows.find(s => s.setting_key === 'bv_generation_pct_of_profit');
-//         const bvGenerationPct = bvSetting ? parseFloat(bvSetting.setting_value) : 80.0;
-
-//         // --- UPDATED QUERY with BV CALCULATION ---
-//         const query = `
-//             SELECT 
-//                 ci.id as cart_item_id,
-//                 ci.quantity,
-//                 sp.id as offer_id,
-//                 p.name,
-//                 p.main_image_url,
-//                 b.name as brand_name,
-//                 sp.selling_price,
-//                 sp.mrp,
-//                 sp.minimum_order_quantity,
-//                 -- This is the new calculated field for BV per unit
-//                 GREATEST(0, 
-//                   ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * (? / 100)
-//                 ) as bv_earned
-//             FROM cart_items ci
-//             JOIN seller_products sp ON ci.seller_product_id = sp.id
-//             JOIN products p ON sp.product_id = p.id
-//             LEFT JOIN brands b ON p.brand_id = b.id
-//             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-//             WHERE ci.cart_id = ?
-//         `;
-//         const [items] = await db.query(query, [bvGenerationPct, cartId]);
-
-//         res.status(200).json({ status: true, data: items });
-//     } catch (error) {
-//         console.error("Error getting cart:", error);
-//         res.status(500).json({ status: false, message: 'Failed to retrieve cart.' });
-//     }
-// };
-
-
-
-
-
-
-
-
 // ==========================================================
 // === GET /?pincode=... - Get cart items with availability ===
 // ==========================================================
 exports.getCart = async (req, res) => {
-    const userId = req.user.id; // From authMiddleware
+    const userId = req.user.id;
+    const { pincode, cartItemIds } = req.query;
 
-    console.log("userId",userId)
-    
-    // --- MODIFICATION 1: Get the pincode from the query string ---
-    const { pincode } = req.query;
-
-    console.log("pincode",pincode)
-
-
-
-    // It's mandatory for validation. The frontend MUST send it.
     if (!pincode) {
         return res.status(400).json({ status: false, message: 'A pincode is required to validate the cart.' });
     }
@@ -89,52 +28,45 @@ exports.getCart = async (req, res) => {
         const bvSetting = settingsRows.find(s => s.setting_key === 'bv_generation_pct_of_profit');
         const bvGenerationPct = bvSetting ? parseFloat(bvSetting.setting_value) : 80.0;
 
-        // --- MODIFICATION 2: The SQL query is updated ---
-        const query = `
+        // Base Query
+        let query = `
             SELECT 
-                ci.id as cart_item_id,
-                ci.quantity,
-                sp.id as offer_id,
-                p.name,
-                p.main_image_url,
-                b.name as brand_name,
-                sp.selling_price,
-                sp.mrp,
-                sp.minimum_order_quantity,
-                GREATEST(0, 
-                  ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * (? / 100)
-                ) as bv_earned,
-
-                -- This subquery checks if the item is available at the provided pincode.
-                -- It returns 1 (true) or 0 (false).
-                (EXISTS (
-                    SELECT 1 
-                    FROM seller_product_pincodes spp
-                    WHERE spp.seller_product_id = ci.seller_product_id AND spp.pincode = ?
-                )) AS is_available
-
+                ci.id as cart_item_id, ci.quantity, sp.id as offer_id, p.id as product_id, p.name,
+                p.main_image_url, b.name as brand_name, sp.selling_price, sp.mrp,
+                sp.minimum_order_quantity, sp.purchase_price, h.gst_percentage,
+                GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100)) as bv_earned,
+                (EXISTS (SELECT 1 FROM seller_product_pincodes spp WHERE spp.seller_product_id = ci.seller_product_id AND spp.pincode = ?)) AS is_available
             FROM cart_items ci
             JOIN seller_products sp ON ci.seller_product_id = sp.id
             JOIN products p ON sp.product_id = p.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-            WHERE ci.cart_id = ? ${req.query.cartItemIds ? 'AND ci.id IN (?)' : ''}
+            WHERE ci.cart_id = ?
         `;
         
         const params = [bvGenerationPct, pincode, cartId];
-        if (req.query.cartItemIds) {
-            const selectedIds = req.query.cartItemIds.split(',').map(id => parseInt(id.trim()));
-            params.push(selectedIds); // Correct: Push to the end because IN (?) is the last condition
+
+        // Handle filtering by selected items if cartItemIds is provided
+        if (cartItemIds) {
+            let idsArray;
+            if (Array.isArray(cartItemIds)) {
+                idsArray = cartItemIds;
+            } else {
+                idsArray = cartItemIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+            }
+            
+            if (idsArray.length > 0) {
+                query += ` AND ci.id IN (?)`;
+                params.push(idsArray);
+            }
         }
 
         const [items] = await db.query(query, params);
         
-        // The result will now include `is_available: 1` or `is_available: 0` for each item.
         const processedItems = items.map(item => ({
             ...item,
-            is_available: Boolean(item.is_available) // Convert 1/0 to true/false for clean JSON
-        }))
-
+            is_available: Boolean(item.is_available)
+        }));
 
         res.status(200).json({ status: true, data: processedItems });
     } catch (error) {
@@ -143,21 +75,9 @@ exports.getCart = async (req, res) => {
     }
 };
 
-
-
-
-
-
-
-
-
-
-
 // POST /add - Add an item to the cart
 exports.addItemToCart = async (req, res) => {
     const userId = req.user.id;
-    // const userId = 1;
-
     const { sellerProductId, quantity } = req.body;
 
     if (!sellerProductId || !quantity || quantity < 1) {
@@ -169,8 +89,6 @@ exports.addItemToCart = async (req, res) => {
         await connection.beginTransaction();
         const cartId = await getOrCreateCart(connection, userId);
 
-        // This query tries to insert a new item, but if it already exists (ON DUPLICATE KEY),
-        // it updates the quantity instead. This is very efficient.
         const query = `
             INSERT INTO cart_items (cart_id, seller_product_id, quantity)
             VALUES (?, ?, ?)
@@ -192,8 +110,6 @@ exports.addItemToCart = async (req, res) => {
 // PUT /update/:itemId - Update item quantity
 exports.updateCartItem = async (req, res) => {
     const userId = req.user.id;
-    // const userId = 1;
-
     const { itemId } = req.params;
     const { quantity } = req.body;
 
@@ -202,7 +118,6 @@ exports.updateCartItem = async (req, res) => {
     }
 
     try {
-        // We add a check to ensure the item belongs to the logged-in user's cart for security
         const query = `
             UPDATE cart_items ci
             JOIN carts c ON ci.cart_id = c.id
@@ -212,7 +127,7 @@ exports.updateCartItem = async (req, res) => {
         const [result] = await db.query(query, [quantity, itemId, userId]);
 
         if (result.affectedRows === 0) {
-            return res.status(404).json({ status: false, message: 'Cart item not found or you do not have permission to edit it.' });
+            return res.status(404).json({ status: false, message: 'Cart item not found.' });
         }
 
         res.status(200).json({ status: true, message: 'Cart updated successfully.' });
@@ -225,8 +140,6 @@ exports.updateCartItem = async (req, res) => {
 // DELETE /remove/:itemId - Remove an item from the cart
 exports.removeCartItem = async (req, res) => {
     const userId = req.user.id;
-    // const userId = 1;
-
     const { itemId } = req.params;
 
     try {
@@ -249,8 +162,6 @@ exports.removeCartItem = async (req, res) => {
 // DELETE /clear - Clear all items from the cart
 exports.clearCart = async (req, res) => {
     const userId = req.user.id;
-    // const userId = 1;
-
     try {
         const cartId = await getOrCreateCart(db, userId);
         await db.query('DELETE FROM cart_items WHERE cart_id = ?', [cartId]);
@@ -261,12 +172,8 @@ exports.clearCart = async (req, res) => {
     }
 };
 
-
-
-// --- NEW FUNCTION for Final Checkout Validation ---
+// --- FINAL CHECKOUT VALIDATION ---
 exports.validateCartForCheckout = async (req, res) => {
-    // We get the target pincode from the selected address,
-    // and the items that the user has selected for checkout.
     const { pincode, items } = req.body;
 
     if (!pincode || !items || !Array.isArray(items)) {
@@ -279,24 +186,17 @@ exports.validateCartForCheckout = async (req, res) => {
         }
 
         const offerIds = items.map(item => item.offer_id);
-
-        // Get all pincodes for the relevant offers in a single efficient query
         const [pincodeRows] = await db.query(
             `SELECT seller_product_id, pincode FROM seller_product_pincodes WHERE seller_product_id IN (?)`,
             [offerIds]
         );
         
-        // Create a fast lookup map: { offer_id: Set['pincode1', 'pincode2'], ... } for O(1) lookups
         const availabilityMap = pincodeRows.reduce((acc, row) => {
-            if (!acc[row.seller_product_id]) {
-                acc[row.seller_product_id] = new Set();
-            }
-            acc[row.seller_product_id].add(row.pincode);
+            if (!acc[row.seller_product_id]) { acc[row.seller_product_id] = new Set(); }
+            acc[row.seller_product_id].add(row.pincode.toString());
             return acc;
         }, {});
 
-        // Now, validate each item from the original list against the new pincode
-        // This MUST ONLY return the items that were passed to it, not the whole cart.
         const validatedItems = items.map(item => {
             const availablePincodes = availabilityMap[item.offer_id] || new Set();
             return {
@@ -312,3 +212,16 @@ exports.validateCartForCheckout = async (req, res) => {
         res.status(500).json({ status: false, message: 'Failed to validate cart.' });
     }
 };
+
+/*
+=============================================================================
+                          PREVIOUS CODE REFERENCE
+=============================================================================
+
+const db = require('../../db');
+
+// Helper function to get or create a cart for a user ...
+// (Includes previous versions of getCart, addItemToCart, etc.)
+
+=============================================================================
+*/
