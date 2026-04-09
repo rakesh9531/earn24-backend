@@ -365,7 +365,7 @@ const generateOrderNumber = () => {
 
 exports.createOrder = async (req, res) => {
     const userId = req.user.id;
-    const { shippingAddressId, paymentMethod } = req.body;
+    const { shippingAddressId, paymentMethod, cartItemIds } = req.body;
 
     if (!shippingAddressId || !paymentMethod) {
         return res.status(400).json({ status: false, message: 'Shipping address and payment method are required.' });
@@ -389,9 +389,9 @@ exports.createOrder = async (req, res) => {
             JOIN products p ON sp.product_id = p.id
             JOIN users u ON u.id = ?
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-            WHERE ci.cart_id = ? FOR UPDATE;
+            WHERE ci.cart_id = ? ${cartItemIds ? 'AND ci.id IN (?)' : ''} FOR UPDATE;
         `;
-        const [items] = await connection.query(itemQuery, [userId, cartId]);
+        const [items] = await connection.query(itemQuery, cartItemIds ? [userId, cartId, cartItemIds] : [userId, cartId]);
 
         if (items.length === 0) throw new Error('Your cart is empty.');
 
@@ -482,8 +482,9 @@ exports.createOrder = async (req, res) => {
             await connection.query('UPDATE user_wallets SET balance = balance - ? WHERE user_id = ?', [totalAmount, userId]);
         }
         
-        // 6. Clean up cart
-        await connection.query('DELETE FROM cart_items WHERE cart_id = ?', [cartId]);
+        // 6. Clean up cart (Only delete ordered items)
+        const deleteQuery = `DELETE FROM cart_items WHERE cart_id = ?` + (cartItemIds ? ` AND id IN (?)` : ``);
+        await connection.query(deleteQuery, cartItemIds ? [cartId, cartItemIds] : [cartId]);
 
         // 7. [NEW LOGIC] - Trigger MLM & BV Distribution ONCE per order (Wallet/COD)
         if (paymentMethod === 'WALLET' || paymentMethod === 'COD') {
