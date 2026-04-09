@@ -2,6 +2,8 @@ const db = require('../../db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const smsService = require('../utils/smsHelper'); // Import the SMS utility
+const commissionService = require('../Services/commissionService');
+const distributionService = require('../Services/distributionService');
 
 /**
  * 1. AGENT LOGIN (Existing)
@@ -232,13 +234,35 @@ exports.sendDeliveryOTP = async (req, res) => {
 // 7. STEP 4: Complete Delivery
 exports.completeDelivery = async (req, res) => {
     const { orderId, paymentMode } = req.body;
+    const connection = await db.getConnection();
     try {
-        await db.query(
-            "UPDATE orders SET order_status='DELIVERED', payment_status='COMPLETED', payment_method=?, delivery_otp=NULL, delivered_at=NOW() WHERE id=?", 
+        await connection.beginTransaction();
+
+        // 1. Update Order Status
+        const [updateResult] = await connection.query(
+            "UPDATE orders SET order_status='DELIVERED', payment_status='COMPLETED', payment_method=?, delivery_otp=NULL, delivered_at=NOW() WHERE id=? AND order_status != 'DELIVERED'", 
             [paymentMode, orderId]
         );
-        res.json({ status: true, message: "Delivery Success!" });
-    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
+
+        if (updateResult.affectedRows > 0) {
+            console.log(`[Delivery] Order ${orderId} delivered. Triggering MLM...`);
+            
+            // 2. Trigger BV Tracking (Updates items, orders, users, and total pool bv)
+            await commissionService.processOrderForCommissions(connection, orderId);
+
+            // 3. Trigger 15-Fund Profit Distribution (Cashback, PB, Royalty, Pools)
+            await distributionService.processOrderDistribution(connection, orderId);
+        }
+
+        await connection.commit();
+        res.json({ status: true, message: "Delivery Success! MLM Distributed." });
+    } catch (e) { 
+        await connection.rollback();
+        console.error("Delivery Completion Error:", e.message);
+        res.status(500).json({ status: false, message: e.message }); 
+    } finally {
+        connection.release();
+    }
 };
 
 
