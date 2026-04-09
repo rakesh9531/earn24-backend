@@ -53,7 +53,7 @@ exports.processOrderForCommissions = async (connection, orderId) => {
 
         // 4. Update Global Totals (Orders and Users)
         if (totalOrderBV > 0) {
-            await connection.query("UPDATE orders SET total_bv = ? WHERE id = ?", [totalOrderBV, orderId]);
+            await connection.query("UPDATE orders SET total_bv_earned = ? WHERE id = ?", [totalOrderBV, orderId]);
             await connection.query("UPDATE users SET total_bv = total_bv + ? WHERE id = ?", [totalOrderBV, userId]);
 
             // 5. Update Monthly Company Pool total_company_bv (Generic BV tracking)
