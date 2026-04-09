@@ -25,12 +25,13 @@ exports.processOrderDistribution = async (connection, orderId) => {
         const companySharePct = settings.profit_company_share_pct || 20.0;
         const yearMonth = new Date().getFullYear() * 100 + (new Date().getMonth() + 1);
 
-        // 3. Get Order Items
+        // 3. Get Order Items (FIXED JOIN for GST)
         const [items] = await connection.query(`
-            SELECT oi.id as order_item_id, oi.price_per_unit, oi.quantity, sp.purchase_price, p.gst_percentage
+            SELECT oi.id as order_item_id, oi.price_per_unit, oi.quantity, sp.purchase_price, h.gst_percentage
             FROM order_items oi
             JOIN seller_products sp ON oi.seller_product_id = sp.id
             JOIN products p ON sp.product_id = p.id
+            LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE oi.order_id = ?`, [orderId]);
 
         for (const item of items) {
