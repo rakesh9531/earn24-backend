@@ -451,6 +451,7 @@ exports.createOrder = async (req, res) => {
             // B. Calculate Profit for MLM
             const basePrice = item.selling_price / (1 + ((item.gst_percentage || 0) / 100));
             const netProfitOnItem = (basePrice - item.purchase_price) * item.quantity;
+            const bvEarnedPerUnit = (basePrice - item.purchase_price) * (bvGenerationPct / 100);
 
             // C. Insert Order Item (NOW WITH BV COLUMNS)
             const orderItemSql = `INSERT INTO order_items (order_id, product_id, seller_product_id, product_name, attributes_snapshot, quantity, price_per_unit, total_price, bv_earned_per_unit, total_bv_earned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
