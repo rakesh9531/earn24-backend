@@ -71,12 +71,12 @@ exports.processOrderForCommissions = async (connection, orderId) => {
                 currentSponsorId = sponsor.sponsor_id; // Go up the tree
             }
 
-            // 7. Update Monthly Pool
+            // 7. Update Monthly Pool (Using backticks for safety)
             await connection.query(
-                `INSERT INTO monthly_company_pools (year_month, total_company_bv) 
+                `INSERT INTO \`monthly_company_pools\` (\`year_month\`, \`total_company_bv\`) 
                  VALUES (?, ?) 
-                 ON DUPLICATE KEY UPDATE total_company_bv = total_company_bv + VALUES(total_company_bv)`,
-                [yearMonth, totalOrderBV]
+                 ON DUPLICATE KEY UPDATE \`total_company_bv\` = \`total_company_bv\` + ?`,
+                [yearMonth, totalOrderBV, totalOrderBV]
             );
             
             console.log(`[BV Tracking] Success: Total BV: ${totalOrderBV} distributed to buyer ${buyerId} and upline.`);
