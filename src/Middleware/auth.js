@@ -50,7 +50,7 @@ const { permissions } = require('../utils/permissions'); // Import your permissi
 require('dotenv').config();
 
 const auth = (req, res, next) => {
-    let token = req.header('Authorization');
+    let token = req.header('Authorization') || req.query.token;
 
     if (!token) {
         return res.status(401).json({ status: false, message: "Access Denied. No token provided." });
