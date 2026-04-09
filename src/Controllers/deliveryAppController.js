@@ -218,7 +218,9 @@ exports.startDelivery = async (req, res) => {
 // 2. NEW: Trigger OTP only when agent reaches customer
 exports.sendDeliveryOTP = async (req, res) => {
     const { orderId } = req.body;
-    const otp = Math.floor(100000 + Math.random() * 900000).toString(); 
+    // const otp = Math.floor(100000 + Math.random() * 900000).toString(); 
+    
+    const otp = "123456"; 
     try {
         const [order] = await db.query(
             "SELECT u.mobile_number FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?", [orderId]
