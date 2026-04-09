@@ -188,7 +188,7 @@ async function updateWallet(connection, userId, amount) {
 }
 
 /**
- * HELPER: Update Monthly Company Pools
+ * HELPER: Update Monthly Company Pools (Fixed SQL Grammar)
  */
 async function updateMonthlyPools(connection, yearMonth, pools) {
     const keys = Object.keys(pools);
@@ -198,14 +198,15 @@ async function updateMonthlyPools(connection, yearMonth, pools) {
     const totalPoolAmt = values.reduce((sum, v) => sum + v, 0);
     if (totalPoolAmt <= 0) return;
 
-    const updateParts = keys.map(key => `${key} = ${key} + VALUES(${key})`).join(', ');
-    const columns = ['year_month', ...keys].join(', ');
+    // Use backticks and manual placeholders for the UPDATE part
+    const updateParts = keys.map(key => `\`${key}\` = \`${key}\` + ?`).join(', ');
+    const columns = ['\`year_month\`', ...keys.map(k => `\`${k}\``)].join(', ');
     const placeholders = ['?', ...keys.map(() => '?')].join(', ');
     
     await connection.query(
-        `INSERT INTO monthly_company_pools (${columns})
+        `INSERT INTO \`monthly_company_pools\` (${columns})
          VALUES (${placeholders})
          ON DUPLICATE KEY UPDATE ${updateParts}`,
-        [yearMonth, ...values]
+        [yearMonth, ...values, ...values]
     );
 }
