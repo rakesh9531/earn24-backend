@@ -452,27 +452,26 @@ exports.createOrder = async (req, res) => {
             const basePrice = item.selling_price / (1 + ((item.gst_percentage || 0) / 100));
             const netProfitOnItem = (basePrice - item.purchase_price) * item.quantity;
 
-            // C. Insert Order Item
-            const orderItemSql = `INSERT INTO order_items (order_id, product_id, seller_product_id, product_name, attributes_snapshot, quantity, price_per_unit, total_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+            // C. Insert Order Item (NOW WITH BV COLUMNS)
+            const orderItemSql = `INSERT INTO order_items (order_id, product_id, seller_product_id, product_name, attributes_snapshot, quantity, price_per_unit, total_price, bv_earned_per_unit, total_bv_earned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
             const [itemResult] = await connection.query(orderItemSql, [
                 orderId, item.product_id, item.seller_product_id, item.product_name, 
                 JSON.stringify(snapshot), 
-                item.quantity, item.selling_price, item.selling_price * item.quantity
+                item.quantity, item.selling_price, item.selling_price * item.quantity,
+                bvEarnedPerUnit, bvEarnedPerUnit * item.quantity
             ]);
 
             // D. Stock Deduction
             await connection.query('UPDATE seller_products SET quantity = quantity - ? WHERE id = ?', [item.quantity, item.seller_product_id]);
 
             // E. Distribute Earnings (Wallet/COD)
+            // E. Old Earnings Distribution logic was here inside the loop.
+            // We moved the NEW 15-fund distribution OUTSIDE the loop for performance.
+            /* 
             if ((paymentMethod === 'WALLET' || paymentMethod === 'COD') && netProfitOnItem > 0) {
-                await distributeEarnings(connection, { 
-                    userId, 
-                    sponsorId: item.sponsor_id, 
-                    orderItemId: itemResult.insertId, 
-                    netProfit: netProfitOnItem, 
-                    settings 
-                });
+                await distributeEarnings(connection, { userId, sponsorId: item.sponsor_id, orderItemId: itemResult.insertId, netProfit: netProfitOnItem, settings });
             }
+            */
         }
 
         // 6. Final Wallet Deduction
@@ -482,7 +481,19 @@ exports.createOrder = async (req, res) => {
             await connection.query('UPDATE user_wallets SET balance = balance - ? WHERE user_id = ?', [totalAmount, userId]);
         }
         
+        // 6. Clean up cart
         await connection.query('DELETE FROM cart_items WHERE cart_id = ?', [cartId]);
+
+        // 7. [NEW LOGIC] - Trigger MLM & BV Distribution ONCE per order (Wallet/COD)
+        if (paymentMethod === 'WALLET' || paymentMethod === 'COD') {
+            console.log(`[MLM] Triggering distribution for ${paymentMethod} order: ${orderId}`);
+            // BV & Rank Update
+            await commissionService.processOrderForCommissions(connection, orderId);
+            // 15-Fund Distribution
+            const distributionService = require('../Services/distributionService');
+            await distributionService.processOrderDistribution(connection, orderId);
+        }
+
         await connection.commit();
 
         res.status(201).json({ status: true, message: 'Order Placed!', data: { orderId, orderNumber, totalAmount } });
@@ -496,28 +507,6 @@ exports.createOrder = async (req, res) => {
     }
 };
 
-/**
- * Robust Earnings Distribution
- */
-async function distributeEarnings(connection, { userId, sponsorId, orderItemId, netProfit, settings }) {
-    const companySharePct = settings.profit_company_share_pct || 20.0;
-    const cashbackPct = settings.profit_dist_cashback_pct || 0;
-    const sponsorPct = settings.profit_dist_sponsor_pct || 0;
-
-    const distributableProfit = netProfit * ((100 - companySharePct) / 100);
-    
-    if (cashbackPct > 0) {
-        const cashbackAmount = distributableProfit * (cashbackPct / 100);
-        await connection.query(`INSERT INTO profit_distribution_ledger (order_item_id, user_id, distribution_type, total_profit_on_item, distributable_amount, percentage_applied, amount_credited) VALUES (?, ?, 'CASHBACK', ?, ?, ?, ?)`, [orderItemId, userId, netProfit, distributableProfit, cashbackPct, cashbackAmount]);
-        await connection.query('UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?', [cashbackAmount, userId]);
-    }
-
-    if (sponsorId && sponsorPct > 0) {
-        const sponsorBonusAmount = distributableProfit * (sponsorPct / 100);
-        await connection.query(`INSERT INTO profit_distribution_ledger (order_item_id, user_id, distribution_type, total_profit_on_item, distributable_amount, percentage_applied, amount_credited) VALUES (?, ?, 'SPONSOR_BONUS', ?, ?, ?, ?)`, [orderItemId, sponsorId, netProfit, distributableProfit, sponsorPct, sponsorBonusAmount]);
-        await connection.query('UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?', [sponsorBonusAmount, sponsorId]);
-    }
-}
 
 
 
@@ -667,3 +656,28 @@ exports.updatePaymentMethod = async (req, res) => {
         res.status(500).json({ status: false, message: 'Server error' });
     }
 };
+
+/*
+// ==========================================================
+// OLD DISTRIBUTION HELPER (REPLACED BY 15-FUND SERVICE)
+// ==========================================================
+async function distributeEarnings(connection, { userId, sponsorId, orderItemId, netProfit, settings }) {
+    const companySharePct = settings.profit_company_share_pct || 20.0;
+    const cashbackPct = settings.profit_dist_cashback_pct || 0;
+    const sponsorPct = settings.profit_dist_sponsor_pct || 0;
+
+    const distributableProfit = netProfit * ((100 - companySharePct) / 100);
+    
+    if (cashbackPct > 0) {
+        const cashbackAmount = distributableProfit * (cashbackPct / 100);
+        await connection.query(`INSERT INTO profit_distribution_ledger (order_item_id, user_id, distribution_type, total_profit_on_item, distributable_amount, percentage_applied, amount_credited) VALUES (?, ?, 'CASHBACK', ?, ?, ?, ?)`, [orderItemId, userId, netProfit, distributableProfit, cashbackPct, cashbackAmount]);
+        await connection.query('UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?', [cashbackAmount, userId]);
+    }
+
+    if (sponsorId && sponsorPct > 0) {
+        const sponsorBonusAmount = distributableProfit * (sponsorPct / 100);
+        await connection.query(`INSERT INTO profit_distribution_ledger (order_item_id, user_id, distribution_type, total_profit_on_item, distributable_amount, percentage_applied, amount_credited) VALUES (?, ?, 'SPONSOR_BONUS', ?, ?, ?, ?)`, [orderItemId, sponsorId, netProfit, distributableProfit, sponsorPct, sponsorBonusAmount]);
+        await connection.query('UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?', [sponsorBonusAmount, sponsorId]);
+    }
+}
+*/
