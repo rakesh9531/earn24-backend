@@ -289,3 +289,30 @@ exports.updatePaymentMethod = async (req, res) => {
         res.status(500).json({ status: false, message: 'Server error' });
     }
 };
+
+/*
+=============================================================================
+                          PREVIOUS CODE REFERENCE
+=============================================================================
+
+const db = require('../../db');
+const Order = require('../Models/orderModel');
+const OrderItem = require('../Models/orderItemModel.js');
+const Address = require('../Models/userAddressModel.js');
+
+const notificationService = require('../utils/notificationService.js');
+const commissionService = require('../Services/commissionService');
+
+// Helper function to generate a unique order number
+const generateOrderNumber = () => {
+    const date = new Date();
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const randomPart = Math.random().toString(36).substr(2, 6).toUpperCase();
+    return `ORD-${year}${month}${day}-${randomPart}`;
+};
+
+// ... and other previous versions provided by you ...
+=============================================================================
+*/
