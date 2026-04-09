@@ -11,7 +11,7 @@ exports.processOrderDistribution = async (connection, orderId) => {
         console.log(`[MLM Distribution] Starting processing for Order ID: ${orderId}`);
 
         // 1. Fetch Order Items & Profit Details
-        const [orderRows] = await connection.query("SELECT o.user_id, u.sponsor_id, u.rank FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?", [orderId]);
+        const [orderRows] = await connection.query("SELECT o.user_id, u.sponsor_id, u.`rank` FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?", [orderId]);
         if (!orderRows.length) return;
 
         const buyerId = orderRows[0].user_id;
@@ -115,7 +115,7 @@ async function distributeDifferentialBonus(connection, buyerId, sponsorId, order
     };
 
     while (currentSponsorId) {
-        const [sponsors] = await connection.query("SELECT id, sponsor_id, rank FROM users WHERE id = ?", [currentSponsorId]);
+        const [sponsors] = await connection.query("SELECT id, sponsor_id, `rank` FROM users WHERE id = ?", [currentSponsorId]);
         if (!sponsors.length) break;
 
         const sponsor = sponsors[0];
@@ -150,7 +150,7 @@ async function distributeRoyaltyBonus(connection, buyerId, sponsorId, orderItemI
     ];
 
     while (currentSponsorId && level <= 3) {
-        const [sponsors] = await connection.query("SELECT id, sponsor_id, rank FROM users WHERE id = ?", [currentSponsorId]);
+        const [sponsors] = await connection.query("SELECT id, sponsor_id, `rank` FROM users WHERE id = ?", [currentSponsorId]);
         if (!sponsors.length) break;
 
         const sponsor = sponsors[0];

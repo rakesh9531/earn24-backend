@@ -768,15 +768,13 @@ exports.getUserProfile = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const query = `
-            SELECT 
-                u.id, u.full_name, u.email, u.mobile_number, u.username,
-                u.rank, u.user_pic, -- Added these for MLM and Profile UI
-                ua.pincode, ua.address_line_1, ua.city, ua.state
-            FROM users u
-            LEFT JOIN user_addresses ua ON u.id = ua.user_id AND ua.is_default = TRUE
-            WHERE u.id = ?
-        `;
+    const query = "SELECT " +
+                "u.id, u.full_name, u.email, u.mobile_number, u.username, " +
+                "u.`rank`, u.user_pic, " +
+                "ua.pincode, ua.address_line_1, ua.city, ua.state " +
+            "FROM users u " +
+            "LEFT JOIN user_addresses ua ON u.id = ua.user_id AND ua.is_default = TRUE " +
+            "WHERE u.id = ?";
 
     const [rows] = await db.query(query, [userId]);
 
@@ -840,7 +838,7 @@ exports.updateUserProfile = async (req, res) => {
     await db.query(sql, queryValues);
 
     // 3. RETURN UPDATED USER
-    const [updatedUser] = await db.query("SELECT id, full_name, email, mobile_number, username, rank, user_pic FROM users WHERE id = ?", [userId]);
+    const [updatedUser] = await db.query("SELECT id, full_name, email, mobile_number, username, `rank`, user_pic FROM users WHERE id = ?", [userId]);
     
     res.status(200).json({ 
         status: true, 
