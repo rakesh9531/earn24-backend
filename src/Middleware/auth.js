@@ -4,7 +4,7 @@
 // // Middleware to verify JWT and extract user/admin details
 // const auth = (req, res, next) => {
 //     let token = req.header('Authorization');
-    
+
 //     // Check if the token is provided
 //     if (!token) {
 //         return res.status(401).json({ error: "Access denied. No token provided." });
@@ -17,7 +17,7 @@
 
 //     try {
 //         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        
+
 //         req.user = decoded; // Attach decoded user data to the request
 //         next();
 //     } catch (err) {
@@ -50,7 +50,7 @@ const { permissions } = require('../utils/permissions'); // Import your permissi
 require('dotenv').config();
 
 const auth = (req, res, next) => {
-    let token = req.header('Authorization') || req.query.token;
+    let token = req.header('Authorization');
 
     if (!token) {
         return res.status(401).json({ status: false, message: "Access Denied. No token provided." });
