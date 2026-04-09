@@ -6,6 +6,7 @@ const Address = require('../Models/userAddressModel.js');
 const notificationService = require('../utils/notificationService.js');
 const commissionService = require('../Services/commissionService'); 
 const distributionService = require('../Services/distributionService');
+const invoiceService = require('../Services/invoiceService');
 
 // Helper function to generate a unique order number
 const generateOrderNumber = () => {
@@ -287,6 +288,79 @@ exports.updatePaymentMethod = async (req, res) => {
     } catch (error) {
         console.error('Error updating payment method:', error);
         res.status(500).json({ status: false, message: 'Server error' });
+    }
+};
+
+/**
+ * Generates and downloads the invoice PDF for a specific order.
+ */
+exports.downloadInvoice = async (req, res) => {
+    const userId = req.user.id;
+    const { orderId } = req.params;
+
+    try {
+        // 1. Get Order Details
+        const orderQuery = `SELECT * FROM orders WHERE id = ? AND user_id = ?`;
+        const [orderRows] = await db.query(orderQuery, [orderId, userId]);
+        if (orderRows.length === 0) {
+            return res.status(404).json({ status: false, message: 'Order not found.' });
+        }
+        const order = orderRows[0];
+
+        // --- REAL WORLD CHECK: Only allow invoice for DELIVERED orders (or CONFIRMED/SHIPPED if you prefer) ---
+        // As per user request: "jb order proper delever ho jaata hai"
+        if (order.order_status !== 'DELIVERED') {
+            return res.status(400).json({ 
+                status: false, 
+                message: 'Invoice is only available once the order is DELIVERED.' 
+            });
+        }
+
+        // 2. Get Shipping Address
+        const [addressRows] = await db.query(`SELECT * FROM user_addresses WHERE id = ?`, [order.shipping_address_id]);
+        order.shipping_address = addressRows[0];
+
+        // 3. Get User Details
+        const [userRows] = await db.query(`SELECT full_name, username as phone_number FROM users WHERE id = ?`, [userId]);
+        const user = userRows[0];
+
+        // 4. Get Items with HSN Code and Seller Info (Platform/Admin only)
+        const itemsQuery = `
+            SELECT 
+                oi.*, h.hsn_code,
+                s.display_name as seller_name,
+                s.address as seller_address,
+                s.gstin as seller_gstin
+            FROM order_items oi
+            JOIN products p ON oi.product_id = p.id
+            LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
+            CROSS JOIN sellers s WHERE s.sellerable_id = 1 AND s.sellerable_type = 'Admin' 
+            AND oi.order_id = ?
+        `;
+        const [itemRows] = await db.query(itemsQuery, [orderId]);
+        order.items = itemRows;
+
+        if (itemRows.length === 0) {
+            return res.status(404).json({ status: false, message: 'Order items not found.' });
+        }
+
+        const seller = {
+            display_name: itemRows[0].seller_name || "EARN24",
+            address: itemRows[0].seller_address || "N/A",
+            gstin: itemRows[0].seller_gstin || "N/A"
+        };
+
+        // 5. Generate PDF
+        const pdfBuffer = await invoiceService.generateInvoicePDF(order, user, seller);
+
+        // 6. Send Response
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename=Invoice-${order.order_number}.pdf`);
+        res.send(pdfBuffer);
+
+    } catch (error) {
+        console.error("Error generating invoice:", error);
+        res.status(500).json({ status: false, message: 'An error occurred while generating the invoice PDF.' });
     }
 };
 
