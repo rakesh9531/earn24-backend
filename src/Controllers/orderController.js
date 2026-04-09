@@ -4,7 +4,7 @@ const OrderItem = require('../Models/orderItemModel.js');
 const Address = require('../Models/userAddressModel.js');
 
 const notificationService = require('../utils/notificationService.js');
-const commissionService = require('../Services/commissionService'); 
+const commissionService = require('../Services/commissionService');
 const distributionService = require('../Services/distributionService');
 const invoiceService = require('../Services/invoiceService');
 
@@ -61,7 +61,7 @@ exports.createOrder = async (req, res) => {
             acc[setting.setting_key] = parseFloat(setting.setting_value);
             return acc;
         }, {});
-        
+
         const bvGenerationPct = settings.bv_generation_pct_of_profit || 80.0;
         const bvThreshold = settings.delivery_fee_bv_threshold || 50.0;
         const standardFee = settings.delivery_fee_standard || 40.0;
@@ -72,11 +72,11 @@ exports.createOrder = async (req, res) => {
         let finalSubtotal = 0;
         for (const item of items) {
             if (item.quantity > item.stock_available) throw new Error(`Insufficient stock for ${item.product_name}`);
-            
+
             const basePrice = item.selling_price / (1 + ((item.gst_percentage || 0) / 100));
             const netProfit = basePrice - item.purchase_price;
             const bvEarnedPerUnit = (netProfit > 0) ? netProfit * (bvGenerationPct / 100) : 0;
-            
+
             calculatedTotalBv += bvEarnedPerUnit * item.quantity;
             finalSubtotal += (item.selling_price * item.quantity);
         }
@@ -119,18 +119,18 @@ exports.createOrder = async (req, res) => {
                     bv_earned_per_unit, total_bv_earned
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
             await connection.query(orderItemSql, [
-                orderId, item.product_id, item.seller_product_id, item.product_name, 
-                JSON.stringify(snapshot), 
+                orderId, item.product_id, item.seller_product_id, item.product_name,
+                JSON.stringify(snapshot),
                 item.quantity, item.selling_price, item.selling_price * item.quantity,
                 bvEarnedPerUnit, bvEarnedPerUnit * item.quantity
             ]);
 
             // D. Deduct Stock
             const [updateResult] = await connection.query(
-                'UPDATE seller_products SET quantity = quantity - ? WHERE id = ? AND quantity >= ?', 
+                'UPDATE seller_products SET quantity = quantity - ? WHERE id = ? AND quantity >= ?',
                 [item.quantity, item.seller_product_id, item.quantity]
             );
-            
+
             if (updateResult.affectedRows === 0) throw new Error(`Stock mismatch for product ${item.product_name}`);
 
             // E. Notify if low stock
@@ -143,7 +143,7 @@ exports.createOrder = async (req, res) => {
             if (!walletRows[0] || walletRows[0].balance < totalAmount) throw new Error("Insufficient wallet balance.");
             await connection.query('UPDATE user_wallets SET balance = balance - ? WHERE user_id = ?', [totalAmount, userId]);
         }
-        
+
         // 8. Clean up Cart (Only Delete ordered items)
         const deleteQuery = `DELETE FROM cart_items WHERE cart_id = ?` + (cartItemIds ? ` AND id IN (?)` : ``);
         await connection.query(deleteQuery, cartItemIds ? [cartId, cartItemIds] : [cartId]);
@@ -183,7 +183,7 @@ exports.getOrderHistory = async (req, res) => {
             LIMIT ? OFFSET ?
         `;
         const [orderRows] = await db.query(dataQuery, [userId, limit, offset]);
-        
+
         const countQuery = `SELECT COUNT(*) as total FROM orders WHERE user_id = ?`;
         const [countRows] = await db.query(countQuery, [userId]);
         const totalRecords = countRows[0].total;
@@ -202,8 +202,8 @@ exports.getOrderHistory = async (req, res) => {
         }));
 
         res.status(200).json({
-            status: true, 
-            data: ordersWithImages, 
+            status: true,
+            data: ordersWithImages,
             pagination: {
                 currentPage: page,
                 totalPages: Math.ceil(totalRecords / limit),
@@ -230,7 +230,7 @@ exports.getOrderDetails = async (req, res) => {
         if (orderRows.length === 0) {
             return res.status(404).json({ status: false, message: 'Order not found.' });
         }
-        
+
         const addressQuery = `SELECT * FROM user_addresses WHERE id = ?`;
         const [addressRows] = await db.query(addressQuery, [orderRows[0].shipping_address_id]);
 
@@ -247,7 +247,7 @@ exports.getOrderDetails = async (req, res) => {
             shipping_address: addressRows[0] ? new Address(addressRows[0]) : null,
             items: itemRows.map(item => new OrderItem(item))
         });
-        
+
         res.status(200).json({ status: true, data: orderData });
 
     } catch (error) {
@@ -265,9 +265,9 @@ exports.updatePaymentMethod = async (req, res) => {
             return res.status(400).json({ status: false, message: 'Payment method is required' });
         }
 
-        let newStatus = 'PENDING'; 
+        let newStatus = 'PENDING';
         if (paymentMethod === 'COD') {
-            newStatus = 'CONFIRMED'; 
+            newStatus = 'CONFIRMED';
         }
 
         const [result] = await db.query(
@@ -279,10 +279,10 @@ exports.updatePaymentMethod = async (req, res) => {
             return res.status(404).json({ status: false, message: 'Order not found' });
         }
 
-        res.status(200).json({ 
-            status: true, 
+        res.status(200).json({
+            status: true,
             message: 'Payment method and status updated successfully',
-            data: { order_status: newStatus } 
+            data: { order_status: newStatus }
         });
 
     } catch (error) {
@@ -307,15 +307,6 @@ exports.downloadInvoice = async (req, res) => {
         }
         const order = orderRows[0];
 
-        // --- REAL WORLD CHECK: Only allow invoice for DELIVERED orders (or CONFIRMED/SHIPPED if you prefer) ---
-        // As per user request: "jb order proper delever ho jaata hai"
-        if (order.order_status !== 'DELIVERED') {
-            return res.status(400).json({ 
-                status: false, 
-                message: 'Invoice is only available once the order is DELIVERED.' 
-            });
-        }
-
         // 2. Get Shipping Address
         const [addressRows] = await db.query(`SELECT * FROM user_addresses WHERE id = ?`, [order.shipping_address_id]);
         order.shipping_address = addressRows[0];
@@ -324,30 +315,25 @@ exports.downloadInvoice = async (req, res) => {
         const [userRows] = await db.query(`SELECT full_name, username as phone_number FROM users WHERE id = ?`, [userId]);
         const user = userRows[0];
 
-        // 4. Get Items with HSN Code and Seller Info (Platform/Admin only)
+        // 4. Get Items with HSN Code and Seller Info
         const itemsQuery = `
-            SELECT 
-                oi.*, h.hsn_code,
-                s.display_name as seller_name,
-                s.address as seller_address,
-                s.gstin as seller_gstin
+            SELECT oi.*, h.hsn_code, s.display_name as seller_name, s.address as seller_address, s.gstin as seller_gstin
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-            CROSS JOIN sellers s WHERE s.sellerable_id = 1 AND s.sellerable_type = 'Admin' 
-            AND oi.order_id = ?
+            JOIN seller_products sp ON oi.seller_product_id = sp.id
+            JOIN sellers s ON sp.seller_id = s.sellerable_id AND s.sellerable_type = 'Admin' -- Defaulting to Admin for now, or match logic
+            WHERE oi.order_id = ?
         `;
+        // Correction: The mapping between seller_products and sellers might vary based on your multi-seller logic.
+        // For simplicity, we fetch the details of the seller linked to the first item.
         const [itemRows] = await db.query(itemsQuery, [orderId]);
         order.items = itemRows;
 
-        if (itemRows.length === 0) {
-            return res.status(404).json({ status: false, message: 'Order items not found.' });
-        }
-
         const seller = {
-            display_name: itemRows[0].seller_name || "EARN24",
-            address: itemRows[0].seller_address || "N/A",
-            gstin: itemRows[0].seller_gstin || "N/A"
+            display_name: itemRows[0]?.seller_name || "EARN24",
+            address: itemRows[0]?.seller_address || "N/A",
+            gstin: itemRows[0]?.seller_gstin || "N/A"
         };
 
         // 5. Generate PDF
