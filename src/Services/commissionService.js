@@ -21,9 +21,9 @@ exports.processOrderForCommissions = async (connection, orderId) => {
         const bvPct = settings.bv_generation_pct_of_profit || 80.0;
         const yearMonth = new Date().getFullYear() * 100 + (new Date().getMonth() + 1);
 
-        // 3. Fetch Order Items for BV calculation
+        // 3. Fetch Order Items for BV calculation (Added product_id to fix "cannot be null" error)
         const [items] = await connection.query(`
-            SELECT oi.id, oi.price_per_unit, oi.quantity, sp.purchase_price, h.gst_percentage
+            SELECT oi.id, oi.product_id, oi.price_per_unit, oi.quantity, sp.purchase_price, h.gst_percentage
             FROM order_items oi
             JOIN seller_products sp ON oi.seller_product_id = sp.id
             JOIN products p ON sp.product_id = p.id
