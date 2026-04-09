@@ -118,11 +118,16 @@ exports.getCart = async (req, res) => {
             JOIN products p ON sp.product_id = p.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-            WHERE ci.cart_id = ?
+            WHERE ci.cart_id = ? ${req.query.cartItemIds ? 'AND ci.id IN (?)' : ''}
         `;
         
-        // --- MODIFICATION 3: Add the pincode to the query parameters in the correct order ---
-        const [items] = await db.query(query, [bvGenerationPct, pincode, cartId]);
+        const params = [bvGenerationPct, pincode, cartId];
+        if (req.query.cartItemIds) {
+            const selectedIds = req.query.cartItemIds.split(',').map(id => parseInt(id.trim()));
+            params.push(selectedIds); // Correct: Push to the end because IN (?) is the last condition
+        }
+
+        const [items] = await db.query(query, params);
         
         // The result will now include `is_available: 1` or `is_available: 0` for each item.
         const processedItems = items.map(item => ({
@@ -291,11 +296,12 @@ exports.validateCartForCheckout = async (req, res) => {
         }, {});
 
         // Now, validate each item from the original list against the new pincode
+        // This MUST ONLY return the items that were passed to it, not the whole cart.
         const validatedItems = items.map(item => {
             const availablePincodes = availabilityMap[item.offer_id] || new Set();
             return {
-                ...item, // Keep all original item data
-                is_available: availablePincodes.has(pincode.toString()) // Ensure pincode is a string for comparison
+                ...item, 
+                is_available: availablePincodes.has(pincode.toString()) 
             };
         });
 
