@@ -66,7 +66,7 @@ exports.generateInvoicePDF = (order, user, seller) => {
         // Table Header
         const tableTop = 310;
         doc.font('Helvetica-Bold');
-        generateTableRow(doc, tableTop, "S.N.", "Description", "HSN", "Qty", "Price", "Total");
+        generateTableRow(doc, tableTop, "S.N.", "Description", "HSN", "Qty", "Price", "GST %", "Total");
         doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).stroke();
         doc.font('Helvetica');
 
@@ -78,11 +78,12 @@ exports.generateInvoicePDF = (order, user, seller) => {
                 doc,
                 position,
                 i + 1,
-                item.product_name.substring(0, 30),
+                item.product_name.substring(0, 25),
                 item.hsn_code || "N/A",
                 item.quantity,
-                `Rs. ${parseFloat(item.price_per_unit).toFixed(2)}`,
-                `Rs. ${parseFloat(item.total_price).toFixed(2)}`
+                `${parseFloat(item.price_per_unit).toFixed(2)}`,
+                `${item.gst_percentage || 0}%`,
+                `${parseFloat(item.total_price).toFixed(2)}`
             );
             position += 20;
             i++;
@@ -110,12 +111,13 @@ exports.generateInvoicePDF = (order, user, seller) => {
     });
 };
 
-function generateTableRow(doc, y, sn, desc, hsn, qty, price, total) {
+function generateTableRow(doc, y, sn, desc, hsn, qty, price, gst, total) {
     doc.fontSize(10)
-        .text(sn, 50, y)
-        .text(desc, 80, y)
-        .text(hsn, 280, y)
-        .text(qty, 380, y)
-        .text(price, 430, y)
-        .text(total, 500, y);
+        .text(sn, 50, y, { width: 25 })
+        .text(desc, 80, y, { width: 130 })
+        .text(hsn, 215, y, { width: 60 })
+        .text(qty, 280, y, { width: 30 })
+        .text(price, 315, y, { width: 60 })
+        .text(gst, 385, y, { width: 40 })
+        .text(total, 435, y, { align: 'right', width: 115 });
 }
