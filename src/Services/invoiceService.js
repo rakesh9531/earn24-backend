@@ -33,14 +33,12 @@ exports.generateInvoicePDF = (order, user, seller) => {
             .text("EARN24", 150, 400)
             .restore();
 
-        // Header - Company Logo / Name
         doc.fillColor("#444444")
             .fontSize(20)
             .text(companyInfo.name, 50, 45)
             .fontSize(10)
             .text(companyInfo.address, 50, 70)
-            .text(`${companyInfo.pincode}`, 50, 85)
-            .text(`GSTIN: ${companyInfo.gstin}`, 50, 100)
+            .text(`GSTIN: ${companyInfo.gstin}`, 50, 85)
             .moveDown();
 
         // Invoice Header Details
@@ -83,8 +81,8 @@ exports.generateInvoicePDF = (order, user, seller) => {
                 item.product_name.substring(0, 30),
                 item.hsn_code || "N/A",
                 item.quantity,
-                `₹${parseFloat(item.price_per_unit).toFixed(2)}`,
-                `₹${parseFloat(item.total_price).toFixed(2)}`
+                `Rs. ${parseFloat(item.price_per_unit).toFixed(2)}`,
+                `Rs. ${parseFloat(item.total_price).toFixed(2)}`
             );
             position += 20;
             i++;
@@ -96,24 +94,18 @@ exports.generateInvoicePDF = (order, user, seller) => {
 
         doc.fontSize(10).font('Helvetica-Bold');
         doc.text("Subtotal:", 350, summaryTop + 10);
-        doc.font('Helvetica').text(`₹${parseFloat(order.subtotal).toFixed(2)}`, 480, summaryTop + 10, { align: 'right' });
+        doc.font('Helvetica').text(`Rs. ${parseFloat(order.subtotal).toFixed(2)}`, 480, summaryTop + 10, { align: 'right' });
 
         doc.font('Helvetica-Bold').text("Delivery Fee:", 350, summaryTop + 25);
-        doc.font('Helvetica').text(`₹${parseFloat(order.delivery_fee).toFixed(2)}`, 480, summaryTop + 25, { align: 'right' });
+        doc.font('Helvetica').text(`Rs. ${parseFloat(order.delivery_fee).toFixed(2)}`, 480, summaryTop + 25, { align: 'right' });
 
         doc.moveTo(350, summaryTop + 40).lineTo(550, summaryTop + 40).stroke();
 
         doc.fontSize(12).font('Helvetica-Bold');
         doc.text("Grand Total:", 350, summaryTop + 50);
-        doc.text(`₹${parseFloat(order.total_amount).toFixed(2)}`, 480, summaryTop + 50, { align: 'right' });
+        doc.text(`Rs. ${parseFloat(order.total_amount).toFixed(2)}`, 480, summaryTop + 50, { align: 'right' });
 
-        // Footer / Terms
-        const footerTop = 700;
-        doc.fontSize(10).font('Helvetica-Bold').text("Terms & Conditions:", 50, footerTop);
-        doc.fontSize(8).font('Helvetica')
-            .text("1. All disputes are subject to New Delhi jurisdiction.", 50, footerTop + 15)
-            .text("2. This is a computer generated invoice and does not require signature.", 50, footerTop + 25);
-
+        // Footer (Terms removed as requested)
         doc.end();
     });
 };

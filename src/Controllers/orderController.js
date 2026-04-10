@@ -310,7 +310,7 @@ exports.downloadInvoice = async (req, res) => {
         order.shipping_address = addressRows[0];
 
         // 3. Get User Details
-        const [userRows] = await db.query(`SELECT full_name, username as phone_number FROM users WHERE id = ?`, [userId]);
+        const [userRows] = await db.query(`SELECT full_name, mobile_number as phone_number FROM users WHERE id = ?`, [userId]);
         const user = userRows[0];
 
         // 4. Get Items with HSN Code and Seller Info
@@ -337,9 +337,9 @@ exports.downloadInvoice = async (req, res) => {
         // 5. Generate PDF
         const pdfBuffer = await invoiceService.generateInvoicePDF(order, user, seller);
 
-        // 6. Send Response
+        // 6. Send Response (Changed to inline for Preview)
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename=Invoice-${order.order_number}.pdf`);
+        res.setHeader('Content-Disposition', `inline; filename=Invoice-${order.order_number}.pdf`);
         res.send(pdfBuffer);
 
     } catch (error) {
