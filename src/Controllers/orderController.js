@@ -315,12 +315,12 @@ exports.downloadInvoice = async (req, res) => {
 
         // 4. Get Items with HSN Code and Seller Info
         const itemsQuery = `
-            SELECT oi.*, h.hsn_code, s.display_name as seller_name, s.address as seller_address, s.gstin as seller_gstin
+            SELECT oi.*, h.hsn_code, h.gst_percentage, s.display_name as seller_name, s.address as seller_address, s.gstin as seller_gstin
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             JOIN seller_products sp ON oi.seller_product_id = sp.id
-            JOIN sellers s ON sp.seller_id = s.sellerable_id AND s.sellerable_type = 'Admin' -- Defaulting to Admin for now, or match logic
+            JOIN sellers s ON sp.seller_id = s.sellerable_id AND s.sellerable_type = 'Admin'
             WHERE oi.order_id = ?
         `;
         // Correction: The mapping between seller_products and sellers might vary based on your multi-seller logic.
@@ -337,9 +337,9 @@ exports.downloadInvoice = async (req, res) => {
         // 5. Generate PDF
         const pdfBuffer = await invoiceService.generateInvoicePDF(order, user, seller);
 
-        // 6. Send Response (Changed to inline for Preview)
+        // 6. Send Response (Changed to attachment to force Download)
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `inline; filename=Invoice-${order.order_number}.pdf`);
+        res.setHeader('Content-Disposition', `attachment; filename=Invoice-${order.order_number}.pdf`);
         res.send(pdfBuffer);
 
     } catch (error) {
