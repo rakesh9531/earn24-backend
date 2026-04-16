@@ -53,59 +53,60 @@ exports.addAttributeValue = async (req, res) => {
 
 
 
-// UPDATED: Get all attributes with values, now with search, pagination, and sorting
+// Get all attributes with values, now with search, pagination, and sorting
 exports.getAllAttributesWithValues = async (req, res) => {
     try {
-        // 1. Extract query parameters with defaults
         const page = parseInt(req.query.page, 10) || 1;
         const limit = parseInt(req.query.limit, 10) || 10;
         const search = req.query.search || '';
         const offset = (page - 1) * limit;
         const searchPattern = `%${search}%`;
 
-        // --- Main Query using a Subquery for correct pagination ---
-        // This is the standard way to paginate results before grouping
-        const dataQuery = `
-            SELECT
-                t1.id,
-                t1.name,
-                t1.admin_label,
-                CONCAT('[', 
-                    GROUP_CONCAT(
-                        IF(av.id IS NULL, 
-                           NULL,
-                           JSON_OBJECT('id', av.id, 'value', av.value)
-                        )
-                        ORDER BY av.value
-                    ), 
-                ']') as \`values\`
-            FROM (
-                -- This subquery gets the paginated list of parent attributes first
-                SELECT * FROM attributes
-                WHERE name LIKE ? OR admin_label LIKE ?
-                ORDER BY name ASC
-                LIMIT ?
-                OFFSET ?
-            ) AS t1
-            LEFT JOIN attribute_values av ON t1.id = av.attribute_id
-            GROUP BY t1.id, t1.name, t1.admin_label
-            ORDER BY t1.name ASC;
+        // 1. Fetch paginated attributes
+        const attrQuery = `
+            SELECT * FROM attributes
+            WHERE name LIKE ? OR admin_label LIKE ?
+            ORDER BY name ASC
+            LIMIT ? OFFSET ?;
         `;
-        
-        const [rows] = await db.query(dataQuery, [searchPattern, searchPattern, limit, offset]);
+        const [attrRows] = await db.query(attrQuery, [searchPattern, searchPattern, limit, offset]);
 
-        // Parse the JSON string from GROUP_CONCAT
-        const data = rows.map(row => {
-            try {
-                const parsedValues = JSON.parse(row.values);
-                row.values = Array.isArray(parsedValues) && parsedValues[0] !== null ? parsedValues : [];
-            } catch (e) {
-                row.values = [];
-            }
-            return new Attribute(row); // Assuming an 'Attribute' model
+        if (attrRows.length === 0) {
+            return res.status(200).json({
+                status: true,
+                data: [],
+                pagination: {
+                    currentPage: page,
+                    totalPages: 0,
+                    totalRecords: 0,
+                    limit: limit
+                }
+            });
+        }
+
+        // 2. Fetch all values for these attributes in a single query
+        const attributeIds = attrRows.map(a => a.id);
+        const valuesQuery = `
+            SELECT id, attribute_id, value 
+            FROM attribute_values 
+            WHERE attribute_id IN (?)
+            ORDER BY value ASC;
+        `;
+        const [valueRows] = await db.query(valuesQuery, [attributeIds]);
+
+        // 3. Map values back to their attributes
+        const data = attrRows.map(row => {
+            const values = valueRows
+                .filter(v => v.attribute_id === row.id)
+                .map(v => ({ id: v.id, value: v.value }));
+            
+            return new Attribute({
+                ...row,
+                values: values
+            });
         });
 
-        // --- Get the total count of records for pagination ---
+        // 4. Get total count
         const countQuery = `
             SELECT COUNT(*) as total FROM attributes
             WHERE name LIKE ? OR admin_label LIKE ?;
@@ -113,7 +114,6 @@ exports.getAllAttributesWithValues = async (req, res) => {
         const [countRows] = await db.query(countQuery, [searchPattern, searchPattern]);
         const totalRecords = countRows[0].total;
 
-        // --- Send the complete response ---
         res.status(200).json({
             status: true,
             data: data,
