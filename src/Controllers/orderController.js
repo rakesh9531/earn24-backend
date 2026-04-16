@@ -66,6 +66,11 @@ exports.createOrder = async (req, res) => {
         const bvThreshold = settings.delivery_fee_bv_threshold || 50.0;
         const standardFee = settings.delivery_fee_standard || 40.0;
         const specialFee = settings.delivery_fee_special || 0.0;
+        const isCodActive = settings.is_cod_active !== undefined ? settings.is_cod_active : 1;
+
+        if (paymentMethod === 'COD' && isCodActive === 0) {
+            throw new Error('Cash on Delivery (COD) is currently disabled by the administrator.');
+        }
 
         // 4. Calculate Totals (Subtotal & BV)
         let calculatedTotalBv = 0;

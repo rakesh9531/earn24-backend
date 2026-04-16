@@ -8,8 +8,17 @@ const saltRounds = 10; // Standard for bcrypt hashing
  */
 exports.getAllAgents = async (req, res) => {
     try {
-        const query = "SELECT id, full_name, phone_number, is_active, created_at, updated_at FROM delivery_agents ORDER BY created_at DESC";
-        const [rows] = await db.query(query);
+        const { activeOnly } = req.query;
+        let query = "SELECT id, full_name, phone_number, is_active, created_at, updated_at FROM delivery_agents";
+        const queryParams = [];
+
+        if (activeOnly === 'true') {
+            query += " WHERE is_active = 1";
+        }
+
+        query += " ORDER BY created_at DESC";
+
+        const [rows] = await db.query(query, queryParams);
         const agents = rows.map(agent => new DeliveryAgent(agent));
         res.status(200).json({ status: true, data: agents });
     } catch (error) {
