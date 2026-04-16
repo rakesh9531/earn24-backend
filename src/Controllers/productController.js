@@ -1240,7 +1240,7 @@ exports.searchProducts = async (req, res) => {
       brandId,
       sortBy,
       page = 1,
-      limit = 20,
+      limit = 40,
       pincode,
     } = req.query;
 
@@ -1573,9 +1573,10 @@ exports.getProductForUser = async (req, res) => {
 exports.getProductsByCategory = async (req, res) => {
   try {
     const { categoryId } = req.params;
-    const { pincode, page = 1 } = req.query;
-    const limit = 20;
-    const offset = (page - 1) * limit;
+    const { pincode, page = 1, limit = 40 } = req.query;
+    const limitNum = parseInt(limit, 10);
+    const pageNum = parseInt(page, 10);
+    const offset = (pageNum - 1) * limitNum;
 
     if (!categoryId || !pincode) {
       return res.status(400).json({ status: false, message: "Category ID and Pincode are required." });
@@ -1632,35 +1633,40 @@ exports.getProductsByCategory = async (req, res) => {
             OFFSET ?;
         `;
 
-    const [products] = await db.query(query, [bvGenerationPct, categoryId, pincode, limit, offset]);
+    const [products] = await db.query(query, [bvGenerationPct, categoryId, pincode, limitNum, offset]);
 
-    // // Simple return without a separate variable. 
-    // // We just parse the JSON strings so the UI can read them as arrays.
-    // res.status(200).json({
-    //   status: true,
-    //   data: products.map(p => ({
-    //     ...p,
-    //     attributes: p.attributes ? JSON.parse(p.attributes) : [],
-    //     gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : []
-    //   }))
-    // });
-
+    // Count query for pagination
+    const countQuery = `
+      SELECT COUNT(DISTINCT sp.id) as total
+      FROM products AS p
+      JOIN seller_products AS sp ON p.id = sp.product_id
+      JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
+      WHERE p.category_id = ? 
+        AND spp.pincode = ?
+        AND p.is_active = 1
+        AND p.is_deleted = 0
+        AND sp.is_active = 1
+        AND sp.selling_price > 0
+    `;
+    const [countRows] = await db.query(countQuery, [categoryId, pincode]);
+    const totalRecords = countRows[0].total;
 
     const formattedProducts = products.map(p => ({
-  ...p,
-  attributes: p.attributes ? JSON.parse(p.attributes) : [],
-  gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : []
-}));
+      ...p,
+      attributes: p.attributes ? JSON.parse(p.attributes) : [],
+      gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : []
+    }));
 
-const response = {
-  status: true,
-  data: formattedProducts
-};
-
-// 🔥 Console the final response
-console.log("Final API Response:\n", JSON.stringify(response, null, 2));
-
-res.status(200).json(response);
+    res.status(200).json({
+      status: true,
+      data: formattedProducts,
+      pagination: {
+        total: totalRecords,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(totalRecords / limitNum)
+      }
+    });
 
 
   } catch (error) {
@@ -1677,9 +1683,10 @@ res.status(200).json(response);
 exports.getProductsBySubcategory = async (req, res) => {
   try {
     const { subcategoryId } = req.params;
-    const { pincode, page = 1 } = req.query;
-    const limit = 20;
-    const offset = (page - 1) * limit;
+    const { pincode, page = 1, limit = 40 } = req.query;
+    const limitNum = parseInt(limit, 10);
+    const pageNum = parseInt(page, 10);
+    const offset = (pageNum - 1) * limitNum;
 
     if (!subcategoryId || !pincode) {
       return res.status(400).json({ status: false, message: "Subcategory ID and Pincode are required." });
@@ -1734,8 +1741,23 @@ exports.getProductsBySubcategory = async (req, res) => {
             LIMIT ?
             OFFSET ?;
         `;
+    const [products] = await db.query(query, [bvGenerationPct, subcategoryId, pincode, limitNum, offset]);
 
-    const [products] = await db.query(query, [bvGenerationPct, subcategoryId, pincode, limit, offset]);
+    // Added: Count query for pagination
+    const countQuery = `
+      SELECT COUNT(DISTINCT sp.id) as total
+      FROM products AS p
+      JOIN seller_products AS sp ON p.id = sp.product_id
+      JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
+      WHERE p.subcategory_id = ? 
+        AND spp.pincode = ?
+        AND p.is_active = 1
+        AND p.is_deleted = 0
+        AND sp.is_active = 1
+        AND sp.selling_price > 0
+    `;
+    const [countRows] = await db.query(countQuery, [subcategoryId, pincode]);
+    const totalRecords = countRows[0].total;
 
     const formattedProducts = products.map(p => ({
       ...p,
@@ -1743,12 +1765,16 @@ exports.getProductsBySubcategory = async (req, res) => {
       gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : []
     }));
 
-    const response = {
+    res.status(200).json({
       status: true,
-      data: formattedProducts
-    };
-
-    res.status(200).json(response);
+      data: formattedProducts,
+      pagination: {
+        total: totalRecords,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(totalRecords / limitNum)
+      }
+    });
 
   } catch (error) {
     console.error("Error in getProductsBySubcategory:", error);
