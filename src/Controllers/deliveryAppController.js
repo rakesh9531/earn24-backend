@@ -155,7 +155,7 @@ exports.getMyOrders = async (req, res) => {
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.order_status,
                    u.full_name as customer_name, u.mobile_number as customer_phone,
-                   sa.address_line_1, sa.city, sa.pincode
+                   sa.address_line_1, sa.address_line_2, sa.landmark, sa.city, sa.state, sa.pincode
             FROM orders o
             JOIN users u ON o.user_id = u.id
             JOIN user_addresses sa ON o.shipping_address_id = sa.id
