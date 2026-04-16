@@ -130,3 +130,97 @@ exports.getAllAttributesWithValues = async (req, res) => {
         res.status(500).json({ status: false, message: "An error occurred." });
     }
 };
+
+// Update an existing attribute
+exports.updateAttribute = async (req, res) => {
+    try {
+        const { attributeId } = req.params;
+        const { name, admin_label } = req.body;
+        
+        if (!name || !admin_label) {
+            return res.status(400).json({ status: false, message: "Name and Admin Label are required." });
+        }
+        
+        const query = `UPDATE attributes SET name = ?, admin_label = ? WHERE id = ?`;
+        const [result] = await db.query(query, [name, admin_label, attributeId]);
+        
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ status: false, message: "Attribute not found." });
+        }
+        
+        res.status(200).json({ status: true, message: "Attribute updated successfully." });
+
+    } catch (error) {
+        if (error.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ status: false, message: "This attribute name already exists." });
+        }
+        console.error("Error updating attribute:", error);
+        res.status(500).json({ status: false, message: "An error occurred." });
+    }
+};
+
+// Update an existing attribute value
+exports.updateAttributeValue = async (req, res) => {
+    try {
+        const { valueId } = req.params;
+        const { value } = req.body;
+        
+        if (!value) {
+            return res.status(400).json({ status: false, message: "Value is required." });
+        }
+        
+        const query = `UPDATE attribute_values SET value = ? WHERE id = ?`;
+        const [result] = await db.query(query, [value, valueId]);
+        
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ status: false, message: "Attribute value not found." });
+        }
+        
+        res.status(200).json({ status: true, message: "Attribute value updated successfully." });
+
+    } catch (error) {
+        if (error.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ status: false, message: "This value already exists for this attribute." });
+        }
+        console.error("Error updating attribute value:", error);
+        res.status(500).json({ status: false, message: "An error occurred." });
+    }
+};
+
+// Delete an attribute
+exports.deleteAttribute = async (req, res) => {
+    try {
+        const { attributeId } = req.params;
+        const query = `DELETE FROM attributes WHERE id = ?`;
+        const [result] = await db.query(query, [attributeId]);
+        
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ status: false, message: "Attribute not found." });
+        }
+        
+        res.status(200).json({ status: true, message: "Attribute deleted successfully." });
+
+    } catch (error) {
+        console.error("Error deleting attribute:", error);
+        res.status(500).json({ status: false, message: "An error occurred. It may be in use." });
+    }
+};
+
+// Delete an attribute value
+exports.deleteAttributeValue = async (req, res) => {
+    try {
+        const { valueId } = req.params;
+        const query = `DELETE FROM attribute_values WHERE id = ?`;
+        const [result] = await db.query(query, [valueId]);
+        
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ status: false, message: "Attribute value not found." });
+        }
+        
+        res.status(200).json({ status: true, message: "Attribute value deleted successfully." });
+
+    } catch (error) {
+        console.error("Error deleting attribute value:", error);
+        res.status(500).json({ status: false, message: "An error occurred. It may be in use." });
+    }
+};
