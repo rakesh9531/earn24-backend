@@ -1340,52 +1340,50 @@ exports.getAdminDashboardStats = async (req, res) => {
             inventoryHealth,
             topPerformingPincodes,
             topSellingProducts,
-            revenueTrend
+            revenueTrend,
+            mlmPools
         ] = await Promise.all([
-            // 1. FINANCIAL OVERVIEW
+            // 1. ADVANCED FINANCIAL OVERVIEW
             db.query(`
                 SELECT 
                     IFNULL(SUM(total_amount), 0) as grossRevenue,
-                    IFNULL(SUM(subtotal), 0) as subtotalRevenue,
                     IFNULL(SUM(delivery_fee), 0) as totalDeliveryFeesCollected,
                     
-                    /* Settled Cash: Online payments + Settled COD orders */
+                    /* Realized Cash: Money actually in Admin's possession */
                     IFNULL(SUM(CASE 
                         WHEN payment_method != 'COD' AND payment_status = 'COMPLETED' THEN total_amount 
                         WHEN payment_method = 'COD' AND is_cash_settled = 1 THEN total_amount 
                         ELSE 0 
                     END), 0) as settledCash,
 
-                    /* Pending Settlement: COD orders delivered but not yet settled with Admin */
-                    IFNULL(SUM(CASE 
-                        WHEN payment_method = 'COD' AND order_status = 'DELIVERED' AND is_cash_settled = 0 THEN total_amount 
-                        ELSE 0 
-                    END), 0) as pendingSettlementCash,
+                    /* Market Potential: Orders placed but not yet delivered/cancelled */
+                    IFNULL(SUM(CASE WHEN order_status = 'CONFIRMED' OR order_status = 'SHIPPED' THEN total_amount ELSE 0 END), 0) as pendingOrdersValue,
 
+                    /* Total Profit Potential (Gross Margin) */
                     (SELECT IFNULL(SUM(oi.total_price - (oi.quantity * sp.purchase_price)), 0)
                      FROM order_items oi
                      JOIN seller_products sp ON oi.seller_product_id = sp.id
                      JOIN orders o ON oi.order_id = o.id
-                     WHERE o.order_status = 'DELIVERED') as netProductProfit
+                     WHERE o.order_status = 'DELIVERED') as grossProfit
                 FROM orders 
                 WHERE order_status != 'CANCELLED'
             `),
 
-            // 2. MLM FINANCIALS
+            // 2. MLM FINANCIALS & LIABILITY
             db.query(`
                 SELECT 
                     (SELECT IFNULL(SUM(total_bv_earned), 0) FROM orders WHERE order_status != 'CANCELLED') as totalBvGenerated,
-                    (SELECT IFNULL(SUM(amount_credited), 0) FROM commission_ledger) as totalCommissionsPaid
+                    (SELECT IFNULL(SUM(amount_credited), 0) FROM commission_ledger) as totalCommissionsPaid,
+                    (SELECT IFNULL(SUM(balance), 0) FROM user_wallets) as totalUserLiability
             `),
 
-            // 3. ✅ FIXED: USER GROWTH (Removed is_deleted filter to avoid column errors)
+            // 3. USER GROWTH
             db.query(`
                 SELECT 
                     (SELECT COUNT(*) FROM users) as totalUsers,
                     (SELECT COUNT(*) FROM retailers) as totalRetailers,
                     (SELECT COUNT(*) FROM merchants) as totalMerchants,
-                    (SELECT COUNT(*) FROM delivery_agents) as totalAgents,
-                    (SELECT COUNT(*) FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)) as usersJoinedThisMonth
+                    (SELECT COUNT(*) FROM delivery_agents) as totalAgents
             `),
 
             // 4. ORDER STATUS SUMMARY
@@ -1394,17 +1392,16 @@ exports.getAdminDashboardStats = async (req, res) => {
                 FROM orders GROUP BY order_status
             `),
 
-            // 5. INVENTORY HEALTH
+            // 5. INVENTORY
             db.query(`
                 SELECT 
                     COUNT(*) as totalSKUs,
                     SUM(CASE WHEN quantity = 0 THEN 1 ELSE 0 END) as outOfStockCount,
-                    SUM(CASE WHEN quantity > 0 AND quantity <= low_stock_threshold THEN 1 ELSE 0 END) as lowStockCount,
                     IFNULL(SUM(quantity * purchase_price), 0) as totalInventoryValue
                 FROM seller_products WHERE is_active = 1
             `),
 
-            // 6. GEOGRAPHIC SALES
+            // 6. GEOGRAPHIC
             db.query(`
                 SELECT ua.pincode, COUNT(o.id) as orderCount, IFNULL(SUM(o.total_amount), 0) as revenue
                 FROM orders o
@@ -1413,7 +1410,7 @@ exports.getAdminDashboardStats = async (req, res) => {
                 GROUP BY ua.pincode ORDER BY revenue DESC LIMIT 5
             `),
 
-            // 7. TOP 5 SELLING PRODUCTS
+            // 7. TOP PRODUCTS
             db.query(`
                 SELECT oi.product_name, SUM(oi.quantity) as totalSold, SUM(oi.total_price) as revenue
                 FROM order_items oi
@@ -1423,16 +1420,29 @@ exports.getAdminDashboardStats = async (req, res) => {
                 ORDER BY totalSold DESC LIMIT 5
             `),
 
-            // 8. 14-DAY REVENUE & BV TREND
+            // 8. TREND
             db.query(`
-                SELECT 
-                    DATE(created_at) as date, 
-                    IFNULL(SUM(total_amount), 0) as revenue,
-                    IFNULL(SUM(total_bv_earned), 0) as bv
+                SELECT DATE(created_at) as date, IFNULL(SUM(total_amount), 0) as revenue
                 FROM orders
                 WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
                 AND order_status != 'CANCELLED'
                 GROUP BY DATE(created_at) ORDER BY date ASC
+            `),
+
+            // 9. MLM 15-FUNDS POOL DATA (Consolidated)
+            db.query(`
+                SELECT 
+                    SUM(cash_back_fund) as cashback,
+                    SUM(performance_bonus_fund) as performance,
+                    SUM(royalty_fund) as royalty,
+                    SUM(binary_income_fund) as binaryFund,
+                    SUM(leadership_fund) as leadership,
+                    SUM(travel_fund) as travel,
+                    SUM(bike_fund) as bike,
+                    SUM(car_fund) as car,
+                    SUM(house_fund) as house,
+                    SUM(insurance_fund) as insurance
+                FROM monthly_company_pools
             `)
         ]);
 
@@ -1442,13 +1452,12 @@ exports.getAdminDashboardStats = async (req, res) => {
                 financials: {
                     grossRevenue: financialStats[0][0].grossRevenue,
                     settledCash: financialStats[0][0].settledCash,
-                    pendingSettlementMode: financialStats[0][0].pendingSettlementCash,
-                    netProfit: financialStats[0][0].netProductProfit,
-                    deliveryFees: financialStats[0][0].totalDeliveryFeesCollected,
-                    mlmPayouts: mlmFinancials[0][0].totalCommissionsPaid,
-                    totalBv: mlmFinancials[0][0].totalBvGenerated
+                    grossProfit: financialStats[0][0].grossProfit,
+                    userLiability: mlmFinancials[0][0].totalUserLiability,
+                    totalPayouts: mlmFinancials[0][0].totalCommissionsPaid,
+                    pendingOrders: financialStats[0][0].pendingOrdersValue
                 },
-                inventory: inventoryHealth[0][0],
+                funds: mlmPools[0][0], // 15-funds data
                 users: userStats[0][0],
                 ordersByStatus: orderSummary[0],
                 topPincodes: topPerformingPincodes[0],
