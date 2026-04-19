@@ -307,17 +307,19 @@ exports.cancelAssignment = async (req, res) => {
         }
 
         // Reset the agent and set status back to CONFIRMED so Admin can see it again
+        // ALSO: Save the reason so Admin knows WHY it was rejected
         const query = `
             UPDATE orders 
             SET delivery_agent_id = NULL, 
                 order_status = 'CONFIRMED', 
-                delivery_otp = NULL 
+                delivery_otp = NULL,
+                rejection_reason = ?,
+                last_rejected_by_agent_id = ?
             WHERE id = ?
         `;
-        await db.query(query, [orderId]);
+        await db.query(query, [reason || 'No reason provided', agentId, orderId]);
 
-        // ROBUST: Log the cancellation reason in a separate table if you have one
-        console.log(`Order ${orderId} cancelled by agent ${agentId}. Reason: ${reason || 'Not specified'}`);
+        console.log(`Order ${orderId} rejected by agent ${agentId}. Reason: ${reason}`);
 
         res.json({ status: true, message: "Assignment cancelled. Order returned to Admin pool." });
     } catch (e) {

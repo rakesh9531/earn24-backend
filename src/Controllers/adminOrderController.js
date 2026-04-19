@@ -10,7 +10,8 @@ exports.getOrdersByStatus = async (req, res) => {
     
     try {
         const query = `
-            SELECT o.id, o.order_number, o.total_amount, o.order_status, o.created_at, u.full_name as customer_name
+            SELECT o.id, o.order_number, o.total_amount, o.order_status, o.created_at, u.full_name as customer_name,
+                   o.rejection_reason, o.last_rejected_by_agent_id
             FROM orders o
             JOIN users u ON o.user_id = u.id
             WHERE o.order_status = ?
