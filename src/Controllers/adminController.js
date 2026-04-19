@@ -1459,13 +1459,13 @@ exports.getAdminDashboardStats = async (req, res) => {
             // 10. RECENT CASH SETTLEMENT LOGS
             db.query(`
                 SELECT 
-                    sl.amount_settled, 
+                    sl.amount_received as amount_settled, 
                     sl.settled_at, 
                     o.order_number, 
-                    da.name as agent_name
+                    da.full_name as agent_name
                 FROM admin_settlement_logs sl
                 JOIN orders o ON sl.order_id = o.id
-                JOIN delivery_agents da ON sl.delivery_agent_id = da.id
+                JOIN delivery_agents da ON sl.agent_id = da.id
                 ORDER BY sl.settled_at DESC LIMIT 10
             `)
         ]);
