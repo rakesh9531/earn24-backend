@@ -288,9 +288,17 @@ exports.getPendingSettlements = async (req, res) => {
     }
 };
 
+// --- GET SETTLEMENT HISTORY LOGS (Professional Version) ---
 exports.getSettlementHistory = async (req, res) => {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || '';
+    const offset = (page - 1) * limit;
+    const searchPattern = `%${search}%`;
+
     try {
-        const query = `
+        // 1. Fetch Logs with search and pagination
+        const logQuery = `
             SELECT 
                 sl.amount_received as amount_settled, 
                 sl.settled_at, 
@@ -299,10 +307,61 @@ exports.getSettlementHistory = async (req, res) => {
             FROM admin_settlement_logs sl
             JOIN orders o ON sl.order_id = o.id
             JOIN delivery_agents da ON sl.agent_id = da.id
+            WHERE (o.order_number LIKE ? OR da.full_name LIKE ?)
             ORDER BY sl.settled_at DESC
+            LIMIT ? OFFSET ?
         `;
-        const [logs] = await db.query(query);
-        res.status(200).json({ status: true, data: logs });
+        const [logs] = await db.query(logQuery, [searchPattern, searchPattern, limit, offset]);
+
+        // 2. Fetch Summary Stats (Total Collected vs Current Pending)
+        const statsQuery = `
+            SELECT 
+                (SELECT IFNULL(SUM(amount_received), 0) FROM admin_settlement_logs) as totalCollected,
+                (SELECT IFNULL(SUM(total_amount), 0) FROM orders 
+                 WHERE payment_method = 'COD' AND order_status = 'DELIVERED' AND is_cash_settled = 0) as totalPending
+        `;
+        const [stats] = await db.query(statsQuery);
+
+        // 2.1 Fetch Agent-wise Pending Breakdown
+        const agentWiseQuery = `
+            SELECT 
+                da.id as agent_id, 
+                da.full_name as agent_name, 
+                da.phone_number as agent_phone,
+                IFNULL(SUM(o.total_amount), 0) as pending_amount,
+                COUNT(o.id) as pending_orders_count
+            FROM orders o
+            JOIN delivery_agents da ON o.delivery_agent_id = da.id
+            WHERE o.payment_method = 'COD' 
+            AND o.order_status = 'DELIVERED' 
+            AND o.is_cash_settled = 0
+            GROUP BY da.id
+            ORDER BY pending_amount DESC
+        `;
+        const [agentWisePending] = await db.query(agentWiseQuery);
+
+        // 3. Fetch count for pagination
+        const [countRows] = await db.query(`
+            SELECT COUNT(*) as total 
+            FROM admin_settlement_logs sl
+            JOIN orders o ON sl.order_id = o.id
+            JOIN delivery_agents da ON sl.agent_id = da.id
+            WHERE (o.order_number LIKE ? OR da.full_name LIKE ?)`, 
+            [searchPattern, searchPattern]);
+
+        res.status(200).json({ 
+            status: true, 
+            data: logs,
+            summary: {
+                ...stats[0],
+                agentWisePending: agentWisePending
+            },
+            pagination: {
+                currentPage: page,
+                totalPages: Math.ceil(countRows[0].total / limit),
+                totalRecords: countRows[0].total
+            }
+        });
     } catch (e) {
         console.error("Settlement History Error:", e);
         res.status(500).json({ status: false, message: "Server error fetching settlement history." });
