@@ -67,67 +67,6 @@ exports.assignOrderForDelivery = async (req, res) => {
     }
 };
 
-
-
-// exports.getAdminOrderDetails = async (req, res) => {
-//     const { orderId } = req.params;
-//     try {
-//         // Fetch main order details, customer info, and address info in one query
-//         const orderQuery = `
-//             SELECT 
-//                 o.*, 
-//                 u.full_name as customer_name, 
-//                 u.mobile_number as customer_phone,
-//                 ua.address_line_1,
-//                 ua.address_line_2,
-//                 ua.city,
-//                 ua.state,
-//                 ua.pincode,
-//                 ua.landmark
-//             FROM orders o 
-//             JOIN users u ON o.user_id = u.id
-//             LEFT JOIN user_addresses ua ON o.shipping_address_id = ua.id
-//             WHERE o.id = ?
-//         `;
-//         const [orderRows] = await db.query(orderQuery, [orderId]);
-//         if (orderRows.length === 0) {
-//             return res.status(404).json({ status: false, message: 'Order not found.' });
-//         }
-        
-//         // Fetch all line items for this order
-//         const itemsQuery = `
-//             SELECT 
-//                 oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price,
-//                 p.main_image_url 
-//             FROM order_items oi
-//             JOIN products p ON oi.product_id = p.id
-//             WHERE oi.order_id = ?
-//         `;
-//         const [itemRows] = await db.query(itemsQuery, [orderId]);
-
-//         // Combine the results into a single, clean object
-//         const orderDetails = {
-//             ...orderRows[0], // Includes all fields from the 'orders' table
-//             items: itemRows
-//         };
-        
-//         res.status(200).json({ status: true, data: orderDetails });
-
-//     } catch (error) {
-//         console.error("Error fetching admin order details:", error);
-//         res.status(500).json({ status: false, message: 'An error occurred.' });
-//     }
-// };
-
-
-
-
-
-
-
-//  Above working 
-
-
 exports.getAdminOrderDetails = async (req, res) => {
     const { orderId } = req.params;
     try {
@@ -197,13 +136,6 @@ exports.getAdminOrderDetails = async (req, res) => {
     }
 };
 
-
-
-
-
-// --------------------------------------------------------------------------------------------------
-
-
 exports.settleAgentCash = async (req, res) => {
     const { orderId } = req.body;
     const adminId = req.user.id; 
@@ -236,10 +168,9 @@ exports.settleAgentCash = async (req, res) => {
         );
 
         // 3. ROBUST STEP: Create a Ledger Entry for Audit
-        // This table should exist to track financial movements
         const ledgerSql = `
             INSERT INTO admin_settlement_logs 
-            (admin_id, agent_id, order_id, amount_received, remarks) 
+            (admin_id, delivery_agent_id, order_id, amount_received, remarks) 
             VALUES (?, ?, ?, ?, ?)`;
         
         await connection.query(ledgerSql, [
@@ -254,18 +185,14 @@ exports.settleAgentCash = async (req, res) => {
         res.json({ status: true, message: `₹${total_amount} settled successfully for Order ${order_number}` });
 
     } catch (e) {
-        await connection.rollback();
+        if (connection) await connection.rollback();
         console.error("Settlement Error:", e);
         res.status(500).json({ status: false, message: "Internal server error during settlement." });
     } finally {
-        connection.release();
+        if (connection) connection.release();
     }
 };
 
-
-
-
-// 2. POST /api/admin/orders/verify-settlement
 exports.verifySettlement = async (req, res) => {
     const { orderId } = req.body;
     const adminId = req.user.id;
@@ -278,27 +205,6 @@ exports.verifySettlement = async (req, res) => {
     } catch (e) { res.status(500).json({ status: false, message: e.message }); }
 };
 
-
-// / 1. New function for "All Orders History" page
-// exports.getAllOrdersHistory = async (req, res) => {
-//     try {
-//         const query = `
-//             SELECT o.*, u.full_name as customer_name, u.mobile_number as customer_phone
-//             FROM orders o
-//             JOIN users u ON o.user_id = u.id
-//             ORDER BY o.created_at DESC`;
-//         const [rows] = await db.query(query);
-//         res.json({ status: true, data: rows });
-//     } catch (e) {
-//         res.status(500).json({ status: false, message: e.message });
-//     }
-// };
-
-
-
-
-
-// GET /api/admin/orders/all-history
 exports.getAllOrdersHistory = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
@@ -307,7 +213,6 @@ exports.getAllOrdersHistory = async (req, res) => {
     const searchPattern = `%${search}%`;
 
     try {
-        // 1. Fetch orders with search and pagination
         const query = `
             SELECT o.*, u.full_name as customer_name, u.mobile_number as customer_phone
             FROM orders o
@@ -318,7 +223,6 @@ exports.getAllOrdersHistory = async (req, res) => {
 
         const [rows] = await db.query(query, [searchPattern, searchPattern, searchPattern, limit, offset]);
 
-        // 2. Fetch total count for pagination UI
         const [countRows] = await db.query(
             "SELECT COUNT(*) as total FROM orders o JOIN users u ON o.user_id = u.id WHERE (o.order_number LIKE ? OR u.full_name LIKE ?)",
             [searchPattern, searchPattern]
@@ -338,40 +242,6 @@ exports.getAllOrdersHistory = async (req, res) => {
     }
 };
 
-
-
-
-
-
-
-// 2. Verified function for Cash Settlement list
-// exports.getPendingSettlements = async (req, res) => {
-//     try {
-//         const query = `
-//             SELECT o.id, o.order_number, o.total_amount, o.delivered_at,
-//                    u.full_name as customer_name,
-//                    da.full_name as agent_name, da.phone_number as agent_phone
-//             FROM orders o
-//             JOIN users u ON o.user_id = u.id
-//             JOIN delivery_agents da ON o.delivery_agent_id = da.id
-//             WHERE o.payment_method = 'COD' 
-//             AND o.order_status = 'DELIVERED' 
-//             AND o.is_cash_settled = 0
-//             ORDER BY o.delivered_at ASC`;
-//         const [rows] = await db.query(query);
-//         res.status(200).json({ status: true, data: rows });
-//     } catch (e) {
-//         console.error(e);
-//         res.status(500).json({ status: false, message: "Server error. Check if is_cash_settled column exists." });
-//     }
-// };
-
-
-
-
-
-
-
 exports.getPendingSettlements = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
@@ -380,7 +250,6 @@ exports.getPendingSettlements = async (req, res) => {
     const searchPattern = `%${search}%`;
 
     try {
-        // 1. Get the list of orders needing settlement
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.delivered_at,
                    u.full_name as customer_name,
@@ -397,7 +266,6 @@ exports.getPendingSettlements = async (req, res) => {
 
         const [rows] = await db.query(query, [searchPattern, searchPattern, searchPattern, limit, offset]);
 
-        // 2. Get Total count for pagination
         const [countRows] = await db.query(`
             SELECT COUNT(*) as total FROM orders o 
             JOIN delivery_agents da ON o.delivery_agent_id = da.id
@@ -415,6 +283,28 @@ exports.getPendingSettlements = async (req, res) => {
             }
         });
     } catch (e) {
+        console.error("Pending Settlement Error:", e);
         res.status(500).json({ status: false, message: e.message });
+    }
+};
+
+exports.getSettlementHistory = async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                sl.amount_received as amount_settled, 
+                sl.settled_at, 
+                o.order_number, 
+                da.full_name as agent_name
+            FROM admin_settlement_logs sl
+            JOIN orders o ON sl.order_id = o.id
+            JOIN delivery_agents da ON sl.delivery_agent_id = da.id
+            ORDER BY sl.settled_at DESC
+        `;
+        const [logs] = await db.query(query);
+        res.status(200).json({ status: true, data: logs });
+    } catch (e) {
+        console.error("Settlement History Error:", e);
+        res.status(500).json({ status: false, message: "Server error fetching settlement history." });
     }
 };

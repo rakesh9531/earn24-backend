@@ -66,6 +66,7 @@ router.use(auth);
 // --- 1. SPECIFIC STATIC ROUTES (Must be first) ---
 // This fixes the 404 "Order not found" error
 router.get('/pending-settlements', can('orders:read'), adminOrderController.getPendingSettlements);
+router.get('/settlement-history', can('orders:read'), adminOrderController.getSettlementHistory);
 router.get('/all-history', can('orders:read'), adminOrderController.getAllOrdersHistory);
 router.get('/', can('orders:read'), adminOrderController.getOrdersByStatus);
 
