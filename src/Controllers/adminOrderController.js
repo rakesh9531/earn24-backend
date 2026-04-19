@@ -170,7 +170,7 @@ exports.settleAgentCash = async (req, res) => {
         // 3. ROBUST STEP: Create a Ledger Entry for Audit
         const ledgerSql = `
             INSERT INTO admin_settlement_logs 
-            (admin_id, delivery_agent_id, order_id, amount_received, remarks) 
+            (admin_id, agent_id, order_id, amount_received, remarks) 
             VALUES (?, ?, ?, ?, ?)`;
         
         await connection.query(ledgerSql, [
@@ -298,7 +298,7 @@ exports.getSettlementHistory = async (req, res) => {
                 da.full_name as agent_name
             FROM admin_settlement_logs sl
             JOIN orders o ON sl.order_id = o.id
-            JOIN delivery_agents da ON sl.delivery_agent_id = da.id
+            JOIN delivery_agents da ON sl.agent_id = da.id
             ORDER BY sl.settled_at DESC
         `;
         const [logs] = await db.query(query);
