@@ -1343,7 +1343,7 @@ exports.getAdminDashboardStats = async (req, res) => {
             revenueTrend,
             mlmPools
         ] = await Promise.all([
-            // 1. ADVANCED FINANCIAL OVERVIEW
+            // 1. COMPREHENSIVE FINANCIAL OVERVIEW
             db.query(`
                 SELECT 
                     IFNULL(SUM(total_amount), 0) as grossRevenue,
@@ -1356,10 +1356,20 @@ exports.getAdminDashboardStats = async (req, res) => {
                         ELSE 0 
                     END), 0) as settledCash,
 
-                    /* Market Potential: Orders placed but not yet delivered/cancelled */
-                    IFNULL(SUM(CASE WHEN order_status = 'CONFIRMED' OR order_status = 'SHIPPED' THEN total_amount ELSE 0 END), 0) as pendingOrdersValue,
+                    /* Risk: Money currently with Agents (Delivered but not settled) */
+                    IFNULL(SUM(CASE 
+                        WHEN payment_method = 'COD' AND order_status = 'DELIVERED' AND is_cash_settled = 0 THEN total_amount 
+                        ELSE 0 
+                    END), 0) as cashOnStreet,
 
-                    /* Total Profit Potential (Gross Margin) */
+                    /* Cost of Goods: What we owe to Sellers/Vendors for delivered items */
+                    (SELECT IFNULL(SUM(oi.quantity * sp.purchase_price), 0)
+                     FROM order_items oi
+                     JOIN seller_products sp ON oi.seller_product_id = sp.id
+                     JOIN orders o ON oi.order_id = o.id
+                     WHERE o.order_status = 'DELIVERED') as costOfGoods,
+
+                    /* Total Profit Potential (Gross Margin before commissions) */
                     (SELECT IFNULL(SUM(oi.total_price - (oi.quantity * sp.purchase_price)), 0)
                      FROM order_items oi
                      JOIN seller_products sp ON oi.seller_product_id = sp.id
@@ -1386,7 +1396,7 @@ exports.getAdminDashboardStats = async (req, res) => {
                     (SELECT COUNT(*) FROM delivery_agents) as totalAgents
             `),
 
-            // 4. ORDER STATUS SUMMARY
+            // 4. ORDER STATUS SUMMARY WITH VALUES
             db.query(`
                 SELECT order_status, COUNT(*) as count, IFNULL(SUM(total_amount), 0) as statusValue
                 FROM orders GROUP BY order_status
@@ -1429,7 +1439,7 @@ exports.getAdminDashboardStats = async (req, res) => {
                 GROUP BY DATE(created_at) ORDER BY date ASC
             `),
 
-            // 9. MLM 15-FUNDS POOL DATA (Consolidated)
+            // 9. MLM 15-FUNDS POOL DATA
             db.query(`
                 SELECT 
                     SUM(cash_back_fund) as cashback,
@@ -1455,9 +1465,10 @@ exports.getAdminDashboardStats = async (req, res) => {
                     grossProfit: financialStats[0][0].grossProfit,
                     userLiability: mlmFinancials[0][0].totalUserLiability,
                     totalPayouts: mlmFinancials[0][0].totalCommissionsPaid,
-                    pendingOrders: financialStats[0][0].pendingOrdersValue
+                    costOfGoods: financialStats[0][0].costOfGoods,
+                    cashOnStreet: financialStats[0][0].cashOnStreet
                 },
-                funds: mlmPools[0][0], // 15-funds data
+                funds: mlmPools[0][0],
                 users: userStats[0][0],
                 ordersByStatus: orderSummary[0],
                 topPincodes: topPerformingPincodes[0],
