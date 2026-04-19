@@ -1348,6 +1348,20 @@ exports.getAdminDashboardStats = async (req, res) => {
                     IFNULL(SUM(total_amount), 0) as grossRevenue,
                     IFNULL(SUM(subtotal), 0) as subtotalRevenue,
                     IFNULL(SUM(delivery_fee), 0) as totalDeliveryFeesCollected,
+                    
+                    /* Settled Cash: Online payments + Settled COD orders */
+                    IFNULL(SUM(CASE 
+                        WHEN payment_method != 'COD' AND payment_status = 'COMPLETED' THEN total_amount 
+                        WHEN payment_method = 'COD' AND is_cash_settled = 1 THEN total_amount 
+                        ELSE 0 
+                    END), 0) as settledCash,
+
+                    /* Pending Settlement: COD orders delivered but not yet settled with Admin */
+                    IFNULL(SUM(CASE 
+                        WHEN payment_method = 'COD' AND order_status = 'DELIVERED' AND is_cash_settled = 0 THEN total_amount 
+                        ELSE 0 
+                    END), 0) as pendingSettlementCash,
+
                     (SELECT IFNULL(SUM(oi.total_price - (oi.quantity * sp.purchase_price)), 0)
                      FROM order_items oi
                      JOIN seller_products sp ON oi.seller_product_id = sp.id
@@ -1427,6 +1441,8 @@ exports.getAdminDashboardStats = async (req, res) => {
             data: {
                 financials: {
                     grossRevenue: financialStats[0][0].grossRevenue,
+                    settledCash: financialStats[0][0].settledCash,
+                    pendingSettlementMode: financialStats[0][0].pendingSettlementCash,
                     netProfit: financialStats[0][0].netProductProfit,
                     deliveryFees: financialStats[0][0].totalDeliveryFeesCollected,
                     mlmPayouts: mlmFinancials[0][0].totalCommissionsPaid,
