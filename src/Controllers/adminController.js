@@ -1402,11 +1402,11 @@ exports.getAdminDashboardStats = async (req, res) => {
                 FROM orders GROUP BY order_status
             `),
 
-            // 5. INVENTORY
+            // 5. INVENTORY HEALTH (Based on custom thresholds)
             db.query(`
                 SELECT 
                     COUNT(*) as totalSKUs,
-                    SUM(CASE WHEN quantity = 0 THEN 1 ELSE 0 END) as outOfStockCount,
+                    SUM(CASE WHEN quantity <= low_stock_threshold THEN 1 ELSE 0 END) as outOfStockCount,
                     IFNULL(SUM(quantity * purchase_price), 0) as totalInventoryValue
                 FROM seller_products WHERE is_active = 1
             `),
@@ -1470,6 +1470,7 @@ exports.getAdminDashboardStats = async (req, res) => {
                 },
                 funds: mlmPools[0][0],
                 users: userStats[0][0],
+                inventory: inventoryHealth[0][0],
                 ordersByStatus: orderSummary[0],
                 topPincodes: topPerformingPincodes[0],
                 topProducts: topSellingProducts[0],
