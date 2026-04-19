@@ -1341,7 +1341,8 @@ exports.getAdminDashboardStats = async (req, res) => {
             topPerformingPincodes,
             topSellingProducts,
             revenueTrend,
-            mlmPools
+            mlmPools,
+            settlementLogs
         ] = await Promise.all([
             // 1. COMPREHENSIVE FINANCIAL OVERVIEW
             db.query(`
@@ -1453,6 +1454,19 @@ exports.getAdminDashboardStats = async (req, res) => {
                     SUM(house_fund) as house,
                     SUM(insurance_fund) as insurance
                 FROM monthly_company_pools
+            `),
+
+            // 10. RECENT CASH SETTLEMENT LOGS
+            db.query(`
+                SELECT 
+                    sl.amount_settled, 
+                    sl.settled_at, 
+                    o.order_number, 
+                    da.name as agent_name
+                FROM admin_settlement_logs sl
+                JOIN orders o ON sl.order_id = o.id
+                JOIN delivery_agents da ON sl.delivery_agent_id = da.id
+                ORDER BY sl.settled_at DESC LIMIT 10
             `)
         ]);
 
@@ -1474,7 +1488,8 @@ exports.getAdminDashboardStats = async (req, res) => {
                 ordersByStatus: orderSummary[0],
                 topPincodes: topPerformingPincodes[0],
                 topProducts: topSellingProducts[0],
-                chartData: revenueTrend[0]
+                chartData: revenueTrend[0],
+                recentSettlements: settlementLogs[0] // Added logs
             }
         });
 
