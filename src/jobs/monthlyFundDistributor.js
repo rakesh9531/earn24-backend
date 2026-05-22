@@ -17,7 +17,7 @@ async function recordFundCommission(data, connection) {
 
 async function distributeFund(fundName, requiredRank, connection, yearMonth) {
     console.log(`[CRON] Distributing ${fundName}...`);
-    const poolColumn = fundName.toLowerCase().replace(/ /g, '_') + '_fund';
+    const poolColumn = fundName.toLowerCase().replace(/ /g, '_');
     const [pools] = await connection.query(`SELECT ${poolColumn} as total_pool FROM monthly_company_pools WHERE year_month = ?`, [yearMonth]);
     const totalPoolAmount = pools.length > 0 ? parseFloat(pools[0].total_pool) : 0;
     if (totalPoolAmount <= 0) return;
@@ -38,12 +38,12 @@ async function distributeFund(fundName, requiredRank, connection, yearMonth) {
     for (const user of qualifiedUsers) {
         const payout = user.personal_bv_points * valuePerPoint;
         if (payout > 0) {
-            await recordFundCommission({ 
-                userId: user.id, 
-                amount: payout, 
-                type: fundName.toUpperCase().replace(/ /g, '_'), 
-                baseBv: totalPoolAmount, 
-                percentage: (user.personal_bv_points / totalPoints) * 100, 
+            await recordFundCommission({
+                userId: user.id,
+                amount: payout,
+                type: fundName.toUpperCase().replace(/ /g, '_'),
+                baseBv: totalPoolAmount,
+                percentage: (user.personal_bv_points / totalPoints) * 100,
                 notes: `Payout for ${fundName} (Points: ${user.personal_bv_points})`
             }, connection);
             console.log(`[CRON] Payout for ${fundName}: User ${user.id} gets ₹${payout.toFixed(2)}`);
@@ -68,7 +68,7 @@ async function runMonthlyFundDistribution() {
 
         await connection.commit();
         console.log('[CRON] Monthly Fund Distribution finished successfully.');
-    } catch(err) { await connection.rollback(); console.error(err); }
+    } catch (err) { await connection.rollback(); console.error(err); }
     finally { connection.release(); }
 }
 
@@ -87,7 +87,7 @@ exports.runImmediateFundDistributionForTesting = async (connection) => {
         // Sync rank for testing so immediate promotions are recognized
         await connection.query('UPDATE users SET current_monthly_qualified_rank = `rank` WHERE is_blocked = FALSE');
 
-        const currentMonth = new Date(); 
+        const currentMonth = new Date();
         const yearMonth = currentMonth.getFullYear() * 100 + (currentMonth.getMonth() + 1);
 
         await distributeFund('Leadership Fund', MLM_CONFIG.FUND_QUALIFICATION_RANKS.LEADERSHIP_FUND, connection, yearMonth);
@@ -97,8 +97,8 @@ exports.runImmediateFundDistributionForTesting = async (connection) => {
         await distributeFund('House Fund', MLM_CONFIG.FUND_QUALIFICATION_RANKS.HOUSE_FUND, connection, yearMonth);
 
         console.log('[TESTING] Immediate Fund Distribution finished successfully.');
-    } catch(err) { 
-        console.error('[TESTING] Error in Immediate Fund Distribution:', err); 
+    } catch (err) {
+        console.error('[TESTING] Error in Immediate Fund Distribution:', err);
     }
 };
 // -------------------------------------------------------------------------
