@@ -18,7 +18,7 @@ async function recordFundCommission(data, connection) {
 async function distributeFund(fundName, requiredRank, connection, yearMonth) {
     console.log(`[CRON] Distributing ${fundName}...`);
     const poolColumn = fundName.toLowerCase().replace(/ /g, '_');
-    const [pools] = await connection.query(`SELECT ${poolColumn} as total_pool FROM monthly_company_pools WHERE year_month = ?`, [yearMonth]);
+    const [pools] = await connection.query(`SELECT \`${poolColumn}\` as total_pool FROM monthly_company_pools WHERE \`year_month\` = ?`, [yearMonth]);
     const totalPoolAmount = pools.length > 0 ? parseFloat(pools[0].total_pool) : 0;
     if (totalPoolAmount <= 0) return;
 
