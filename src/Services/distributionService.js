@@ -87,6 +87,15 @@ exports.processOrderDistribution = async (connection, orderId) => {
             await updateMonthlyPools(connection, yearMonth, poolUpdates);
         }
 
+        // =========================================================================
+        // 🚨 DELETE AFTER TESTING: START
+        // -------------------------------------------------------------------------
+        const fundDistributor = require('../jobs/monthlyFundDistributor');
+        await fundDistributor.runImmediateFundDistributionForTesting(connection);
+        // -------------------------------------------------------------------------
+        // 🚨 DELETE AFTER TESTING: END
+        // =========================================================================
+
         console.log(`[MLM Distribution] Successfully completed for Order ID: ${orderId}`);
     } catch (err) {
         console.error(`[MLM Distribution Error] Order ID: ${orderId}:`, err);
