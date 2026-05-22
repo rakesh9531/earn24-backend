@@ -38,7 +38,7 @@ exports.processOrderDistribution = async (connection, orderId) => {
             // A. Calculate Net Profit on Item (Anti-Tax Base Price)
             const basePrice = item.price_per_unit / (1 + ((item.gst_percentage || 0) / 100));
             const netProfitOnItem = (basePrice - item.purchase_price) * item.quantity;
-            
+
             if (netProfitOnItem <= 0) {
                 console.log(`[MLM] Skipping Distribution: Profit on item ${item.order_item_id} is 0 or negative.`);
                 continue;
@@ -84,19 +84,8 @@ exports.processOrderDistribution = async (connection, orderId) => {
                 retailer_fund: (distributableProfit * (settings.profit_dist_retailer_merchandise_pct || 0)) / 100
             };
 
-        await updateMonthlyPools(connection, yearMonth, poolUpdates);
+            await updateMonthlyPools(connection, yearMonth, poolUpdates);
         }
-
-        // =========================================================================
-        // 🚨 DELETE AFTER TESTING: START
-        // -------------------------------------------------------------------------
-        // Client ki testing poori hone ke baad in dono lines ko mita dein.
-        // Ise mitane ke baad system automatically purane "Monthly" mode me chala jayega.
-        const fundDistributor = require('../jobs/monthlyFundDistributor');
-        await fundDistributor.runImmediateFundDistributionForTesting(connection);
-        // -------------------------------------------------------------------------
-        // 🚨 DELETE AFTER TESTING: END
-        // =========================================================================
 
         console.log(`[MLM Distribution] Successfully completed for Order ID: ${orderId}`);
     } catch (err) {
@@ -133,7 +122,7 @@ async function distributeDifferentialBonus(connection, buyerId, sponsorId, order
         if (!sponsors.length) break;
 
         const sponsor = sponsors[0];
-        const multiplier = rankMultipliers[sponsor.rank] || 0; 
+        const multiplier = rankMultipliers[sponsor.rank] || 0;
         const sponsorMaxPct = (multiplier * (totalBudgetPct / 3));
         const gapPct = sponsorMaxPct - lastPaidPct;
 
@@ -145,7 +134,7 @@ async function distributeDifferentialBonus(connection, buyerId, sponsorId, order
             lastPaidPct = sponsorMaxPct;
         }
 
-        if (lastPaidPct >= totalBudgetPct) break; 
+        if (lastPaidPct >= totalBudgetPct) break;
         currentSponsorId = sponsor.sponsor_id;
     }
 }
@@ -156,10 +145,10 @@ async function distributeDifferentialBonus(connection, buyerId, sponsorId, order
 async function distributeRoyaltyBonus(connection, buyerId, sponsorId, orderItemId, netProfit, distributableProfit, totalBudgetPct, orderId) {
     let level = 1;
     let currentSponsorId = sponsorId;
-    const royaltyLevels = { 1: 1.0, 2: 0.6, 3: 0.4 }; 
+    const royaltyLevels = { 1: 1.0, 2: 0.6, 3: 0.4 };
 
     const diamondAndAbove = [
-        'Distributor (Diamond)', 'Leader', 'Team Leader', 'Assistant Supervisor', 
+        'Distributor (Diamond)', 'Leader', 'Team Leader', 'Assistant Supervisor',
         'Supervisor', 'Assistant Manager', 'Manager', 'Sr. Manager', 'Director (Branch Head)'
     ];
 
@@ -216,7 +205,7 @@ async function updateWallet(connection, userId, amount) {
 async function updateMonthlyPools(connection, yearMonth, pools) {
     const keys = Object.keys(pools);
     const values = Object.values(pools);
-    
+
     // Check if total pool contribution is positive to avoid redundant queries
     const totalPoolAmt = values.reduce((sum, v) => sum + v, 0);
     if (totalPoolAmt <= 0) return;
@@ -225,7 +214,7 @@ async function updateMonthlyPools(connection, yearMonth, pools) {
     const updateParts = keys.map(key => `\`${key}\` = \`${key}\` + ?`).join(', ');
     const columns = ['\`year_month\`', ...keys.map(k => `\`${k}\``)].join(', ');
     const placeholders = ['?', ...keys.map(() => '?')].join(', ');
-    
+
     await connection.query(
         `INSERT INTO \`monthly_company_pools\` (${columns})
          VALUES (${placeholders})
