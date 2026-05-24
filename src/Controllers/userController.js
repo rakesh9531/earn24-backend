@@ -872,9 +872,8 @@ exports.getDashboardSummary = async (req, res) => {
     const walletQuery = "SELECT balance FROM user_wallets WHERE user_id = ?";
     const [walletRows] = await db.query(walletQuery, [userId]);
 
-    // --- This query correctly sums up the total BV from the ledger ---
-    const bvQuery =
-      "SELECT SUM(bv_earned) as total_bv FROM user_business_volume WHERE user_id = ?";
+    // --- NEW QUERY: Fetch pre-calculated BV from users table ---
+    const bvQuery = "SELECT total_bv_self, total_bv_downline FROM users WHERE id = ?";
     const [bvRows] = await db.query(bvQuery, [userId]);
 
     // --- This query correctly counts direct referrals ---
@@ -882,13 +881,18 @@ exports.getDashboardSummary = async (req, res) => {
       "SELECT COUNT(id) as downline_count FROM users WHERE sponsor_id = ?";
     const [downlineRows] = await db.query(downlineQuery, [userId]);
 
+    const selfBv = parseFloat(bvRows[0]?.total_bv_self || 0);
+    const downlineBv = parseFloat(bvRows[0]?.total_bv_downline || 0);
+
     // Construct the final JSON response object
     res.status(200).json({
       status: true,
       data: {
         // Use optional chaining (?.) and a default value (|| 0) for safety
         walletBalance: walletRows[0]?.balance || 0,
-        totalBv: bvRows[0]?.total_bv || 0,
+        totalBv: selfBv + downlineBv, // Return combined BV
+        selfBv: selfBv,               // Send self BV separately if frontend needs it
+        downlineBv: downlineBv,       // Send downline BV separately if frontend needs it
         directReferrals: downlineRows[0]?.downline_count || 0,
       },
     });
