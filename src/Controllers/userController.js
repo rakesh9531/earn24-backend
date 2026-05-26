@@ -8,6 +8,7 @@ const {
   loginUserValidator,
 } = require("../Validator/userValidation");
 const { sendSms } = require("../utils/smsHelper");
+const rankService = require("../Services/rankService");
 
 require("dotenv").config();
 
@@ -385,6 +386,11 @@ exports.verifyRegistrationOtp = async (req, res) => {
       ); // Invalidate OTP
 
       await connection.commit();
+
+      // Check if the sponsor should be promoted (e.g. to Silver for getting a referral)
+      if (userData.sponsorId) {
+        await rankService.checkAndPromoteUser(userData.sponsorId);
+      }
 
       // 4. Generate Token (Auto Login)
       const token = jwt.sign(
@@ -769,12 +775,12 @@ exports.getUserProfile = async (req, res) => {
     const userId = req.user.id;
 
     const query = "SELECT " +
-                "u.id, u.full_name, u.email, u.mobile_number, u.username, " +
-                "u.`rank`, u.user_pic, " +
-                "ua.pincode, ua.address_line_1, ua.city, ua.state " +
-            "FROM users u " +
-            "LEFT JOIN user_addresses ua ON u.id = ua.user_id AND ua.is_default = TRUE " +
-            "WHERE u.id = ?";
+      "u.id, u.full_name, u.email, u.mobile_number, u.username, " +
+      "u.`rank`, u.user_pic, " +
+      "ua.pincode, ua.address_line_1, ua.city, ua.state " +
+      "FROM users u " +
+      "LEFT JOIN user_addresses ua ON u.id = ua.user_id AND ua.is_default = TRUE " +
+      "WHERE u.id = ?";
 
     const [rows] = await db.query(query, [userId]);
 
@@ -839,11 +845,11 @@ exports.updateUserProfile = async (req, res) => {
 
     // 3. RETURN UPDATED USER
     const [updatedUser] = await db.query("SELECT id, full_name, email, mobile_number, username, `rank`, user_pic FROM users WHERE id = ?", [userId]);
-    
-    res.status(200).json({ 
-        status: true, 
-        message: "Profile updated successfully.", 
-        user: updatedUser[0] 
+
+    res.status(200).json({
+      status: true,
+      message: "Profile updated successfully.",
+      user: updatedUser[0]
     });
 
   } catch (error) {
@@ -1086,37 +1092,37 @@ exports.getMyInitialNetworkTree = async (req, res) => {
  * Route: GET /api/user/wallet/balance
  */
 exports.getWalletBalance = async (req, res) => {
-    try {
-        const userId = req.user.id;
+  try {
+    const userId = req.user.id;
 
-        const [rows] = await db.query(
-            'SELECT balance, locked_balance FROM user_wallets WHERE user_id = ?', 
-            [userId]
-        );
+    const [rows] = await db.query(
+      'SELECT balance, locked_balance FROM user_wallets WHERE user_id = ?',
+      [userId]
+    );
 
-        if (rows.length === 0) {
-            return res.status(200).json({ 
-                status: true, 
-                data: { balance: 0, locked_balance: 0, available: 0 } 
-            });
-        }
-
-        const total = parseFloat(rows[0].balance);
-        const locked = parseFloat(rows[0].locked_balance);
-        
-        res.status(200).json({ 
-            status: true, 
-            data: { 
-                balance: total, 
-                locked_balance: locked,
-                available: total - locked 
-            } 
-        });
-
-    } catch (error) {
-        console.error('Error fetching wallet balance:', error);
-        res.status(500).json({ status: false, message: 'Server error' });
+    if (rows.length === 0) {
+      return res.status(200).json({
+        status: true,
+        data: { balance: 0, locked_balance: 0, available: 0 }
+      });
     }
+
+    const total = parseFloat(rows[0].balance);
+    const locked = parseFloat(rows[0].locked_balance);
+
+    res.status(200).json({
+      status: true,
+      data: {
+        balance: total,
+        locked_balance: locked,
+        available: total - locked
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching wallet balance:', error);
+    res.status(500).json({ status: false, message: 'Server error' });
+  }
 };
 
 /**
@@ -1124,42 +1130,42 @@ exports.getWalletBalance = async (req, res) => {
  * Route: GET /api/user/wallet/history?page=1&limit=10
  */
 exports.getWalletHistory = async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 10;
-        const offset = (page - 1) * limit;
+  try {
+    const userId = req.user.id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
 
-        // 1. Fetch Data
-        const sql = `
+    // 1. Fetch Data
+    const sql = `
             SELECT id, amount, type, description, reference_id, created_at 
             FROM user_wallet_transactions 
             WHERE user_id = ? 
             ORDER BY created_at DESC 
             LIMIT ? OFFSET ?
         `;
-        const [rows] = await db.query(sql, [userId, limit, offset]);
+    const [rows] = await db.query(sql, [userId, limit, offset]);
 
-        // 2. Count Total
-        const [countRows] = await db.query(
-            'SELECT COUNT(*) as total FROM user_wallet_transactions WHERE user_id = ?', 
-            [userId]
-        );
-        const totalRecords = countRows[0].total;
+    // 2. Count Total
+    const [countRows] = await db.query(
+      'SELECT COUNT(*) as total FROM user_wallet_transactions WHERE user_id = ?',
+      [userId]
+    );
+    const totalRecords = countRows[0].total;
 
-        res.status(200).json({
-            status: true,
-            data: rows,
-            pagination: {
-                currentPage: page,
-                totalPages: Math.ceil(totalRecords / limit),
-                totalRecords,
-                limit
-            }
-        });
+    res.status(200).json({
+      status: true,
+      data: rows,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalRecords / limit),
+        totalRecords,
+        limit
+      }
+    });
 
-    } catch (error) {
-        console.error('Error fetching wallet history:', error);
-        res.status(500).json({ status: false, message: 'Server error' });
-    }
+  } catch (error) {
+    console.error('Error fetching wallet history:', error);
+    res.status(500).json({ status: false, message: 'Server error' });
+  }
 };

@@ -17,28 +17,65 @@ exports.checkAndPromoteUser = async (userId) => {
     const user = users[0];
 
     const nextRank = getNextRank(user.rank);
-    if (!nextRank || !MLM_CONFIG.PROMOTION_CRITERIA[nextRank]) return;
+    if (!nextRank || !MLM_CONFIG.PROMOTION_CRITERIA[nextRank]) {
+        // If there's no next rank, still bubble up to the sponsor
+        if (user.sponsor_id) {
+            await exports.checkAndPromoteUser(user.sponsor_id);
+        }
+        return;
+    }
 
     const criteria = MLM_CONFIG.PROMOTION_CRITERIA[nextRank];
 
     // Check downline rank requirement
-    const [downline] = await db.query(
-        'SELECT COUNT(id) as count FROM users WHERE sponsor_id = ? AND `rank` IN (?)',
-        [userId, criteria.downline_rank_required]
-    );
-    if (downline[0].count < criteria.count) return;
+    let downlineCount = 0;
+    if (criteria.downline_rank_required) {
+        const [downline] = await db.query(
+            'SELECT COUNT(id) as count FROM users WHERE sponsor_id = ? AND `rank` IN (?)',
+            [userId, criteria.downline_rank_required]
+        );
+        downlineCount = downline[0].count;
+    } else {
+        const [downline] = await db.query(
+            'SELECT COUNT(id) as count FROM users WHERE sponsor_id = ?',
+            [userId]
+        );
+        downlineCount = downline[0].count;
+    }
+    
+    let isQualified = true;
+    
+    if (downlineCount < criteria.count) isQualified = false;
 
-    // Check BV requirements
-    if (criteria.aggregate_bv_required && user.aggregate_personal_bv < criteria.aggregate_bv_required) return;
-    if (criteria.repurchase_bv_12_months_required && user.last_12_months_repurchase_bv < criteria.repurchase_bv_12_months_required) return;
+    // Check BV requirements (Group BV = Apna purchase + Downline purchase)
+    if (isQualified && criteria.aggregate_bv_required) {
+        let totalGroupBv = 0;
+        let currentLevelIds = [userId];
+
+        while (currentLevelIds.length > 0) {
+            const [levelUsers] = await db.query('SELECT id, aggregate_personal_bv FROM users WHERE id IN (?)', [currentLevelIds]);
+            for (const u of levelUsers) {
+                totalGroupBv += parseFloat(u.aggregate_personal_bv) || 0;
+            }
+
+            const [downlines] = await db.query('SELECT id FROM users WHERE sponsor_id IN (?)', [currentLevelIds]);
+            currentLevelIds = downlines.map(d => d.id);
+        }
+
+        if (totalGroupBv < criteria.aggregate_bv_required) isQualified = false;
+    }
+    if (isQualified && criteria.repurchase_bv_12_months_required && user.last_12_months_repurchase_bv < criteria.repurchase_bv_12_months_required) isQualified = false;
 
     // Check special requirements
-    if (criteria.degree_required && !user.has_graduation_degree) return;
+    if (isQualified && criteria.degree_required && !user.has_graduation_degree) isQualified = false;
 
     // --- QUALIFIED! ---
-    await db.query('UPDATE users SET `rank` = ? WHERE id = ?', [nextRank, userId]);
-    console.log(`[MLM] User ${userId} has been PROMOTED to ${nextRank}!`);
+    if (isQualified) {
+        await db.query('UPDATE users SET `rank` = ? WHERE id = ?', [nextRank, userId]);
+        console.log(`[MLM] User ${userId} has been PROMOTED to ${nextRank}!`);
+    }
 
+    // Always bubble up the check to the sponsor (since downline changes/BV changes affect the whole upline)
     if (user.sponsor_id) {
         await exports.checkAndPromoteUser(user.sponsor_id);
     }
