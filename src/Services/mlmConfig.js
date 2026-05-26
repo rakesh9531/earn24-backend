@@ -18,6 +18,9 @@ exports.MLM_CONFIG = {
         // Assuming 6% to 2% applies to all ranks from Diamond up. Adjust if needed.
     },
     PROMOTION_CRITERIA: {
+        'DISTRIBUTOR_SILVER': { count: 1 },
+        'DISTRIBUTOR_GOLD': { downline_rank_required: 'DISTRIBUTOR_SILVER', count: 2, aggregate_bv_required: 50001 },
+        'DISTRIBUTOR_DIAMOND': { downline_rank_required: 'DISTRIBUTOR_GOLD', count: 2, aggregate_bv_required: 100001 },
         'LEADER': { downline_rank_required: 'DISTRIBUTOR_DIAMOND', count: 2, aggregate_bv_required: 10000 },
         'TEAM_LEADER': { downline_rank_required: 'LEADER', count: 2 },
         'ASSISTANT_SUPERVISOR': { downline_rank_required: 'TEAM_LEADER', count: 2 },

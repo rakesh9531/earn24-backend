@@ -16,7 +16,7 @@ exports.processOrderDistribution = async (connection, orderId) => {
 
         const buyerId = orderRows[0].user_id;
         const buyerSponsorId = orderRows[0].sponsor_id;
-        const buyerRank = orderRows[0].rank || 'Customer';
+        const buyerRank = orderRows[0].rank || 'CUSTOMER';
 
         // 2. Fetch All Distribution Rules from app_settings
         const [settingsRows] = await connection.query("SELECT setting_key, setting_value FROM app_settings");
@@ -59,7 +59,7 @@ exports.processOrderDistribution = async (connection, orderId) => {
             }
 
             // FUND 2: PERFORMANCE BONUS (4.5% Budget - Differential Logic)
-            await distributeDifferentialBonus(connection, buyerId, buyerSponsorId, item.order_item_id, netProfitOnItem, distributableProfit, settings.profit_dist_performance_bonus_pct, orderId);
+            await distributeDifferentialBonus(connection, buyerId, buyerId, item.order_item_id, netProfitOnItem, distributableProfit, settings.profit_dist_performance_bonus_pct, orderId);
 
             // FUND 3: ROYALTY FUND (2.0% Budget - Rank Level Logic)
             await distributeRoyaltyBonus(connection, buyerId, buyerSponsorId, item.order_item_id, netProfitOnItem, distributableProfit, settings.profit_dist_royalty_pct, orderId);
@@ -112,18 +112,18 @@ async function distributeDifferentialBonus(connection, buyerId, sponsorId, order
 
     // Mapping exact Rank Names (Silver=1 step, Gold=2 steps, Diamond+=3 steps of the 4.5% budget)
     const rankMultipliers = {
-        'Customer': 0,
-        'Distributor (Silver)': 1,
-        'Distributor (Gold)': 2,
-        'Distributor (Diamond)': 3,
-        'Leader': 3,
-        'Team Leader': 3,
-        'Assistant Supervisor': 3,
-        'Supervisor': 3,
-        'Assistant Manager': 3,
-        'Manager': 3,
-        'Sr. Manager': 3,
-        'Director (Branch Head)': 3
+        'CUSTOMER': 0,
+        'DISTRIBUTOR_SILVER': 1,
+        'DISTRIBUTOR_GOLD': 2,
+        'DISTRIBUTOR_DIAMOND': 3,
+        'LEADER': 3,
+        'TEAM_LEADER': 3,
+        'ASSISTANT_SUPERVISOR': 3,
+        'SUPERVISOR': 3,
+        'ASSISTANT_MANAGER': 3,
+        'MANAGER': 3,
+        'SR_MANAGER': 3,
+        'DIRECTOR': 3
     };
 
     while (currentSponsorId) {
@@ -157,8 +157,8 @@ async function distributeRoyaltyBonus(connection, buyerId, sponsorId, orderItemI
     const royaltyLevels = { 1: 1.0, 2: 0.6, 3: 0.4 };
 
     const diamondAndAbove = [
-        'Distributor (Diamond)', 'Leader', 'Team Leader', 'Assistant Supervisor',
-        'Supervisor', 'Assistant Manager', 'Manager', 'Sr. Manager', 'Director (Branch Head)'
+        'DISTRIBUTOR_DIAMOND', 'LEADER', 'TEAM_LEADER', 'ASSISTANT_SUPERVISOR',
+        'SUPERVISOR', 'ASSISTANT_MANAGER', 'MANAGER', 'SR_MANAGER', 'DIRECTOR'
     ];
 
     while (currentSponsorId && level <= 3) {
