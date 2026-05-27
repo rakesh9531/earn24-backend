@@ -6,6 +6,7 @@ const db = require('../../db');
  */
 
 exports.processOrderForCommissions = async (connection, orderId) => {
+    let buyerIdForPromotion = null; // Will be used after transaction commits
     try {
         console.log(`[BV Tracking] Starting processing for Order ID: ${orderId}`);
 
@@ -101,13 +102,14 @@ exports.processOrderForCommissions = async (connection, orderId) => {
             
             console.log(`[BV Tracking] Success: Total BV: ${totalOrderBV} recorded for buyer ${buyerId} and upline.`);
 
-            // 7. Check for potential Rank Promotion
-            const rankService = require('./rankService');
-            await rankService.checkAndPromoteUser(buyerId);
+            // 7. Store buyerId so caller can trigger rank promotion AFTER transaction commits
+            buyerIdForPromotion = buyerId;
         }
 
     } catch (err) {
         console.error(`[BV Tracking Error] Order ID: ${orderId}:`, err);
         throw err;
     }
+
+    return buyerIdForPromotion;
 };

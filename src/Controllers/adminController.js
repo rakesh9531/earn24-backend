@@ -431,6 +431,22 @@ exports.getAllUserList = async (req, res) => {
             
         const [userRows] = await db.query(dataQuery, [...queryParams, limit, offset]);
 
+        // CALCULATE TOTAL GROUP BV dynamically for the admin response
+        for (let user of userRows) {
+            let totalGroupBv = 0;
+            let currentLevelIds = [user.id];
+
+            while (currentLevelIds.length > 0) {
+                const [levelUsers] = await db.query('SELECT id, aggregate_personal_bv FROM users WHERE id IN (?)', [currentLevelIds]);
+                for (const u of levelUsers) {
+                    totalGroupBv += parseFloat(u.aggregate_personal_bv) || 0;
+                }
+                const [downlines] = await db.query('SELECT id FROM users WHERE sponsor_id IN (?)', [currentLevelIds]);
+                currentLevelIds = downlines.map(d => d.id);
+            }
+            user.total_group_bv = totalGroupBv.toFixed(2);
+        }
+
         res.status(200).json({
             status: true,
             message: "User list fetched successfully",
