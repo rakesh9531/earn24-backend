@@ -250,13 +250,25 @@ exports.completeDelivery = async (req, res) => {
             console.log(`[Delivery] Order ${orderId} delivered. Triggering MLM...`);
             
             // 2. Trigger BV Tracking (Updates items, orders, users, and total pool bv)
-            await commissionService.processOrderForCommissions(connection, orderId);
+            // Returns the buyerId so we can run rank promotion AFTER the transaction
+            const buyerIdForPromotion = await commissionService.processOrderForCommissions(connection, orderId);
 
             // 3. Trigger 15-Fund Profit Distribution (Cashback, PB, Royalty, Pools)
             await distributionService.processOrderDistribution(connection, orderId);
+
+            await connection.commit();
+
+            // 4. Run Rank Promotion AFTER commit - avoids DB lock wait timeout
+            if (buyerIdForPromotion) {
+                const rankService = require('../Services/rankService');
+                await rankService.checkAndPromoteUser(buyerIdForPromotion).catch(err =>
+                    console.error('[Rank Promotion Error]', err.message)
+                );
+            }
+        } else {
+            await connection.commit();
         }
 
-        await connection.commit();
         res.json({ status: true, message: "Delivery Success! MLM Distributed." });
     } catch (e) { 
         await connection.rollback();

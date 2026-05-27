@@ -1335,10 +1335,16 @@ exports.verifyPayment = async (req, res) => {
                     // New Distribution Service
                     const commissionService = require('../Services/commissionService');
                     const distributionService = require('../Services/distributionService');
-                    await commissionService.processOrderForCommissions(connection, txn[0].order_id);
+                    const buyerIdPayU = await commissionService.processOrderForCommissions(connection, txn[0].order_id);
                     await distributionService.processOrderDistribution(connection, txn[0].order_id);
 
                     await connection.commit();
+
+                    // Rank promotion AFTER commit to avoid lock timeout
+                    if (buyerIdPayU) {
+                        const rankService = require('../Services/rankService');
+                        await rankService.checkAndPromoteUser(buyerIdPayU).catch(err => console.error('[Rank Promotion Error]', err.message));
+                    }
                     return res.send("<h1>Payment Success</h1><script>setTimeout(() => window.location.href='https://newapi.earn24.in/payment-success', 1000);</script>");
                 }
             }
@@ -1358,10 +1364,16 @@ exports.verifyPayment = async (req, res) => {
                     // New Distribution Service
                     const commissionService = require('../Services/commissionService');
                     const distributionService = require('../Services/distributionService');
-                    await commissionService.processOrderForCommissions(connection, txn[0].order_id);
+                    const buyerIdRz = await commissionService.processOrderForCommissions(connection, txn[0].order_id);
                     await distributionService.processOrderDistribution(connection, txn[0].order_id);
                     
                     await connection.commit();
+
+                    // Rank promotion AFTER commit to avoid lock timeout
+                    if (buyerIdRz) {
+                        const rankService = require('../Services/rankService');
+                        await rankService.checkAndPromoteUser(buyerIdRz).catch(err => console.error('[Rank Promotion Error]', err.message));
+                    }
                     return res.status(200).json({ status: true, message: "Verified" });
                 }
             }
@@ -1399,10 +1411,19 @@ exports.checkPhonePeStatus = async (req, res) => {
                 // New Distribution Service
                 const commissionService = require('../Services/commissionService');
                 const distributionService = require('../Services/distributionService');
-                await commissionService.processOrderForCommissions(connection, txn[0].order_id);
+                const buyerIdPP = await commissionService.processOrderForCommissions(connection, txn[0].order_id);
                 await distributionService.processOrderDistribution(connection, txn[0].order_id);
+
+                await connection.commit();
+
+                // Rank promotion AFTER commit to avoid lock timeout
+                if (buyerIdPP) {
+                    const rankService = require('../Services/rankService');
+                    await rankService.checkAndPromoteUser(buyerIdPP).catch(err => console.error('[Rank Promotion Error]', err.message));
+                }
+            } else {
+                await connection.commit();
             }
-            await connection.commit();
             return res.status(200).json({ status: true, message: "Success" });
         }
         return res.status(400).json({ status: false, message: "Payment not completed" });
@@ -1480,7 +1501,7 @@ exports.payuWebhook = async (req, res) => {
             
             // 1. BV & Rank Tracking (Old Commission Service handles this)
             const commissionService = require('../Services/commissionService');
-            await commissionService.processOrderForCommissions(connection, orderId);
+            const buyerIdWH = await commissionService.processOrderForCommissions(connection, orderId);
 
             // 2. New 15-Fund Profit Distribution Service
             const distributionService = require('../Services/distributionService');
@@ -1488,6 +1509,12 @@ exports.payuWebhook = async (req, res) => {
 
             console.log(`[Webhook Success] Order ${orderId} processed via Webhook.`);
             await connection.commit();
+
+            // Rank promotion AFTER commit to avoid lock timeout
+            if (buyerIdWH) {
+                const rankService = require('../Services/rankService');
+                await rankService.checkAndPromoteUser(buyerIdWH).catch(err => console.error('[Rank Promotion Error]', err.message));
+            }
         } else {
             // Log the failure
             await connection.query('UPDATE payment_transactions SET status = "FAILED" WHERE transaction_id = ?', [txnid]);
