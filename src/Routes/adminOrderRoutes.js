@@ -76,6 +76,7 @@ router.post('/settle-cash', can('orders:manage'), adminOrderController.settleAge
 
 // --- 3. PARAMETERIZED ROUTES (Must be last) ---
 router.put('/:orderId/assign-delivery', can('orders:updateStatus'), adminOrderController.assignOrderForDelivery);
+router.post('/:orderId/cancel', can('orders:updateStatus'), adminOrderController.cancelAdminOrder);
 router.get('/:orderId', can('orders:read'), adminOrderController.getAdminOrderDetails);
 
 module.exports = router;
