@@ -370,3 +370,101 @@ exports.getSettlementHistory = async (req, res) => {
         res.status(500).json({ status: false, message: "Server error fetching settlement history." });
     }
 };
+
+exports.cancelAdminOrder = async (req, res) => {
+    const { orderId } = req.params;
+    const { reason } = req.body;
+
+    if (!reason) {
+        return res.status(400).json({ status: false, message: "Cancellation reason is required." });
+    }
+
+    const connection = await db.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        // 1. Fetch Order and Lock
+        const [orders] = await connection.query(
+            "SELECT * FROM orders WHERE id = ? FOR UPDATE",
+            [orderId]
+        );
+
+        if (orders.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ status: false, message: "Order not found." });
+        }
+
+        const order = orders[0];
+
+        // 2. Validate current status: Admin cannot cancel if already delivered or already cancelled
+        if (order.order_status === 'DELIVERED') {
+            await connection.rollback();
+            return res.status(400).json({ status: false, message: "Delivered orders cannot be cancelled." });
+        }
+        if (order.order_status === 'CANCELLED') {
+            await connection.rollback();
+            return res.status(400).json({ status: false, message: "Order is already cancelled." });
+        }
+
+        // 3. Restock inventory
+        const [items] = await connection.query(
+            "SELECT seller_product_id, quantity FROM order_items WHERE order_id = ?",
+            [orderId]
+        );
+
+        for (const item of items) {
+            await connection.query(
+                "UPDATE seller_products SET quantity = quantity + ? WHERE id = ?",
+                [item.quantity, item.seller_product_id]
+            );
+        }
+
+        // 4. Wallet Refund if payment was completed or payment method was WALLET
+        let refundProcessed = false;
+        if (order.payment_status === 'COMPLETED' || order.payment_method === 'WALLET') {
+            const [wallets] = await connection.query(
+                "SELECT balance FROM user_wallets WHERE user_id = ? FOR UPDATE",
+                [order.user_id]
+            );
+            if (wallets.length === 0) {
+                await connection.query("INSERT INTO user_wallets (user_id, balance) VALUES (?, ?)", [order.user_id, order.total_amount]);
+            } else {
+                await connection.query(
+                    "UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?",
+                    [order.total_amount, order.user_id]
+                );
+            }
+
+            // Insert into transaction history
+            await connection.query(
+                `INSERT INTO user_wallet_transactions 
+                 (user_id, txn_type, amount, source, reference_id, remarks) 
+                 VALUES (?, 'credit', ?, 'refund', ?, ?)`,
+                [order.user_id, order.total_amount, order.order_number, `Admin Refund for cancelled order: ${reason}`]
+            );
+            refundProcessed = true;
+        }
+
+        // 5. Update order details
+        await connection.query(
+            `UPDATE orders 
+             SET order_status = 'CANCELLED', 
+                 payment_status = ?, 
+                 cancellation_reason = ?, 
+                 cancelled_by = 'ADMIN', 
+                 cancelled_at = NOW() 
+             WHERE id = ?`,
+            [refundProcessed ? 'REFUNDED' : 'FAILED', reason, orderId]
+        );
+
+        await connection.commit();
+        res.status(200).json({ status: true, message: "Order cancelled successfully.", data: { orderId, refundProcessed } });
+
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error("Admin Order Cancellation Error:", error);
+        res.status(500).json({ status: false, message: "Failed to cancel order: " + error.message });
+    } finally {
+        if (connection) connection.release();
+    }
+};

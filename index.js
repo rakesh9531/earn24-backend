@@ -108,6 +108,17 @@ async function testDatabaseConnection() {
     const connection = await db.getConnection();
     await connection.ping();
     console.log('Connection to the database has been established successfully.');
+
+    // Production Safe Migrations for Order Cancellation
+    const [columns] = await connection.query("SHOW COLUMNS FROM orders LIKE 'cancellation_reason'");
+    if (columns.length === 0) {
+      console.log('Running Order Cancellation schema migrations...');
+      await connection.query("ALTER TABLE orders ADD COLUMN cancellation_reason VARCHAR(255) DEFAULT NULL");
+      await connection.query("ALTER TABLE orders ADD COLUMN cancelled_by ENUM('USER', 'ADMIN') DEFAULT NULL");
+      await connection.query("ALTER TABLE orders ADD COLUMN cancelled_at TIMESTAMP DEFAULT NULL");
+      console.log("Database updated: Added cancellation columns to 'orders' table successfully.");
+    }
+
     connection.release();
   } catch (error) {
     console.error('Unable to connect to the database:', error);

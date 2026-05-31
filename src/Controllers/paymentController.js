@@ -1332,6 +1332,25 @@ exports.verifyPayment = async (req, res) => {
                 const [txn] = await connection.query("SELECT order_id FROM payment_transactions WHERE transaction_id = ?", [txnid]);
                 if (txn.length > 0) {
                     await connection.query('UPDATE payment_transactions SET status = "SUCCESS", gateway_payment_id = ? WHERE transaction_id = ?', [mihpayid, txnid]);
+                    
+                    // CHECK IF ALREADY CANCELLED
+                    const [orderInfo] = await connection.query("SELECT order_status, total_amount, user_id, order_number FROM orders WHERE id = ? FOR UPDATE", [txn[0].order_id]);
+                    if (orderInfo[0] && orderInfo[0].order_status === 'CANCELLED') {
+                        await connection.query("UPDATE orders SET payment_status = 'COMPLETED' WHERE id = ?", [txn[0].order_id]);
+                        const [wallets] = await connection.query("SELECT balance FROM user_wallets WHERE user_id = ? FOR UPDATE", [orderInfo[0].user_id]);
+                        if (wallets.length === 0) {
+                            await connection.query("INSERT INTO user_wallets (user_id, balance) VALUES (?, ?)", [orderInfo[0].user_id, orderInfo[0].total_amount]);
+                        } else {
+                            await connection.query("UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?", [orderInfo[0].total_amount, orderInfo[0].user_id]);
+                        }
+                        await connection.query(
+                            "INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks) VALUES (?, 'credit', ?, 'refund', ?, ?)",
+                            [orderInfo[0].user_id, orderInfo[0].total_amount, orderInfo[0].order_number, "Late online payment auto-refund for cancelled order (PayU Success Redirect)"]
+                        );
+                        await connection.commit();
+                        return res.send("<h1>Payment Success</h1><script>setTimeout(() => window.location.href='https://newapi.earn24.in/payment-success', 1000);</script>");
+                    }
+
                     // New Distribution Service
                     const commissionService = require('../Services/commissionService');
                     const distributionService = require('../Services/distributionService');
@@ -1361,6 +1380,25 @@ exports.verifyPayment = async (req, res) => {
                 const [txn] = await connection.query("SELECT order_id FROM payment_transactions WHERE transaction_id = ?", [razorpay_order_id]);
                 if (txn.length > 0) {
                     await connection.query('UPDATE payment_transactions SET status = "SUCCESS", gateway_payment_id = ? WHERE transaction_id = ?', [razorpay_payment_id, razorpay_order_id]);
+                    
+                    // CHECK IF ALREADY CANCELLED
+                    const [orderInfo] = await connection.query("SELECT order_status, total_amount, user_id, order_number FROM orders WHERE id = ? FOR UPDATE", [txn[0].order_id]);
+                    if (orderInfo[0] && orderInfo[0].order_status === 'CANCELLED') {
+                        await connection.query("UPDATE orders SET payment_status = 'COMPLETED' WHERE id = ?", [txn[0].order_id]);
+                        const [wallets] = await connection.query("SELECT balance FROM user_wallets WHERE user_id = ? FOR UPDATE", [orderInfo[0].user_id]);
+                        if (wallets.length === 0) {
+                            await connection.query("INSERT INTO user_wallets (user_id, balance) VALUES (?, ?)", [orderInfo[0].user_id, orderInfo[0].total_amount]);
+                        } else {
+                            await connection.query("UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?", [orderInfo[0].total_amount, orderInfo[0].user_id]);
+                        }
+                        await connection.query(
+                            "INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks) VALUES (?, 'credit', ?, 'refund', ?, ?)",
+                            [orderInfo[0].user_id, orderInfo[0].total_amount, orderInfo[0].order_number, "Late online payment auto-refund for cancelled order (Razorpay Success)"]
+                        );
+                        await connection.commit();
+                        return res.status(200).json({ status: true, message: "Verified (Auto-refunded due to cancellation)" });
+                    }
+
                     // New Distribution Service
                     const commissionService = require('../Services/commissionService');
                     const distributionService = require('../Services/distributionService');
@@ -1407,6 +1445,25 @@ exports.checkPhonePeStatus = async (req, res) => {
             const [txn] = await connection.query("SELECT order_id FROM payment_transactions WHERE transaction_id = ?", [transactionId]);
             if (txn.length > 0) {
                 await connection.query('UPDATE payment_transactions SET status = "SUCCESS" WHERE transaction_id = ?', [transactionId]);
+                
+                // CHECK IF ALREADY CANCELLED
+                const [orderInfo] = await connection.query("SELECT order_status, total_amount, user_id, order_number FROM orders WHERE id = ? FOR UPDATE", [txn[0].order_id]);
+                if (orderInfo[0] && orderInfo[0].order_status === 'CANCELLED') {
+                    await connection.query("UPDATE orders SET payment_status = 'COMPLETED' WHERE id = ?", [txn[0].order_id]);
+                    const [wallets] = await connection.query("SELECT balance FROM user_wallets WHERE user_id = ? FOR UPDATE", [orderInfo[0].user_id]);
+                    if (wallets.length === 0) {
+                        await connection.query("INSERT INTO user_wallets (user_id, balance) VALUES (?, ?)", [orderInfo[0].user_id, orderInfo[0].total_amount]);
+                    } else {
+                        await connection.query("UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?", [orderInfo[0].total_amount, orderInfo[0].user_id]);
+                    }
+                    await connection.query(
+                        "INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks) VALUES (?, 'credit', ?, 'refund', ?, ?)",
+                        [orderInfo[0].user_id, orderInfo[0].total_amount, orderInfo[0].order_number, "Late online payment auto-refund for cancelled order (PhonePe Success)"]
+                    );
+                    await connection.commit();
+                    return res.status(200).json({ status: true, message: "Success (Auto-refunded due to cancellation)" });
+                }
+
                 await connection.query("UPDATE orders SET order_status = 'CONFIRMED', payment_status = 'COMPLETED' WHERE id = ?", [txn[0].order_id]);
                 // New Distribution Service
                 const commissionService = require('../Services/commissionService');
@@ -1490,6 +1547,24 @@ exports.payuWebhook = async (req, res) => {
                 'UPDATE payment_transactions SET status = "SUCCESS", gateway_payment_id = ? WHERE transaction_id = ?', 
                 [mihpayid, txnid]
             );
+
+            // CHECK IF ALREADY CANCELLED
+            const [orderInfo] = await connection.query("SELECT order_status, total_amount, user_id, order_number FROM orders WHERE id = ? FOR UPDATE", [orderId]);
+            if (orderInfo[0] && orderInfo[0].order_status === 'CANCELLED') {
+                await connection.query("UPDATE orders SET payment_status = 'COMPLETED' WHERE id = ?", [orderId]);
+                const [wallets] = await connection.query("SELECT balance FROM user_wallets WHERE user_id = ? FOR UPDATE", [orderInfo[0].user_id]);
+                if (wallets.length === 0) {
+                    await connection.query("INSERT INTO user_wallets (user_id, balance) VALUES (?, ?)", [orderInfo[0].user_id, orderInfo[0].total_amount]);
+                } else {
+                    await connection.query("UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?", [orderInfo[0].total_amount, orderInfo[0].user_id]);
+                }
+                await connection.query(
+                    "INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks) VALUES (?, 'credit', ?, 'refund', ?, ?)",
+                    [orderInfo[0].user_id, orderInfo[0].total_amount, orderInfo[0].order_number, "Late online payment auto-refund for cancelled order (PayU Webhook)"]
+                );
+                await connection.commit();
+                return res.status(200).send("OK");
+            }
 
             // B. Update Order Status
             await connection.query(
