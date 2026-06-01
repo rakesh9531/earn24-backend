@@ -518,8 +518,24 @@ exports.getAllMasterProducts = async (req, res) => {
     const offset = (page - 1) * limit;
     const searchPattern = `%${search}%`;
 
-    // --- FIX: REMOVED THE INVALID 'LEFT JOIN attributes a' ---
-    // --- FIX: UPDATED THE SUBQUERY TO JOIN ATTRIBUTES INTERNALLY ---
+    // --- Dynamic Filter Clauses ---
+    let whereClause = `
+      WHERE 
+          p.is_deleted = FALSE 
+          AND p.is_approved = TRUE
+          AND (p.name LIKE ? OR b.name LIKE ?)
+    `;
+    const queryParams = [searchPattern, searchPattern];
+
+    if (req.query.subcategoryId) {
+      whereClause += ` AND p.subcategory_id = ?`;
+      queryParams.push(req.query.subcategoryId);
+    }
+    if (req.query.categoryId) {
+      whereClause += ` AND p.category_id = ?`;
+      queryParams.push(req.query.categoryId);
+    }
+
     const dataQuery = `
       SELECT 
           p.id, 
@@ -542,7 +558,7 @@ exports.getAllMasterProducts = async (req, res) => {
             ), ']') 
             FROM product_attributes pa
             JOIN attribute_values av ON pa.attribute_value_id = av.id
-            JOIN attributes attr ON av.attribute_id = attr.id -- ✅ Fixed: Join directly to attr.id, not a.id
+            JOIN attributes attr ON av.attribute_id = attr.id
             WHERE pa.product_id = p.id
           ) as attributes,
 
@@ -566,23 +582,14 @@ exports.getAllMasterProducts = async (req, res) => {
       LEFT JOIN product_subcategories sc ON p.subcategory_id = sc.id
       LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
       
-      -- ❌ REMOVED: LEFT JOIN attributes a ON TRUE (This caused the error)
-
-      WHERE 
-          p.is_deleted = FALSE 
-          AND p.is_approved = TRUE
-          AND (p.name LIKE ? OR b.name LIKE ?)
+      ${whereClause}
       GROUP BY p.id
       ORDER BY p.created_at DESC
       LIMIT ? OFFSET ?
     `;
 
-    const [rows] = await db.query(dataQuery, [
-      searchPattern,
-      searchPattern,
-      limit,
-      offset,
-    ]);
+    const dataParams = [...queryParams, limit, offset];
+    const [rows] = await db.query(dataQuery, dataParams);
 
     const dataWithParsedAttributes = rows.map((product) => ({
       ...product,
@@ -593,15 +600,9 @@ exports.getAllMasterProducts = async (req, res) => {
         SELECT COUNT(*) as total 
         FROM products p
         LEFT JOIN brands b ON p.brand_id = b.id
-        WHERE 
-            p.is_deleted = FALSE 
-            AND p.is_approved = TRUE
-            AND (p.name LIKE ? OR b.name LIKE ?)
+        ${whereClause}
     `;
-    const [countRows] = await db.query(countQuery, [
-      searchPattern,
-      searchPattern,
-    ]);
+    const [countRows] = await db.query(countQuery, queryParams);
     const totalRecords = countRows[0].total;
 
     res.status(200).json({
