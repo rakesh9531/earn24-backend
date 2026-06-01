@@ -180,8 +180,8 @@ const handleOtpSending = async (mobile_number) => {
   }
 
   // 3. Generate & Send
-  const otp = "123456";
-  // const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const smsProvider = process.env.SMS_PROVIDER || 'MOCK';
+  const otp = smsProvider === 'MOCK' ? '123456' : Math.floor(100000 + Math.random() * 900000).toString();
   const smsSent = await sendSms(mobile_number, otp);
 
   if (!smsSent)
