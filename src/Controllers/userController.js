@@ -9,6 +9,7 @@ const {
 } = require("../Validator/userValidation");
 const { sendSms } = require("../utils/smsHelper");
 const rankService = require("../Services/rankService");
+const binaryService = require("../Services/binaryService");
 
 require("dotenv").config();
 
@@ -222,6 +223,7 @@ exports.registerInitiate = async (req, res) => {
       mobile_number,
       referral_code,
       device_token,
+      preferred_position = 'LEFT'
     } = req.body;
 
     // 2. Check if user exists in MAIN table
@@ -275,6 +277,7 @@ exports.registerInitiate = async (req, res) => {
       sponsorId,
       userType,
       device_token,
+      preferred_position
     });
 
     const expiry = moment()
@@ -351,10 +354,20 @@ exports.verifyRegistrationOtp = async (req, res) => {
       const newUserReferralCode = userData.username;
       const now = moment().tz("Asia/Kolkata").format("YYYY-MM-DD HH:mm:ss");
 
+      let binaryPlacementId = null;
+      let binaryPosition = null;
+
+      if (userData.sponsorId) {
+        const placement = await binaryService.findPlacementParent(connection, userData.sponsorId, userData.preferred_position || 'LEFT');
+        binaryPlacementId = placement.placementParentId;
+        binaryPosition = placement.position;
+        console.log(`[Binary Placement] User ${userData.username} placed under Parent ID: ${binaryPlacementId} on ${binaryPosition} leg.`);
+      }
+
       // Insert into Users
       const [result] = await connection.query(
-        `INSERT INTO users (full_name, username, password, email, mobile_number, referral_code, sponsor_id, user_type, device_token, is_active, created_at, updated_at) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        `INSERT INTO users (full_name, username, password, email, mobile_number, referral_code, sponsor_id, binary_placement_id, binary_position, user_type, device_token, is_active, created_at, updated_at) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         [
           userData.full_name,
           userData.username,
@@ -363,6 +376,8 @@ exports.verifyRegistrationOtp = async (req, res) => {
           userData.mobile_number,
           newUserReferralCode,
           userData.sponsorId,
+          binaryPlacementId,
+          binaryPosition,
           userData.userType,
           userData.device_token,
           now,
