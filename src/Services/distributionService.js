@@ -59,7 +59,7 @@ exports.processOrderDistribution = async (connection, orderId) => {
             }
 
             // FUND 2: PERFORMANCE BONUS (4.5% Budget - Differential Logic)
-            await distributeDifferentialBonus(connection, buyerId, buyerId, item.order_item_id, netProfitOnItem, distributableProfit, settings.profit_dist_performance_bonus_pct, orderId);
+            await distributeDifferentialBonus(connection, buyerId, buyerSponsorId, item.order_item_id, netProfitOnItem, distributableProfit, settings.profit_dist_performance_bonus_pct, orderId);
 
             // FUND 3: ROYALTY FUND (2.0% Budget - Rank Level Logic)
             await distributeRoyaltyBonus(connection, buyerId, buyerSponsorId, item.order_item_id, netProfitOnItem, distributableProfit, settings.profit_dist_royalty_pct, orderId);
