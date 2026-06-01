@@ -1,70 +1,97 @@
+const axios = require('axios');
+
+/**
+ * SMS Multi-Provider Router Helper
+ * Supports MOCK, 2FACTOR, and TWILIO based on process.env.SMS_PROVIDER
+ */
 exports.sendSms = async (mobileNumber, otp) => {
+    const provider = (process.env.SMS_PROVIDER || 'MOCK').toUpperCase();
+    console.log(`[SMS Helper] Routing OTP via Provider: ${provider}`);
+
     try {
-        // --- FOR TESTING: STATIC OTP ---
-        // We are logging it to the console so you can see it.
-        // In this setup, the controller generates the OTP, but we can ignore it 
-        // and force "123456" in the database if we wanted, 
-        // but it is better to generate a real random number and just LOG it for now.
-        
-        console.log("=================================================");
-        console.log(`[MOCK SMS] Sending OTP to ${mobileNumber}`);
-        console.log(`[MOCK SMS] OTP CODE: ${otp}`);
-        console.log("=================================================");
+        // 10-digit number cleanup
+        const cleanNumber = mobileNumber.toString().replace(/\D/g, '');
 
-        // --- FUTURE INTEGRATION (Uncomment when buying SMS pack) ---
-        // const axios = require('axios');
-        // await axios.get(`https://api.msg91.com/api?mobile=${mobileNumber}&otp=${otp}&authkey=...`);
+        if (provider === 'MOCK') {
+            // --- MOCK / TESTING MODE ---
+            console.log("=================================================");
+            console.log(`[MOCK SMS] Sending OTP to ${cleanNumber}`);
+            console.log(`[MOCK SMS] OTP CODE: ${otp}`);
+            console.log("=================================================");
+            return true;
+        }
 
-        return true; // Simulate success
+        if (provider === '2FACTOR') {
+            // --- 2FACTOR INTEGRATION ---
+            const apiKey = process.env.TWO_FACTOR_API_KEY;
+            if (!apiKey) {
+                console.error("[SMS Helper] Error: TWO_FACTOR_API_KEY is not defined in .env file.");
+                return false;
+            }
+            const templateName = process.env.TWO_FACTOR_TEMPLATE_NAME || 'DeliveryOTP';
+            const url = `https://2factor.in/API/V1/${apiKey}/SMS/${cleanNumber}/${otp}/${templateName}`;
+            
+            console.log(`[SMS Helper] Calling 2Factor for ${cleanNumber}...`);
+            const response = await axios.get(url);
+
+            if (response.data.Status === 'Success') {
+                console.log(`[2Factor Success] OTP sent to ${cleanNumber}. Reference ID: ${response.data.Details}`);
+                return true;
+            } else {
+                console.error("[2Factor Failed] API response:", response.data);
+                return false;
+            }
+        }
+
+        if (provider === 'TWILIO') {
+            // --- TWILIO REST API INTEGRATION ---
+            const accountSid = process.env.TWILIO_ACCOUNT_SID;
+            const authToken = process.env.TWILIO_AUTH_TOKEN;
+            const twilioNumber = process.env.TWILIO_PHONE_NUMBER;
+
+            if (!accountSid || !authToken || !twilioNumber) {
+                console.error("[SMS Helper] Error: Twilio credentials (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER) are missing in .env file.");
+                return false;
+            }
+
+            const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
+
+            // Basic Auth header format
+            const authHeader = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+
+            // Twilio expects URL encoded parameters
+            // Ensure number includes international format if needed (+91 for India)
+            const formattedNumber = cleanNumber.startsWith('+') ? cleanNumber : `+91${cleanNumber}`;
+            const requestBody = new URLSearchParams({
+                From: twilioNumber,
+                To: formattedNumber,
+                Body: `Your Earn24 OTP code is ${otp}. Please do not share this code with anyone.`
+            });
+
+            console.log(`[SMS Helper] Calling Twilio API for ${formattedNumber}...`);
+            const response = await axios.post(url, requestBody.toString(), {
+                headers: {
+                    'Authorization': `Basic ${authHeader}`,
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                }
+            });
+
+            if (response.status === 200 || response.status === 201) {
+                console.log(`[Twilio Success] OTP sent to ${formattedNumber}. SID: ${response.data.sid}`);
+                return true;
+            } else {
+                console.error("[Twilio Failed] Status code:", response.status, response.data);
+                return false;
+            }
+        }
+
+        console.error(`[SMS Helper] Error: Unknown SMS_PROVIDER value: ${provider}`);
+        return false;
+
     } catch (error) {
-        console.error("SMS Failed:", error);
+        console.error(`[SMS Helper Error] Provider: ${provider} failed:`, error.response ? error.response.data : error.message);
+        
+        // Return false to prevent registrations/verifications on failed delivery
         return false;
     }
 };
-
-
-
-
-
-
-
-
-// const axios = require('axios');
-
-// /**
-//  * Send OTP via 2Factor.in
-//  * API Format: https://2factor.in/API/V1/{api_key}/SMS/{phone_number}/{otp}/{template_name}
-//  */
-// exports.sendSms = async (mobileNumber, otp) => {
-//     try {
-//         const API_KEY = process.env.TWO_FACTOR_API_KEY || 'YOUR_ACTUAL_2FACTOR_API_KEY';
-//         const TEMPLATE_NAME = 'DeliveryOTP'; // Ensure this template is approved in your 2Factor panel
-
-//         // 2Factor requires phone numbers in international format or 10 digits
-//         // We ensure it's a string and clean it
-//         const cleanNumber = mobileNumber.toString().replace(/\D/g, '');
-
-//         // --- REAL API CALL ---
-//         const url = `https://2factor.in/API/V1/${API_KEY}/SMS/${cleanNumber}/${otp}/${TEMPLATE_NAME}`;
-        
-//         const response = await axios.get(url);
-
-//         if (response.data.Status === 'Success') {
-//             console.log(`[2Factor] OTP ${otp} sent successfully to ${cleanNumber}`);
-//             return true;
-//         } else {
-//             console.error("[2Factor] API Error:", response.data);
-//             return false;
-//         }
-//     } catch (error) {
-//         console.error("SMS Failed:", error.response ? error.response.data : error.message);
-        
-//         // --- FALLBACK FOR DEVELOPMENT ---
-//         console.log("=================================================");
-//         console.log(`[SMS FALLBACK] Sending OTP to ${mobileNumber}`);
-//         console.log(`[SMS FALLBACK] OTP CODE: ${otp}`);
-//         console.log("=================================================");
-        
-//         return false;
-//     }
-// };
