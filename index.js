@@ -9,6 +9,7 @@ const path = require('path');
 
 const { scheduleQualificationJob } = require('./src/jobs/monthlyQualificationJob');
 const { scheduleFundJob } = require('./src/jobs/monthlyFundDistributor');
+const { scheduleBinaryMatchingJob } = require('./src/jobs/binaryMatchingJob');
 
 
 const app = express();
@@ -115,7 +116,7 @@ async function testDatabaseConnection() {
       console.log('Running Order Cancellation schema migrations...');
       await connection.query("ALTER TABLE orders ADD COLUMN cancellation_reason VARCHAR(255) DEFAULT NULL");
       await connection.query("ALTER TABLE orders ADD COLUMN cancelled_by ENUM('USER', 'ADMIN') DEFAULT NULL");
-      await connection.query("ALTER TABLE orders ADD COLUMN cancelled_at TIMESTAMP DEFAULT NULL");
+      await connection.query("ALTER TABLE orders ADD COLUMN cancelled_at TIMESTAMP NULL DEFAULT NULL");
       console.log("Database updated: Added cancellation columns to 'orders' table successfully.");
     }
 
@@ -129,6 +130,7 @@ testDatabaseConnection();
 // Initialize Scheduled MLM Jobs
 scheduleQualificationJob();
 scheduleFundJob();
+scheduleBinaryMatchingJob();
 console.log('Scheduled MLM cron jobs have been initialized.');
 
 

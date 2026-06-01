@@ -105,25 +105,33 @@ exports.processOrderDistribution = async (connection, orderId) => {
 
 /**
  * PERFORMANCE BONUS (Differential Gap Logic) using exact Rank Names
+ * Based on slide calculations: Silver = 3% of BV (20% of customer cashback), Gold = 6% of BV (40%), Diamond+ = 9% of BV (60%)
  */
 async function distributeDifferentialBonus(connection, buyerId, sponsorId, orderItemId, netProfit, distributableProfit, totalBudgetPct, orderId) {
+    // 1. Fetch item BV from order_items
+    const [itemRows] = await connection.query("SELECT total_bv_earned FROM order_items WHERE id = ?", [orderItemId]);
+    const itemBv = itemRows.length ? parseFloat(itemRows[0].total_bv_earned) : 0;
+    if (itemBv <= 0) {
+        console.log(`[MLM] Performance Bonus: Skipping, total BV for item ${orderItemId} is 0.`);
+        return;
+    }
+
     let lastPaidPct = 0;
     let currentSponsorId = sponsorId;
 
-    // Mapping exact Rank Names (Silver=1 step, Gold=2 steps, Diamond+=3 steps of the 4.5% budget)
-    const rankMultipliers = {
+    const rankBvRates = {
         'CUSTOMER': 0,
-        'DISTRIBUTOR_SILVER': 1,
-        'DISTRIBUTOR_GOLD': 2,
-        'DISTRIBUTOR_DIAMOND': 3,
-        'LEADER': 3,
-        'TEAM_LEADER': 3,
-        'ASSISTANT_SUPERVISOR': 3,
-        'SUPERVISOR': 3,
-        'ASSISTANT_MANAGER': 3,
-        'MANAGER': 3,
-        'SR_MANAGER': 3,
-        'DIRECTOR': 3
+        'DISTRIBUTOR_SILVER': 3.0,    // 3% of BV
+        'DISTRIBUTOR_GOLD': 6.0,      // 6% of BV
+        'DISTRIBUTOR_DIAMOND': 9.0,   // 9% of BV
+        'LEADER': 9.0,
+        'TEAM_LEADER': 9.0,
+        'ASSISTANT_SUPERVISOR': 9.0,
+        'SUPERVISOR': 9.0,
+        'ASSISTANT_MANAGER': 9.0,
+        'MANAGER': 9.0,
+        'SR_MANAGER': 9.0,
+        'DIRECTOR': 9.0
     };
 
     while (currentSponsorId) {
@@ -131,50 +139,65 @@ async function distributeDifferentialBonus(connection, buyerId, sponsorId, order
         if (!sponsors.length) break;
 
         const sponsor = sponsors[0];
-        const multiplier = rankMultipliers[sponsor.rank] || 0;
-        const sponsorMaxPct = (multiplier * (totalBudgetPct / 3));
-        const gapPct = sponsorMaxPct - lastPaidPct;
+        const sponsorRate = rankBvRates[sponsor.rank] || 0;
+        const gapPct = sponsorRate - lastPaidPct;
 
         if (gapPct > 0) {
-            const amt = distributableProfit * (gapPct / 100);
-            console.log(`[MLM] Performance Bonus: ₹${amt.toFixed(2)} to ${sponsor.rank} (ID: ${sponsor.id})`);
-            await recordProfitEntry(connection, sponsor.id, orderItemId, 'PERFORMANCE_BONUS', netProfit, distributableProfit, gapPct, amt, buyerId, orderId);
+            const amt = itemBv * (gapPct / 100);
+            const nominalPct = gapPct; // Show the exact gap percentage on BV
+            console.log(`[MLM] Performance Bonus: ₹${amt.toFixed(2)} to ${sponsor.rank} (ID: ${sponsor.id}), BV: ${itemBv}, gap: ${gapPct}%`);
+            await recordProfitEntry(connection, sponsor.id, orderItemId, 'PERFORMANCE_BONUS', netProfit, distributableProfit, nominalPct, amt, buyerId, orderId);
             await updateWallet(connection, sponsor.id, amt);
-            lastPaidPct = sponsorMaxPct;
+            lastPaidPct = sponsorRate;
         }
 
-        if (lastPaidPct >= totalBudgetPct) break;
+        if (lastPaidPct >= 9.0) break;
         currentSponsorId = sponsor.sponsor_id;
     }
 }
 
 /**
  * ROYALTY BONUS (Diamond Level Logic) using exact Rank Names
+ * Based on slide calculations: Diamond 2 gets 12% RI, Diamond 3 gets 8% RI, Diamond 4 gets 4% RI from the first Diamond's PB (which is 9% of BV)
  */
 async function distributeRoyaltyBonus(connection, buyerId, sponsorId, orderItemId, netProfit, distributableProfit, totalBudgetPct, orderId) {
-    let level = 1;
+    // 1. Fetch item BV from order_items
+    const [itemRows] = await connection.query("SELECT total_bv_earned FROM order_items WHERE id = ?", [orderItemId]);
+    const itemBv = itemRows.length ? parseFloat(itemRows[0].total_bv_earned) : 0;
+    if (itemBv <= 0) return;
+
     let currentSponsorId = sponsorId;
-    const royaltyLevels = { 1: 1.0, 2: 0.6, 3: 0.4 };
+    let diamondCount = 0;
 
     const diamondAndAbove = [
         'DISTRIBUTOR_DIAMOND', 'LEADER', 'TEAM_LEADER', 'ASSISTANT_SUPERVISOR',
         'SUPERVISOR', 'ASSISTANT_MANAGER', 'MANAGER', 'SR_MANAGER', 'DIRECTOR'
     ];
 
-    while (currentSponsorId && level <= 3) {
+    const royaltyRates = {
+        2: 12.0, // 12% of first Diamond's PB (which is 9% of BV) => 1.08% of BV
+        3: 8.0,  // 8% of first Diamond's PB => 0.72% of BV
+        4: 4.0   // 4% of first Diamond's PB => 0.36% of BV
+    };
+
+    while (currentSponsorId && diamondCount < 4) {
         const [sponsors] = await connection.query("SELECT id, sponsor_id, `rank` FROM users WHERE id = ?", [currentSponsorId]);
         if (!sponsors.length) break;
 
         const sponsor = sponsors[0];
         if (diamondAndAbove.includes(sponsor.rank)) {
-            const rate = royaltyLevels[level] || 0;
-            if (rate > 0) {
-                const amt = distributableProfit * (rate / 100);
-                console.log(`[MLM] Royalty L${level}: ₹${amt.toFixed(2)} to User ID ${sponsor.id}`);
-                await recordProfitEntry(connection, sponsor.id, orderItemId, `ROYALTY_L${level}`, netProfit, distributableProfit, rate, amt, buyerId, orderId);
-                await updateWallet(connection, sponsor.id, amt);
+            diamondCount++;
+            
+            // Skip the first Diamond because they get Performance Bonus
+            if (diamondCount > 1) {
+                const riRate = royaltyRates[diamondCount];
+                const amt = itemBv * (9.0 / 100) * (riRate / 100); // 9% of BV * riRate%
+                if (amt > 0) {
+                    console.log(`[MLM] Royalty L${diamondCount} (${riRate}%): ₹${amt.toFixed(2)} to User ID ${sponsor.id}`);
+                    await recordProfitEntry(connection, sponsor.id, orderItemId, `ROYALTY_L${diamondCount}`, netProfit, distributableProfit, riRate, amt, buyerId, orderId);
+                    await updateWallet(connection, sponsor.id, amt);
+                }
             }
-            level++;
         }
         currentSponsorId = sponsor.sponsor_id;
     }

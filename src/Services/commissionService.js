@@ -1,5 +1,6 @@
 // src/Services/commissionService.js
 const db = require('../../db');
+const binaryService = require('./binaryService');
 
 /**
  * Enhanced Commission Service for BV Tracking (Self & Downline)
@@ -100,6 +101,9 @@ exports.processOrderForCommissions = async (connection, orderId) => {
                 [yearMonth, totalOrderBV, totalOrderBV]
             );
             
+            // 6.5. Update Binary Upline Legs BV
+            await binaryService.addBVToBinaryUpline(connection, buyerId, totalOrderBV, orderId);
+
             console.log(`[BV Tracking] Success: Total BV: ${totalOrderBV} recorded for buyer ${buyerId} and upline.`);
 
             // 7. Store buyerId so caller can trigger rank promotion AFTER transaction commits

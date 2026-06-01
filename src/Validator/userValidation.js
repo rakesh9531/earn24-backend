@@ -16,6 +16,7 @@ exports.registerUserValidator = (data) => {
         referral_code: Joi.string().allow(null, '').optional(),
         default_sponsor: Joi.boolean().required(),
         device_token: Joi.string().allow(null, '').optional(),
+        preferred_position: Joi.string().valid('LEFT', 'RIGHT').optional()
     })
     .custom((value, helpers) => {
         if (value.referral_code && value.default_sponsor) {

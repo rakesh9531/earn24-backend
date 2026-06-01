@@ -11,6 +11,7 @@ const moment = require('moment-timezone');
 const slugify = require('../utils/slugify')
 const fs = require('fs');
 const path = require('path');
+const binaryMatchingJob = require('../jobs/binaryMatchingJob');
 
 
 exports.createAdmin = async (req, res) => {
@@ -1512,5 +1513,24 @@ exports.getAdminDashboardStats = async (req, res) => {
     } catch (error) {
         console.error("Dashboard CRITICAL Error:", error);
         res.status(500).json({ status: false, message: "Internal server error." });
+    }
+};
+
+exports.runBinaryMatchingManual = async (req, res) => {
+    try {
+        console.log(`[Admin Trigger] Manual Binary Matching Payout trigger received from admin ID: ${req.user.id}`);
+        await binaryMatchingJob.runBinaryMatching();
+        
+        res.status(200).json({
+            status: true,
+            message: "Binary matching payout process completed successfully."
+        });
+    } catch (error) {
+        console.error("Manual Binary Matching Trigger Error:", error);
+        res.status(500).json({
+            status: false,
+            message: "Internal server error while executing manual binary matching.",
+            error: error.message
+        });
     }
 };
