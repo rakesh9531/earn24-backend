@@ -120,6 +120,20 @@ async function testDatabaseConnection() {
       console.log("Database updated: Added cancellation columns to 'orders' table successfully.");
     }
 
+    // Auto-migration for user_favorites table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS \`user_favorites\` (
+        \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+        \`user_id\` INT NOT NULL,
+        \`product_id\` INT NOT NULL,
+        \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY \`uq_user_product_fav\` (\`user_id\`, \`product_id\`),
+        FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON DELETE CASCADE,
+        FOREIGN KEY (\`product_id\`) REFERENCES \`products\`(\`id\`) ON DELETE CASCADE
+      ) ENGINE=InnoDB;
+    `);
+    console.log("Database verification: user_favorites table checked/created.");
+
     connection.release();
   } catch (error) {
     console.error('Unable to connect to the database:', error);

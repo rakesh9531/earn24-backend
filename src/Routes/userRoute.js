@@ -36,6 +36,7 @@
 const express = require('express');
 const router = express.Router();
 const userController = require('../Controllers/userController');
+const favoriteController = require('../Controllers/favoriteController');
 const { auth } = require('../Middleware/auth'); // Only `auth` is needed here
 
 // Public routes for registration and login are moved to authRoutes.js
@@ -86,6 +87,10 @@ router.get('/mlm/tree-node/:userId', auth, userController.getMlmTreeNode);
 // --- WALLET ROUTES ---
 router.get('/wallet/balance', auth, userController.getWalletBalance);
 router.get('/wallet/history', auth, userController.getWalletHistory);
+
+// --- FAVORITES ROUTES ---
+router.post('/favorites/toggle', auth, favoriteController.toggleFavorite);
+router.get('/favorites', auth, favoriteController.getFavorites);
 
 
 module.exports = router;
