@@ -463,6 +463,82 @@ exports.getAllUserList = async (req, res) => {
     }
 };
 
+exports.getUserDetailsForAdmin = async (req, res) => {
+    const { userId } = req.params;
+    try {
+        // 1. Fetch base user info + sponsor details
+        const userQuery = `
+            SELECT u.id, u.full_name, u.username, u.email, u.mobile_number, u.is_active, u.is_blocked, u.created_at, 
+                   u.sponsor_id, u.rank, u.current_monthly_qualified_rank, u.aggregate_personal_bv, u.last_12_months_repurchase_bv,
+                   s.full_name as sponsor_name, s.username as sponsor_username
+            FROM users u
+            LEFT JOIN users s ON u.sponsor_id = s.id
+            WHERE u.id = ? AND u.is_deleted = 0
+        `;
+        const [userRows] = await db.query(userQuery, [userId]);
+        if (userRows.length === 0) {
+            return res.status(404).json({ status: false, message: 'User not found.' });
+        }
+        const user = userRows[0];
+
+        // 2. Fetch Wallet Balance details
+        const [walletRows] = await db.query("SELECT balance, locked_balance FROM user_wallets WHERE user_id = ?", [userId]);
+        const wallet = walletRows[0] || { balance: 0.00, locked_balance: 0.00 };
+
+        // 3. Fetch KYC details
+        const [kycRows] = await db.query("SELECT * FROM user_kyc WHERE user_id = ?", [userId]);
+        const kyc = kycRows[0] || null;
+
+        // 4. Fetch Addresses
+        const [addresses] = await db.query("SELECT * FROM user_addresses WHERE user_id = ?", [userId]);
+
+        // 5. Fetch recent 10 Wallet Transactions
+        const [transactions] = await db.query(
+            "SELECT id, txn_type, amount, source, reference_id, remarks, created_at FROM user_wallet_transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 10", 
+            [userId]
+        );
+
+        // 6. Fetch recent 10 Order History records
+        const [orders] = await db.query(
+            "SELECT id, order_number, total_amount, payment_method, order_status, created_at FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 10",
+            [userId]
+        );
+
+        // 7. Calculate direct count and active downline Group BV recursively
+        const [directCountRows] = await db.query("SELECT COUNT(*) AS direct_count FROM users WHERE sponsor_id = ? AND is_deleted = 0", [userId]);
+        const directCount = directCountRows[0].direct_count;
+
+        let totalGroupBv = 0;
+        let currentLevelIds = [userId];
+
+        while (currentLevelIds.length > 0) {
+            const [levelUsers] = await db.query('SELECT id, aggregate_personal_bv FROM users WHERE id IN (?)', [currentLevelIds]);
+            for (const u of levelUsers) {
+                totalGroupBv += parseFloat(u.aggregate_personal_bv) || 0;
+            }
+            const [downlines] = await db.query('SELECT id FROM users WHERE sponsor_id IN (?)', [currentLevelIds]);
+            currentLevelIds = downlines.map(d => d.id);
+        }
+
+        res.status(200).json({
+            status: true,
+            data: {
+                ...user,
+                wallet,
+                kyc,
+                addresses,
+                transactions,
+                orders,
+                direct_count: directCount,
+                total_group_bv: totalGroupBv.toFixed(2)
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching user details for admin:', error);
+        res.status(500).json({ status: false, message: 'Internal server error' });
+    }
+};
+
 
 
 exports.addCategory = async (req, res) => {

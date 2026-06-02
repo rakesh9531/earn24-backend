@@ -69,6 +69,7 @@ router.post('/createAdmin', adminController.createAdmin);
 
 // Protected routes below
 router.post("/getAllUserList", auth, can('users:read'), adminController.getAllUserList);
+router.get("/users/:userId/details", auth, can('users:read'), adminController.getUserDetailsForAdmin);
 
 // Category routes
 router.post('/addCategory', auth, can('categories:create'), upload.single('image'), adminController.addCategory);
