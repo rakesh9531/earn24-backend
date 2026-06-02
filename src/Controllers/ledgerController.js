@@ -107,6 +107,7 @@ exports.getBvLedger = async (req, res) => {
             JOIN users u ON bv.user_id = u.id
             LEFT JOIN products p ON bv.product_id = p.id
             WHERE 
+                bv.bv_type = 'SELF' AND
                 (u.full_name LIKE ? OR u.email LIKE ? OR p.name LIKE ?)
             ORDER BY ?? ${sortOrder}
             LIMIT ? OFFSET ?;
@@ -119,6 +120,7 @@ exports.getBvLedger = async (req, res) => {
             JOIN users u ON bv.user_id = u.id
             LEFT JOIN products p ON bv.product_id = p.id
             WHERE 
+                bv.bv_type = 'SELF' AND
                 (u.full_name LIKE ? OR u.email LIKE ? OR p.name LIKE ?);
         `;
         const [countRows] = await db.query(countQuery, [searchPattern, searchPattern, searchPattern]);

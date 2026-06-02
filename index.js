@@ -134,6 +134,18 @@ async function testDatabaseConnection() {
     `);
     console.log("Database verification: user_favorites table checked/created.");
 
+    // Auto-migration for user_business_volume table
+    const [bvColumns] = await connection.query("SHOW COLUMNS FROM user_business_volume LIKE 'bv_type'");
+    if (bvColumns.length === 0) {
+      console.log('Running user_business_volume schema migrations...');
+      await connection.query("ALTER TABLE user_business_volume ADD COLUMN bv_type ENUM('SELF', 'DOWNLINE') NOT NULL DEFAULT 'SELF' AFTER notes");
+      await connection.query("ALTER TABLE user_business_volume ADD COLUMN source_user_id INT DEFAULT NULL AFTER bv_type");
+      await connection.query("ALTER TABLE user_business_volume ADD CONSTRAINT fk_bv_source_user FOREIGN KEY (source_user_id) REFERENCES users(id) ON DELETE SET NULL");
+      console.log("Database updated: Added bv_type and source_user_id columns to 'user_business_volume' table successfully.");
+    } else {
+      console.log("Database verification: user_business_volume columns already verified.");
+    }
+
     connection.release();
   } catch (error) {
     console.error('Unable to connect to the database:', error);
