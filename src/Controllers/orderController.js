@@ -310,6 +310,10 @@ exports.downloadInvoice = async (req, res) => {
         }
         const order = orderRows[0];
 
+        if (order.order_status !== 'DELIVERED') {
+            return res.status(400).json({ status: false, message: 'Invoice is only available after the order has been delivered.' });
+        }
+
         // 2. Get Shipping Address
         const [addressRows] = await db.query(`SELECT * FROM user_addresses WHERE id = ?`, [order.shipping_address_id]);
         order.shipping_address = addressRows[0];
