@@ -11,10 +11,14 @@ exports.processOrderForCommissions = async (connection, orderId) => {
     try {
         console.log(`[BV Tracking] Starting processing for Order ID: ${orderId}`);
 
-        // 1. Fetch Order Basics
-        const [orderRows] = await connection.query("SELECT user_id FROM orders WHERE id = ?", [orderId]);
+        // 1. Fetch Order Basics and Buyer Name
+        const [orderRows] = await connection.query(
+            "SELECT o.user_id, u.full_name FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?",
+            [orderId]
+        );
         if (!orderRows.length) return;
         const buyerId = orderRows[0].user_id;
+        const buyerName = orderRows[0].full_name;
 
         // 2. Fetch App Settings
         const [settingsRows] = await connection.query("SELECT setting_key, setting_value FROM app_settings");
@@ -23,7 +27,7 @@ exports.processOrderForCommissions = async (connection, orderId) => {
         const bvPct = settings.bv_generation_pct_of_profit || 80.0;
         const yearMonth = new Date().getFullYear() * 100 + (new Date().getMonth() + 1);
 
-        // 3. Fetch Order Items for BV calculation (Added product_id to fix "cannot be null" error)
+        // 3. Fetch Order Items for BV calculation
         const [items] = await connection.query(`
             SELECT oi.id, oi.product_id, oi.price_per_unit, oi.quantity, sp.purchase_price, h.gst_percentage
             FROM order_items oi
@@ -49,13 +53,41 @@ exports.processOrderForCommissions = async (connection, orderId) => {
                     [bvPerUnit, totalBVForItem, item.id]
                 );
 
-                // 2. INSERT into the Business Volume Ledger (This is what the Dashboard sums up)
+                // 2. INSERT into the Business Volume Ledger (SELF purchase)
                 await connection.query(
                     `INSERT INTO user_business_volume 
-                        (user_id, order_item_id, product_id, net_profit_base, bv_earned, transaction_date, notes) 
-                     VALUES (?, ?, ?, ?, ?, NOW(), ?)`,
+                        (user_id, order_item_id, product_id, net_profit_base, bv_earned, transaction_date, notes, bv_type, source_user_id) 
+                     VALUES (?, ?, ?, ?, ?, NOW(), ?, 'SELF', NULL)`,
                     [buyerId, item.id, item.product_id, netProfitPerUnit * item.quantity, totalBVForItem, `Self purchase: ${item.id}`]
                 );
+
+                // 2.5. INSERT downline BV ledger entries for all upline sponsors
+                let currentSponsorId = null;
+                const [buyerRows] = await connection.query("SELECT sponsor_id FROM users WHERE id = ?", [buyerId]);
+                if (buyerRows.length > 0) currentSponsorId = buyerRows[0].sponsor_id;
+
+                while (currentSponsorId) {
+                    const [sponsorRows] = await connection.query("SELECT id, sponsor_id FROM users WHERE id = ?", [currentSponsorId]);
+                    if (sponsorRows.length === 0) break;
+
+                    const sponsor = sponsorRows[0];
+                    await connection.query(
+                        `INSERT INTO user_business_volume 
+                            (user_id, order_item_id, product_id, net_profit_base, bv_earned, transaction_date, notes, bv_type, source_user_id) 
+                         VALUES (?, ?, ?, ?, ?, NOW(), ?, 'DOWNLINE', ?)`,
+                        [
+                            sponsor.id, 
+                            item.id, 
+                            item.product_id, 
+                            netProfitPerUnit * item.quantity, 
+                            totalBVForItem, 
+                            `Downline purchase by ${buyerName}`, 
+                            buyerId
+                        ]
+                    );
+
+                    currentSponsorId = sponsor.sponsor_id; // Move up to the next sponsor
+                }
             }
         }
 

@@ -976,9 +976,28 @@ exports.getBvHistory = async (req, res) => {
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 10;
   const offset = (page - 1) * limit;
-
   try {
-    const dataQuery = `SELECT * FROM user_business_volume WHERE user_id = ? ORDER BY transaction_date DESC LIMIT ? OFFSET ?`;
+    const dataQuery = `
+      SELECT 
+        bv.id,
+        bv.user_id,
+        bv.order_item_id,
+        bv.product_id,
+        bv.net_profit_base,
+        bv.bv_earned,
+        bv.transaction_date,
+        bv.notes,
+        bv.bv_type,
+        bv.source_user_id,
+        p.name as product_name,
+        su.full_name as source_user_name
+      FROM user_business_volume bv
+      LEFT JOIN products p ON bv.product_id = p.id
+      LEFT JOIN users su ON bv.source_user_id = su.id
+      WHERE bv.user_id = ?
+      ORDER BY bv.transaction_date DESC
+      LIMIT ? OFFSET ?
+    `;
     const [rows] = await db.query(dataQuery, [userId, limit, offset]);
 
     const countQuery = `SELECT COUNT(*) as total FROM user_business_volume WHERE user_id = ?`;
