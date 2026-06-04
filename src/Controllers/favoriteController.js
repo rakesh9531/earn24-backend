@@ -103,7 +103,16 @@ exports.getFavorites = async (req, res) => {
       LEFT JOIN brands b ON p.brand_id = b.id
       LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
       WHERE uf.user_id = ? AND p.is_deleted = 0 AND p.is_active = 1
-      GROUP BY p.id
+      GROUP BY 
+        p.id, 
+        b.name, 
+        sp.id, 
+        sp.selling_price, 
+        sp.mrp, 
+        sp.minimum_order_quantity, 
+        sp.purchase_price, 
+        h.gst_percentage, 
+        uf.created_at
       ORDER BY uf.created_at DESC;
     `;
 
