@@ -109,13 +109,25 @@ exports.getFavorites = async (req, res) => {
 
     const [rows] = await db.query(query, [bvGenerationPct, userId]);
 
+    // Helper to safely parse JSON strings or return the value if already parsed
+    const safeParseJson = (val, fallback = []) => {
+      if (!val) return fallback;
+      if (typeof val === 'object') return val;
+      try {
+        return JSON.parse(val);
+      } catch (err) {
+        console.error("Failed to parse JSON in getFavorites:", val, err);
+        return fallback;
+      }
+    };
+
     // Format products identical to standard product categories/search lists
     const formattedProducts = rows.map((product) => ({
       ...product,
       id: product.id,
       product_id: product.id,
-      attributes: product.attributes ? JSON.parse(product.attributes) : [],
-      gallery_image_urls: product.gallery_image_urls ? JSON.parse(product.gallery_image_urls) : []
+      attributes: safeParseJson(product.attributes, []),
+      gallery_image_urls: safeParseJson(product.gallery_image_urls, [])
     }));
 
     res.status(200).json({
