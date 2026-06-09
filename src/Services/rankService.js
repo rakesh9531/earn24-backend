@@ -30,9 +30,23 @@ exports.checkAndPromoteUser = async (userId) => {
     // Check downline rank requirement
     let downlineCount = 0;
     if (criteria.downline_rank_required) {
+        const requiredRanks = Array.isArray(criteria.downline_rank_required)
+            ? criteria.downline_rank_required
+            : [criteria.downline_rank_required];
+        
+        let minIndex = MLM_CONFIG.RANKS.length;
+        for (const reqRank of requiredRanks) {
+            const idx = MLM_CONFIG.RANKS.indexOf(reqRank);
+            if (idx !== -1 && idx < minIndex) {
+                minIndex = idx;
+            }
+        }
+        
+        const allowedRanks = MLM_CONFIG.RANKS.slice(minIndex);
+
         const [downline] = await db.query(
             'SELECT COUNT(id) as count FROM users WHERE sponsor_id = ? AND `rank` IN (?)',
-            [userId, criteria.downline_rank_required]
+            [userId, allowedRanks]
         );
         downlineCount = downline[0].count;
     } else {
