@@ -4,6 +4,26 @@ const db = require('../../db');
 const moment = require('moment-timezone');
 
 /**
+ * Helper to calculate binary depth level for a user (number of parents up to the root)
+ */
+async function getBinaryUserDepth(connection, userId) {
+    let depth = 0;
+    let currentId = userId;
+    while (currentId) {
+        const [parentRows] = await connection.query(
+            "SELECT binary_placement_id FROM users WHERE id = ?",
+            [currentId]
+        );
+        if (!parentRows.length || !parentRows[0].binary_placement_id) {
+            break;
+        }
+        currentId = parentRows[0].binary_placement_id;
+        depth++;
+    }
+    return depth;
+}
+
+/**
  * Main Binary Matching Logic
  * Traverses all active users, checks left/right legs BV, matches them,
  * applies level-based payout rates (5% down to 1%), checks Rs 5,000 monthly capping limit,
@@ -52,14 +72,19 @@ async function runBinaryMatching() {
                     continue;
                 }
 
-                // 2. Determine payout percentage based on the match level
-                // Level 1: 5%, Level 2: 4%, Level 3: 3%, Level 4: 2%, Level 5+: 1%
-                const currentLevel = parseInt(user.binary_level_matched) || 0;
-                let payoutPercentage = 1.00;
-                if (currentLevel === 0) payoutPercentage = 5.00;
-                else if (currentLevel === 1) payoutPercentage = 4.00;
-                else if (currentLevel === 2) payoutPercentage = 3.00;
-                else if (currentLevel === 3) payoutPercentage = 2.00;
+                // 2. Determine payout percentage based on the user's tree depth level (Global Level)
+                const userDepth = await getBinaryUserDepth(connection, user.id);
+                let payoutPercentage = 1.00; // Default: Level 21+
+
+                if (userDepth <= 5) {
+                    payoutPercentage = 5.00; // Level 1 to 5 (aur root user)
+                } else if (userDepth >= 6 && userDepth <= 10) {
+                    payoutPercentage = 4.00; // Level 6 to 10
+                } else if (userDepth >= 11 && userDepth <= 15) {
+                    payoutPercentage = 3.00; // Level 11 to 15
+                } else if (userDepth >= 16 && userDepth <= 20) {
+                    payoutPercentage = 2.00; // Level 16 to 20
+                }
 
                 // 3. Calculate payout amount
                 let rawPayoutAmount = matchedBv * (payoutPercentage / 100);
@@ -89,7 +114,7 @@ async function runBinaryMatching() {
                     [
                         user.id, 
                         actualPayoutAmount, 
-                        `Binary Matching: Level ${currentLevel + 1} match of ${matchedBv} BV (${payoutPercentage}% payout)${isCapped ? ' [CAPPED]' : ''}`
+                        `Binary Matching: Tree Level ${userDepth} match of ${matchedBv} BV (${payoutPercentage}% payout)${isCapped ? ' [CAPPED]' : ''}`
                     ]
                 );
 
@@ -102,7 +127,7 @@ async function runBinaryMatching() {
                         matchedBv,
                         payoutPercentage,
                         actualPayoutAmount,
-                        `Binary leg matching for user ${user.username}. Matched BV: ${matchedBv}. Level: ${currentLevel + 1}.${isCapped ? ' Exceeded monthly capping limit, adjusted payout.' : ''}`
+                        `Binary leg matching for user ${user.username}. Matched BV: ${matchedBv}. Tree Level: ${userDepth}.${isCapped ? ' Exceeded monthly capping limit, adjusted payout.' : ''}`
                     ]
                 );
 
@@ -115,7 +140,7 @@ async function runBinaryMatching() {
                         matchedBv, 
                         payoutPercentage, 
                         actualPayoutAmount, 
-                        `Matched ${matchedBv} BV at Level ${currentLevel + 1}. Raw: ₹${rawPayoutAmount.toFixed(2)}, Paid: ₹${actualPayoutAmount.toFixed(2)}`
+                        `Matched ${matchedBv} BV at Tree Level ${userDepth}. Raw: ₹${rawPayoutAmount.toFixed(2)}, Paid: ₹${actualPayoutAmount.toFixed(2)}`
                     ]
                 );
 
@@ -131,7 +156,7 @@ async function runBinaryMatching() {
                 );
 
                 await connection.commit();
-                console.log(`[Binary Match Success] User ID: ${user.id} (${user.username}) matched ${matchedBv} BV at level ${currentLevel + 1}. Payout: ₹${actualPayoutAmount.toFixed(2)}`);
+                console.log(`[Binary Match Success] User ID: ${user.id} (${user.username}) matched ${matchedBv} BV at Tree Level ${userDepth}. Payout: ₹${actualPayoutAmount.toFixed(2)}`);
 
             } catch (userErr) {
                 await connection.rollback();
