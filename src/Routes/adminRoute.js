@@ -112,5 +112,6 @@ router.get('/public/landing-content', webPageController.getLandingPage);
 // --- ADMIN ROUTE (For your admin panel) ---
 router.post('/update-landing',auth,can('settings:manage'),landingUploadMiddleware,webPageController.updateLandingPage);
 router.post('/run-binary-matching', auth, can('settings:manage'), adminController.runBinaryMatchingManual);
+router.post('/run-fund-distribution', auth, can('settings:manage'), adminController.runFundDistributionManual);
 
 module.exports = router;

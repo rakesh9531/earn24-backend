@@ -1610,3 +1610,32 @@ exports.runBinaryMatchingManual = async (req, res) => {
         });
     }
 };
+
+exports.runFundDistributionManual = async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        console.log(`[Admin Trigger] Manual Fund Distribution trigger received from admin ID: ${req.user.id}`);
+        await connection.beginTransaction();
+
+        const fundDistributor = require('../jobs/monthlyFundDistributor');
+        await fundDistributor.runImmediateFundDistributionForTesting(connection);
+
+        await connection.commit();
+
+        res.status(200).json({
+            status: true,
+            message: "Fund distribution process completed successfully."
+        });
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error("Manual Fund Distribution Trigger Error:", error);
+        res.status(500).json({
+            status: false,
+            message: "Internal server error while executing manual fund distribution.",
+            error: error.message
+        });
+    } finally {
+        if (connection) connection.release();
+    }
+};
+
