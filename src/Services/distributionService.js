@@ -90,8 +90,8 @@ exports.processOrderDistribution = async (connection, orderId) => {
         // =========================================================================
         // 🚨 DELETE AFTER TESTING: START
         // -------------------------------------------------------------------------
-        const fundDistributor = require('../jobs/monthlyFundDistributor');
-        await fundDistributor.runImmediateFundDistributionForTesting(connection);
+        // const fundDistributor = require('../jobs/monthlyFundDistributor');
+        // await fundDistributor.runImmediateFundDistributionForTesting(connection);
         // -------------------------------------------------------------------------
         // 🚨 DELETE AFTER TESTING: END
         // =========================================================================

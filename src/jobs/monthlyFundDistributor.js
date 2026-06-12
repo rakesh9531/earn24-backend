@@ -49,6 +49,13 @@ async function distributeFund(fundName, requiredRank, connection, yearMonth) {
             console.log(`[CRON] Payout for ${fundName}: User ${user.id} gets ₹${payout.toFixed(2)}`);
         }
     }
+
+    // Reset the pool column in the database after successful distribution
+    await connection.query(
+        `UPDATE \`monthly_company_pools\` SET \`${poolColumn}\` = 0.00 WHERE \`year_month\` = ?`,
+        [yearMonth]
+    );
+    console.log(`[CRON] Reset pool column \`${poolColumn}\` to 0.00 for year_month ${yearMonth}`);
 }
 
 async function runMonthlyFundDistribution() {
@@ -99,6 +106,7 @@ exports.runImmediateFundDistributionForTesting = async (connection) => {
         console.log('[TESTING] Immediate Fund Distribution finished successfully.');
     } catch (err) {
         console.error('[TESTING] Error in Immediate Fund Distribution:', err);
+        throw err;
     }
 };
 // -------------------------------------------------------------------------
