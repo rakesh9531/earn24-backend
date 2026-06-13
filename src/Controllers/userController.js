@@ -2,6 +2,8 @@ const db = require("../../db"); // Assuming you have a database connection modul
 const User = require("../Models/userModel"); // Import the Admin model
 const bcrypt = require("bcrypt"); // For hashing passwords
 const jwt = require("jsonwebtoken");
+const fs = require("fs");
+const path = require("path");
 const moment = require("moment");
 const {
   registerUserValidator,
