@@ -360,24 +360,19 @@ exports.verifyRegistrationOtp = async (req, res) => {
       let binaryPosition = null;
 
       if (userData.sponsorId) {
-        // Fetch sponsor's binary placement preference
-        const [sponsorPrefs] = await connection.query(
-          "SELECT binary_placement_preference, left_leg_bv, right_leg_bv FROM users WHERE id = ?",
+        // Fetch sponsor's current leg volumes to determine the weaker leg
+        const [sponsorLegs] = await connection.query(
+          "SELECT left_leg_bv, right_leg_bv FROM users WHERE id = ?",
           [userData.sponsorId]
         );
         let pref = 'LEFT';
-        let prefSource = 'default';
-        if (sponsorPrefs.length > 0) {
-          const sponsorPref = sponsorPrefs[0].binary_placement_preference || 'LEFT';
-          prefSource = `sponsor (${sponsorPref})`;
-          if (sponsorPref === 'AUTO') {
-            const leftBv = parseFloat(sponsorPrefs[0].left_leg_bv) || 0;
-            const rightBv = parseFloat(sponsorPrefs[0].right_leg_bv) || 0;
-            pref = leftBv <= rightBv ? 'LEFT' : 'RIGHT';
-            prefSource = `sponsor auto (Left BV: ${leftBv}, Right BV: ${rightBv} -> selected: ${pref})`;
-          } else {
-            pref = sponsorPref;
-          }
+        let prefSource = 'default (LEFT)';
+        
+        if (sponsorLegs.length > 0) {
+          const leftBv = parseFloat(sponsorLegs[0].left_leg_bv) || 0;
+          const rightBv = parseFloat(sponsorLegs[0].right_leg_bv) || 0;
+          pref = leftBv <= rightBv ? 'LEFT' : 'RIGHT';
+          prefSource = `AUTO weaker leg (Left BV: ${leftBv}, Right BV: ${rightBv} -> selected: ${pref})`;
         }
 
         // If the registration explicitly requested a position (e.g. from postman or link override), use it
@@ -389,7 +384,7 @@ exports.verifyRegistrationOtp = async (req, res) => {
         );
         binaryPlacementId = placement.placementParentId;
         binaryPosition = placement.position;
-        console.log(`[Binary Placement] User ${userData.username} placed under Parent ID: ${binaryPlacementId} on ${binaryPosition} leg. (Preference source: ${userData.preferred_position ? 'direct override' : prefSource})`);
+        console.log(`[Binary Placement] User ${userData.username} placed under Parent ID: ${binaryPlacementId} on ${binaryPosition} leg. (Placement source: ${userData.preferred_position ? 'direct override' : prefSource})`);
       }
 
       // Insert into Users
