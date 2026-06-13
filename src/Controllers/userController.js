@@ -360,10 +360,36 @@ exports.verifyRegistrationOtp = async (req, res) => {
       let binaryPosition = null;
 
       if (userData.sponsorId) {
-        const placement = await binaryService.findPlacementParent(connection, userData.sponsorId, userData.preferred_position || 'LEFT');
+        // Fetch sponsor's binary placement preference
+        const [sponsorPrefs] = await connection.query(
+          "SELECT binary_placement_preference, left_leg_bv, right_leg_bv FROM users WHERE id = ?",
+          [userData.sponsorId]
+        );
+        let pref = 'LEFT';
+        let prefSource = 'default';
+        if (sponsorPrefs.length > 0) {
+          const sponsorPref = sponsorPrefs[0].binary_placement_preference || 'LEFT';
+          prefSource = `sponsor (${sponsorPref})`;
+          if (sponsorPref === 'AUTO') {
+            const leftBv = parseFloat(sponsorPrefs[0].left_leg_bv) || 0;
+            const rightBv = parseFloat(sponsorPrefs[0].right_leg_bv) || 0;
+            pref = leftBv <= rightBv ? 'LEFT' : 'RIGHT';
+            prefSource = `sponsor auto (Left BV: ${leftBv}, Right BV: ${rightBv} -> selected: ${pref})`;
+          } else {
+            pref = sponsorPref;
+          }
+        }
+
+        // If the registration explicitly requested a position (e.g. from postman or link override), use it
+        const finalPosition = userData.preferred_position || pref;
+        const placement = await binaryService.findPlacementParent(
+          connection,
+          userData.sponsorId,
+          finalPosition
+        );
         binaryPlacementId = placement.placementParentId;
         binaryPosition = placement.position;
-        console.log(`[Binary Placement] User ${userData.username} placed under Parent ID: ${binaryPlacementId} on ${binaryPosition} leg.`);
+        console.log(`[Binary Placement] User ${userData.username} placed under Parent ID: ${binaryPlacementId} on ${binaryPosition} leg. (Preference source: ${userData.preferred_position ? 'direct override' : prefSource})`);
       }
 
       // Insert into Users
@@ -793,7 +819,7 @@ exports.getUserProfile = async (req, res) => {
 
     const query = "SELECT " +
       "u.id, u.full_name, u.email, u.mobile_number, u.username, " +
-      "u.`rank`, u.user_pic, " +
+      "u.`rank`, u.user_pic, u.binary_placement_preference, " +
       "ua.pincode, ua.address_line_1, ua.city, ua.state " +
       "FROM users u " +
       "LEFT JOIN user_addresses ua ON u.id = ua.user_id AND ua.is_default = TRUE " +
@@ -812,12 +838,12 @@ exports.getUserProfile = async (req, res) => {
 };
 
 /**
- * 2. UPDATE PROFILE (Handles Name, Email, Mobile, and Image)
+ * 2. UPDATE PROFILE (Handles Name, Email, Mobile, Preference, and Image)
  */
 exports.updateUserProfile = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { full_name, email, mobile_number } = req.body;
+    const { full_name, email, mobile_number, binary_placement_preference } = req.body;
 
     // 1. UNIQUE CHECKS (Email/Mobile)
     if (email || mobile_number) {
@@ -837,6 +863,15 @@ exports.updateUserProfile = async (req, res) => {
     if (full_name) { updateFields.push("full_name = ?"); queryValues.push(full_name); }
     if (email) { updateFields.push("email = ?"); queryValues.push(email); }
     if (mobile_number) { updateFields.push("mobile_number = ?"); queryValues.push(mobile_number); }
+    
+    if (binary_placement_preference) {
+      if (!['LEFT', 'RIGHT', 'AUTO'].includes(binary_placement_preference)) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ status: false, message: "Invalid binary placement preference. Must be LEFT, RIGHT, or AUTO." });
+      }
+      updateFields.push("binary_placement_preference = ?");
+      queryValues.push(binary_placement_preference);
+    }
 
     // 2. HANDLE IMAGE UPLOAD
     if (req.file) {

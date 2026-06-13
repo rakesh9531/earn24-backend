@@ -175,6 +175,10 @@ async function testDatabaseConnection() {
       await connection.query("ALTER TABLE users ADD COLUMN binary_level_matched INT DEFAULT 0 AFTER total_matched_bv");
       console.log("Migration: Added binary_level_matched to users");
     }
+    if (!userColNames.includes('binary_placement_preference')) {
+      await connection.query("ALTER TABLE users ADD COLUMN binary_placement_preference ENUM('LEFT', 'RIGHT', 'AUTO') DEFAULT 'LEFT' AFTER binary_level_matched");
+      console.log("Migration: Added binary_placement_preference to users");
+    }
 
     // Auto-migration for user_binary_bv_entries table
     await connection.query(`
