@@ -250,12 +250,22 @@ exports.registerInitiate = async (req, res) => {
         "SELECT id FROM users WHERE referral_code = ?",
         [referral_code.trim()]
       );
-      if (sponsor.length === 0)
+      if (sponsor.length === 0) {
         return res
           .status(400)
           .json({ status: false, message: "Invalid referral code." });
+      }
       sponsorId = sponsor[0].id;
       userType = "AFFILIATE";
+    } else {
+      // Fallback: If no referral code is provided, assign the first user in the database (root) as default sponsor
+      const [firstUser] = await db.query(
+        "SELECT id FROM users WHERE is_deleted = 0 ORDER BY id ASC LIMIT 1"
+      );
+      if (firstUser.length > 0) {
+        sponsorId = firstUser[0].id;
+        console.log(`[MLM Registration] No referral code. Assigned absolute root user (ID: ${sponsorId}) as default sponsor.`);
+      }
     }
 
     // 4. Send OTP (using helper)
