@@ -257,16 +257,23 @@ router.get('/diagnose-binary-tree', async (req, res) => {
         // Search user if requested
         let searchResults = null;
         if (req.query.search) {
-            searchResults = users
-                .filter(u => u.username.toLowerCase().includes(req.query.search.toLowerCase()))
-                .map(u => ({
+            const matchedUsers = users.filter(u => u.username.toLowerCase().includes(req.query.search.toLowerCase()));
+            searchResults = [];
+            for (const u of matchedUsers) {
+                const [unmatchedEntries] = await db.query(
+                    "SELECT id, bv_amount, matched_amount, leg, depth, source_user_id FROM user_binary_bv_entries WHERE user_id = ? AND bv_amount > matched_amount",
+                    [u.id]
+                );
+                searchResults.push({
                     id: u.id,
                     username: u.username,
                     binary_placement_id: u.binary_placement_id,
                     binary_position: u.binary_position,
                     left_leg_bv: u.left_leg_bv,
-                    right_leg_bv: u.right_leg_bv
-                }));
+                    right_leg_bv: u.right_leg_bv,
+                    unmatched_entries: unmatchedEntries.map(e => `Entry ID: ${e.id}, BV: ${e.bv_amount}, Matched: ${e.matched_amount}, leg: ${e.leg}, depth: ${e.depth} (Source User ID: ${e.source_user_id})`)
+                });
+            }
         }
 
         // List all roots (users with no binary parent)
