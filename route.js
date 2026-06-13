@@ -260,8 +260,16 @@ router.get('/diagnose-binary-tree', async (req, res) => {
             const matchedUsers = users.filter(u => u.username.toLowerCase().includes(req.query.search.toLowerCase()));
             searchResults = [];
             for (const u of matchedUsers) {
+                const [userMeta] = await db.query(
+                    "SELECT total_matched_bv, binary_level_matched FROM users WHERE id = ?",
+                    [u.id]
+                );
                 const [unmatchedEntries] = await db.query(
                     "SELECT id, bv_amount, matched_amount, leg, depth, source_user_id FROM user_binary_bv_entries WHERE user_id = ? AND bv_amount > matched_amount",
+                    [u.id]
+                );
+                const [payouts] = await db.query(
+                    "SELECT id, matched_bv, payout_percentage, payout_amount, remarks, created_at FROM binary_matching_payouts WHERE user_id = ?",
                     [u.id]
                 );
                 searchResults.push({
@@ -271,7 +279,10 @@ router.get('/diagnose-binary-tree', async (req, res) => {
                     binary_position: u.binary_position,
                     left_leg_bv: u.left_leg_bv,
                     right_leg_bv: u.right_leg_bv,
-                    unmatched_entries: unmatchedEntries.map(e => `Entry ID: ${e.id}, BV: ${e.bv_amount}, Matched: ${e.matched_amount}, leg: ${e.leg}, depth: ${e.depth} (Source User ID: ${e.source_user_id})`)
+                    total_matched_bv: userMeta[0]?.total_matched_bv || 0,
+                    binary_level_matched: userMeta[0]?.binary_level_matched || 0,
+                    unmatched_entries: unmatchedEntries.map(e => `Entry ID: ${e.id}, BV: ${e.bv_amount}, Matched: ${e.matched_amount}, leg: ${e.leg}, depth: ${e.depth} (Source User ID: ${e.source_user_id})`),
+                    payout_history: payouts.map(p => `Payout ID: ${p.id}, Matched BV: ${p.matched_bv}, Payout %: ${p.payout_percentage}%, Paid: ₹${p.payout_amount} (${p.remarks})`)
                 });
             }
         }
