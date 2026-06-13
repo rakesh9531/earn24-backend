@@ -297,6 +297,19 @@ router.get('/diagnose-binary-tree', async (req, res) => {
                 right_bv: u.right_leg_bv
             }));
 
+        const [recentCommissions] = await db.query(
+            `SELECT c.id, c.user_id, u.username, c.commission_type, c.base_bv, c.percentage_applied, c.amount_credited, c.created_at 
+             FROM commission_ledger c
+             LEFT JOIN users u ON c.user_id = u.id
+             ORDER BY c.id DESC LIMIT 20`
+        );
+        const [recentWalletTxns] = await db.query(
+            `SELECT t.id, t.user_id, u.username, t.txn_type, t.amount, t.source, t.remarks, t.created_at 
+             FROM user_wallet_transactions t
+             LEFT JOIN users u ON t.user_id = u.id
+             ORDER BY t.id DESC LIMIT 20`
+        );
+
         res.status(200).json({
             status: true,
             total_active_users: users.length,
@@ -311,6 +324,8 @@ router.get('/diagnose-binary-tree', async (req, res) => {
             lca_analysis: lcaAnalysis,
             search_results: searchResults,
             root_users: rootsList,
+            recent_commissions: recentCommissions.map(c => `ID: ${c.id}, User: ${c.username} (ID: ${c.user_id}), Type: ${c.commission_type}, Base BV: ${c.base_bv}, % Applied: ${c.percentage_applied}%, Credited: ₹${c.amount_credited} on ${c.created_at}`),
+            recent_wallet_transactions: recentWalletTxns.map(t => `ID: ${t.id}, User: ${t.username} (ID: ${t.user_id}), Txn: ${t.txn_type}, Amount: ₹${t.amount}, Source: ${t.source}, Remarks: ${t.remarks} on ${t.created_at}`),
             user1_path_to_root: u1 ? (userMap[u1] ? getPath(u1).map(p => `${p.username} (ID: ${p.id}, position: ${p.binary_position}, left_bv: ${p.left_leg_bv}, right_bv: ${p.right_leg_bv})`) : "User not found") : null,
             user2_path_to_root: u2 ? (userMap[u2] ? getPath(u2).map(p => `${p.username} (ID: ${p.id}, position: ${p.binary_position}, left_bv: ${p.left_leg_bv}, right_bv: ${p.right_leg_bv})`) : "User not found") : null
         });
