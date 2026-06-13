@@ -158,7 +158,7 @@ async function distributeDifferentialBonus(connection, buyerId, sponsorId, order
 
 /**
  * ROYALTY BONUS (Diamond Level Logic) using exact Rank Names
- * Based on slide calculations: Diamond 2 gets 12% RI, Diamond 3 gets 8% RI, Diamond 4 gets 4% RI from the first Diamond's PB (which is 9% of BV)
+ * Based on slide calculations: Diamond 2 gets 12% RI, Diamond 3 gets 8% RI, Diamond 4 gets 4% RI from the first Diamond's actual Performance Bonus (PB)
  */
 async function distributeRoyaltyBonus(connection, buyerId, sponsorId, orderItemId, netProfit, distributableProfit, totalBudgetPct, orderId) {
     // 1. Fetch item BV from order_items
@@ -168,16 +168,33 @@ async function distributeRoyaltyBonus(connection, buyerId, sponsorId, orderItemI
 
     let currentSponsorId = sponsorId;
     let diamondCount = 0;
+    let highestRateBelowFirstDiamond = 0;
+    let actualFirstDiamondBvRate = 9.0; // Default to full Diamond rate if no active uplines below
 
     const diamondAndAbove = [
         'DISTRIBUTOR_DIAMOND', 'LEADER', 'TEAM_LEADER', 'ASSISTANT_SUPERVISOR',
         'SUPERVISOR', 'ASSISTANT_MANAGER', 'MANAGER', 'SR_MANAGER', 'DIRECTOR'
     ];
 
+    const rankBvRates = {
+        'CUSTOMER': 0,
+        'DISTRIBUTOR_SILVER': 3.0,
+        'DISTRIBUTOR_GOLD': 6.0,
+        'DISTRIBUTOR_DIAMOND': 9.0,
+        'LEADER': 9.0,
+        'TEAM_LEADER': 9.0,
+        'ASSISTANT_SUPERVISOR': 9.0,
+        'SUPERVISOR': 9.0,
+        'ASSISTANT_MANAGER': 9.0,
+        'MANAGER': 9.0,
+        'SR_MANAGER': 9.0,
+        'DIRECTOR': 9.0
+    };
+
     const royaltyRates = {
-        2: 12.0, // 12% of first Diamond's PB (which is 9% of BV) => 1.08% of BV
-        3: 8.0,  // 8% of first Diamond's PB => 0.72% of BV
-        4: 4.0   // 4% of first Diamond's PB => 0.36% of BV
+        2: 12.0, // 12% of first Diamond's actual PB
+        3: 8.0,  // 8% of first Diamond's actual PB
+        4: 4.0   // 4% of first Diamond's actual PB
     };
 
     while (currentSponsorId && diamondCount < 4) {
@@ -185,17 +202,30 @@ async function distributeRoyaltyBonus(connection, buyerId, sponsorId, orderItemI
         if (!sponsors.length) break;
 
         const sponsor = sponsors[0];
+        const sponsorRate = rankBvRates[sponsor.rank] || 0;
+
         if (diamondAndAbove.includes(sponsor.rank)) {
             diamondCount++;
             
-            // Skip the first Diamond because they get Performance Bonus
-            if (diamondCount > 1) {
+            // If this is the first Diamond we encounter, we calculate their actual PB rate
+            if (diamondCount === 1) {
+                actualFirstDiamondBvRate = Math.max(0, 9.0 - highestRateBelowFirstDiamond);
+                console.log(`[MLM] First Diamond encountered: ID ${sponsor.id} (${sponsor.rank}). Highest rate below: ${highestRateBelowFirstDiamond}%. Actual PB rate: ${actualFirstDiamondBvRate}%`);
+            } else {
+                // For Diamond 2, 3, 4, calculate Royalty based on the first Diamond's actual PB
                 const riRate = royaltyRates[diamondCount];
-                const amt = itemBv * (9.0 / 100) * (riRate / 100); // 9% of BV * riRate%
+                const amt = itemBv * (actualFirstDiamondBvRate / 100) * (riRate / 100); 
                 if (amt > 0) {
-                    console.log(`[MLM] Royalty L${diamondCount} (${riRate}%): ₹${amt.toFixed(2)} to User ID ${sponsor.id}`);
+                    console.log(`[MLM] Royalty L${diamondCount} (${riRate}%): ₹${amt.toFixed(2)} to User ID ${sponsor.id} (Based on first Diamond PB rate: ${actualFirstDiamondBvRate}%)`);
                     await recordProfitEntry(connection, sponsor.id, orderItemId, `ROYALTY_L${diamondCount}`, netProfit, distributableProfit, riRate, amt, buyerId, orderId);
                     await updateWallet(connection, sponsor.id, amt);
+                }
+            }
+        } else {
+            // Keep track of the highest rate below the first Diamond
+            if (diamondCount === 0) {
+                if (sponsorRate > highestRateBelowFirstDiamond) {
+                    highestRateBelowFirstDiamond = sponsorRate;
                 }
             }
         }
