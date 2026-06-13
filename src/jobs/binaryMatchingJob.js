@@ -45,6 +45,8 @@ async function runBinaryMatching() {
         const endOfMonth = moment().tz("Asia/Kolkata").endOf('month').format("YYYY-MM-DD HH:mm:ss");
 
         for (const user of users) {
+            console.log(`\n[Binary Job Debug] ===== Evaluating matching for user: ${user.username} (ID: ${user.id}) =====`);
+            console.log(`[Binary Job Debug] Current aggregate values in users table: left_leg_bv: ${user.left_leg_bv}, right_leg_bv: ${user.right_leg_bv}`);
             await connection.beginTransaction();
 
             try {
@@ -59,20 +61,28 @@ async function runBinaryMatching() {
                 const currentMonthPayout = parseFloat(payoutRows[0].total_month_payout) || 0;
                 const cappingLimit = 5000.00;
                 const remainingLimit = Math.max(0, cappingLimit - currentMonthPayout);
+                console.log(`[Binary Job Debug] Monthly payout status: Already paid this month: ₹${currentMonthPayout.toFixed(2)}, Remaining limit: ₹${remainingLimit.toFixed(2)}`);
 
                 if (remainingLimit <= 0) {
-                    console.log(`[Binary Job] User ${user.username} (ID: ${user.id}) has hit the Rs. ${cappingLimit} monthly capping limit. Skipping match.`);
+                    console.log(`[Binary Job Debug] User ${user.username} has hit the Rs. ${cappingLimit} monthly capping limit. Skipping match.`);
                     await connection.rollback();
                     continue;
                 }
 
-                // 2. Fetch all unmatched detailed entries for this user
+                // 2. Fetch all unmatched detailed entries for this user, joining users to get source buyer username
                 const [entries] = await connection.query(
-                    "SELECT id, bv_amount, matched_amount, leg, depth FROM user_binary_bv_entries WHERE user_id = ? AND bv_amount > matched_amount ORDER BY id ASC",
+                    `SELECT e.id, e.bv_amount, e.matched_amount, e.leg, e.depth, e.source_user_id, e.order_id, u.username as source_username 
+                     FROM user_binary_bv_entries e
+                     JOIN users u ON e.source_user_id = u.id 
+                     WHERE e.user_id = ? AND e.bv_amount > e.matched_amount 
+                     ORDER BY e.id ASC`,
                     [user.id]
                 );
 
+                console.log(`[Binary Job Debug] Found ${entries.length} unmatched entries in user_binary_bv_entries table.`);
+
                 if (entries.length === 0) {
+                    console.log(`[Binary Job Debug] No unmatched entries found for ${user.username}. Skipping.`);
                     await connection.rollback();
                     continue;
                 }
@@ -87,13 +97,17 @@ async function runBinaryMatching() {
                     const unmatchedAmount = parseFloat(entry.bv_amount) - parseFloat(entry.matched_amount);
                     if (unmatchedAmount <= 0) continue;
 
+                    console.log(`[Binary Job Debug] Unmatched Entry -> ID: ${entry.id}, leg: ${leg}, depth: ${depth}, total_bv: ${entry.bv_amount}, unmatched: ${unmatchedAmount.toFixed(2)} (Buyer: ${entry.source_username}, Order ID: ${entry.order_id})`);
+
                     const targetMap = leg === 'LEFT' ? leftByDepth : rightByDepth;
                     if (!targetMap[depth]) {
                         targetMap[depth] = [];
                     }
                     targetMap[depth].push({
                         id: entry.id,
-                        unmatched: unmatchedAmount
+                        unmatched: unmatchedAmount,
+                        source_username: entry.source_username,
+                        order_id: entry.order_id
                     });
                 }
 
@@ -102,8 +116,11 @@ async function runBinaryMatching() {
                 const rightDepths = Object.keys(rightByDepth).map(Number);
                 const commonDepths = leftDepths.filter(d => rightDepths.includes(d));
 
+                console.log(`[Binary Job Debug] Grouping Results -> Left Depths: ${JSON.stringify(leftDepths)}, Right Depths: ${JSON.stringify(rightDepths)}`);
+                console.log(`[Binary Job Debug] Common Depth levels to match: ${JSON.stringify(commonDepths)}`);
+
                 if (commonDepths.length === 0) {
-                    // No matches at the same depth level
+                    console.log(`[Binary Job Debug] No common depths found for user ${user.username}. Left and Right legs cannot match. Skipping.`);
                     await connection.rollback();
                     continue;
                 }
@@ -117,6 +134,7 @@ async function runBinaryMatching() {
                     const leftList = leftByDepth[depth];
                     const rightList = rightByDepth[depth];
 
+                    console.log(`[Binary Job Debug] --- Processing match for DEPTH LEVEL: ${depth} ---`);
                     let leftIdx = 0;
                     let rightIdx = 0;
 
@@ -143,6 +161,9 @@ async function runBinaryMatching() {
                             const rawPayout = matchQty * (percentage / 100);
                             totalPayoutThisRun += rawPayout;
 
+                            console.log(`[Binary Job Debug] Match Step: Left Entry ID ${leftEntry.id} (Buyer: ${leftEntry.source_username}, Order: ${leftEntry.order_id}) <-> Right Entry ID ${rightEntry.id} (Buyer: ${rightEntry.source_username}, Order: ${rightEntry.order_id})`);
+                            console.log(`[Binary Job Debug] Match Qty: ${matchQty.toFixed(2)} BV at Depth ${depth}. Applied Rate: ${percentage}% (Slab: depth ${depth}), Payout: ₹${rawPayout.toFixed(2)} credited to ${user.username}`);
+
                             // Deduct unmatched amount in memory
                             leftEntry.unmatched -= matchQty;
                             rightEntry.unmatched -= matchQty;
@@ -164,6 +185,7 @@ async function runBinaryMatching() {
                 }
 
                 if (totalMatchedBvThisRun <= 0) {
+                    console.log(`[Binary Job Debug] Total matched BV in this run is 0. Skipping.`);
                     await connection.rollback();
                     continue;
                 }
@@ -175,10 +197,12 @@ async function runBinaryMatching() {
                 if (totalPayoutThisRun > remainingLimit) {
                     actualPayoutAmount = remainingLimit;
                     isCapped = true;
+                    console.log(`[Binary Job Debug] CAPPING TRIGGERED! Raw payout ₹${totalPayoutThisRun.toFixed(2)} exceeds remaining limit ₹${remainingLimit.toFixed(2)}. Adjusted payout: ₹${actualPayoutAmount.toFixed(2)}`);
                 }
 
                 // Credit payout to wallet & write ledgers if payout is > 0
                 if (actualPayoutAmount > 0) {
+                    console.log(`[Binary Job Debug] Crediting Payout of ₹${actualPayoutAmount.toFixed(2)} to User ID ${user.id} wallet.`);
                     // Update user's wallet balance
                     await connection.query(
                         "UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?",
@@ -225,11 +249,13 @@ async function runBinaryMatching() {
                 }
 
                 // Execute database updates for matching entries
+                console.log(`[Binary Job Debug] Running database updates for ${dbUpdates.length} matching entries...`);
                 for (const update of dbUpdates) {
                     await connection.query(update.query, update.params);
                 }
 
                 // Deduct matched BV from left/right legs and update binary levels
+                console.log(`[Binary Job Debug] Deducting matched ${totalMatchedBvThisRun.toFixed(2)} BV from aggregate left/right leg values in users table.`);
                 await connection.query(
                     `UPDATE users 
                      SET left_leg_bv = GREATEST(0, left_leg_bv - ?), 
