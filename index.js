@@ -146,6 +146,76 @@ async function testDatabaseConnection() {
       console.log("Database verification: user_business_volume columns already verified.");
     }
 
+    // Auto-migration for user binary structure
+    console.log("Running auto-migrations for binary schema verification...");
+    const [userColumns] = await connection.query("SHOW COLUMNS FROM users");
+    const userColNames = userColumns.map(c => c.Field);
+
+    if (!userColNames.includes('binary_placement_id')) {
+      await connection.query("ALTER TABLE users ADD COLUMN binary_placement_id INT NULL AFTER sponsor_id");
+      console.log("Migration: Added binary_placement_id to users");
+    }
+    if (!userColNames.includes('binary_position')) {
+      await connection.query("ALTER TABLE users ADD COLUMN binary_position ENUM('LEFT', 'RIGHT') NULL AFTER binary_placement_id");
+      console.log("Migration: Added binary_position to users");
+    }
+    if (!userColNames.includes('left_leg_bv')) {
+      await connection.query("ALTER TABLE users ADD COLUMN left_leg_bv DECIMAL(15, 2) DEFAULT 0.00 AFTER binary_position");
+      console.log("Migration: Added left_leg_bv to users");
+    }
+    if (!userColNames.includes('right_leg_bv')) {
+      await connection.query("ALTER TABLE users ADD COLUMN right_leg_bv DECIMAL(15, 2) DEFAULT 0.00 AFTER left_leg_bv");
+      console.log("Migration: Added right_leg_bv to users");
+    }
+    if (!userColNames.includes('total_matched_bv')) {
+      await connection.query("ALTER TABLE users ADD COLUMN total_matched_bv DECIMAL(15, 2) DEFAULT 0.00 AFTER right_leg_bv");
+      console.log("Migration: Added total_matched_bv to users");
+    }
+    if (!userColNames.includes('binary_level_matched')) {
+      await connection.query("ALTER TABLE users ADD COLUMN binary_level_matched INT DEFAULT 0 AFTER total_matched_bv");
+      console.log("Migration: Added binary_level_matched to users");
+    }
+
+    // Auto-migration for user_binary_bv_entries table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS \`user_binary_bv_entries\` (
+        \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+        \`user_id\` INT NOT NULL,
+        \`source_user_id\` INT NOT NULL,
+        \`order_id\` INT NOT NULL DEFAULT 0,
+        \`bv_amount\` DECIMAL(15,2) NOT NULL,
+        \`leg\` ENUM('LEFT', 'RIGHT') NOT NULL,
+        \`depth\` INT NOT NULL DEFAULT 1,
+        \`matched_amount\` DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+        \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON DELETE CASCADE,
+        FOREIGN KEY (\`source_user_id\`) REFERENCES \`users\`(\`id\`) ON DELETE CASCADE
+      ) ENGINE=InnoDB;
+    `);
+    console.log("Database verification: user_binary_bv_entries table checked/created.");
+
+    // Check if matched_amount column exists in user_binary_bv_entries (in case table existed but column was missing)
+    const [bvEntryColumns] = await connection.query("SHOW COLUMNS FROM user_binary_bv_entries LIKE 'matched_amount'");
+    if (bvEntryColumns.length === 0) {
+      await connection.query("ALTER TABLE user_binary_bv_entries ADD COLUMN matched_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00 AFTER depth");
+      console.log("Migration: Added matched_amount to user_binary_bv_entries");
+    }
+
+    // Auto-migration for binary_matching_payouts table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS \`binary_matching_payouts\` (
+        \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+        \`user_id\` INT NOT NULL,
+        \`matched_bv\` DECIMAL(15, 2) NOT NULL,
+        \`payout_percentage\` DECIMAL(5, 2) NOT NULL,
+        \`payout_amount\` DECIMAL(15, 2) NOT NULL,
+        \`remarks\` VARCHAR(255),
+        \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON DELETE CASCADE
+      ) ENGINE=InnoDB;
+    `);
+    console.log("Database verification: binary_matching_payouts table checked/created.");
+
     connection.release();
   } catch (error) {
     console.error('Unable to connect to the database:', error);
