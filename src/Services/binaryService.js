@@ -36,25 +36,39 @@ exports.addBVToBinaryUpline = async (connection, buyerId, bvAmount, orderId) => 
     const [buyerRows] = await connection.query("SELECT binary_placement_id, binary_position FROM users WHERE id = ?", [buyerId]);
     if (!buyerRows.length) return;
 
+    // Calculate buyer's global binary depth (number of parents up to the root)
+    let buyerDepth = 0;
+    let currentId = buyerId;
+    while (currentId) {
+        const [parentRows] = await connection.query(
+            "SELECT binary_placement_id FROM users WHERE id = ?",
+            [currentId]
+        );
+        if (!parentRows.length || !parentRows[0].binary_placement_id) {
+            break;
+        }
+        currentId = parentRows[0].binary_placement_id;
+        buyerDepth++;
+    }
+
     let parentId = buyerRows[0].binary_placement_id;
     let currentPosition = buyerRows[0].binary_position;
-    let depth = 1;
 
     while (parentId) {
         // 1. Update total leg BV in users table (Legacy compatibility & fast dashboard reads)
         if (currentPosition === 'LEFT') {
             await connection.query("UPDATE users SET left_leg_bv = left_leg_bv + ? WHERE id = ?", [bvAmount, parentId]);
-            console.log(`[Binary BV] Added ${bvAmount} BV to Left Leg of User ID ${parentId} (Level: ${depth})`);
+            console.log(`[Binary BV] Added ${bvAmount} BV to Left Leg of User ID ${parentId} (Buyer Depth: ${buyerDepth})`);
         } else if (currentPosition === 'RIGHT') {
             await connection.query("UPDATE users SET right_leg_bv = right_leg_bv + ? WHERE id = ?", [bvAmount, parentId]);
-            console.log(`[Binary BV] Added ${bvAmount} BV to Right Leg of User ID ${parentId} (Level: ${depth})`);
+            console.log(`[Binary BV] Added ${bvAmount} BV to Right Leg of User ID ${parentId} (Buyer Depth: ${buyerDepth})`);
         }
 
         // 2. Insert detailed entry in user_binary_bv_entries ledger
         await connection.query(
             `INSERT INTO user_binary_bv_entries (user_id, source_user_id, order_id, bv_amount, leg, depth) 
              VALUES (?, ?, ?, ?, ?, ?)`,
-            [parentId, buyerId, orderId || 0, bvAmount, currentPosition, depth]
+            [parentId, buyerId, orderId || 0, bvAmount, currentPosition, buyerDepth]
         );
 
         // Fetch the parent's placement to keep going up
@@ -63,6 +77,5 @@ exports.addBVToBinaryUpline = async (connection, buyerId, bvAmount, orderId) => 
 
         currentPosition = parentRows[0].binary_position;
         parentId = parentRows[0].binary_placement_id;
-        depth++;
     }
 };
