@@ -254,6 +254,31 @@ router.get('/diagnose-binary-tree', async (req, res) => {
             }
         }
 
+        // Search user if requested
+        let searchResults = null;
+        if (req.query.search) {
+            searchResults = users
+                .filter(u => u.username.toLowerCase().includes(req.query.search.toLowerCase()))
+                .map(u => ({
+                    id: u.id,
+                    username: u.username,
+                    binary_placement_id: u.binary_placement_id,
+                    binary_position: u.binary_position,
+                    left_leg_bv: u.left_leg_bv,
+                    right_leg_bv: u.right_leg_bv
+                }));
+        }
+
+        // List all roots (users with no binary parent)
+        const rootsList = users
+            .filter(u => !u.binary_placement_id)
+            .map(u => ({
+                id: u.id,
+                username: u.username,
+                left_bv: u.left_leg_bv,
+                right_bv: u.right_leg_bv
+            }));
+
         res.status(200).json({
             status: true,
             total_active_users: users.length,
@@ -266,6 +291,8 @@ router.get('/diagnose-binary-tree', async (req, res) => {
             loops,
             orphans,
             lca_analysis: lcaAnalysis,
+            search_results: searchResults,
+            root_users: rootsList,
             user1_path_to_root: u1 ? (userMap[u1] ? getPath(u1).map(p => `${p.username} (ID: ${p.id}, position: ${p.binary_position}, left_bv: ${p.left_leg_bv}, right_bv: ${p.right_leg_bv})`) : "User not found") : null,
             user2_path_to_root: u2 ? (userMap[u2] ? getPath(u2).map(p => `${p.username} (ID: ${p.id}, position: ${p.binary_position}, left_bv: ${p.left_leg_bv}, right_bv: ${p.right_leg_bv})`) : "User not found") : null
         });
