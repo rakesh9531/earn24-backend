@@ -225,7 +225,7 @@ exports.registerInitiate = async (req, res) => {
       mobile_number,
       referral_code,
       device_token,
-      preferred_position = 'LEFT'
+      preferred_position
     } = req.body;
 
     // 2. Check if user exists in MAIN table
@@ -250,12 +250,22 @@ exports.registerInitiate = async (req, res) => {
         "SELECT id FROM users WHERE referral_code = ?",
         [referral_code.trim()]
       );
-      if (sponsor.length === 0)
+      if (sponsor.length === 0) {
         return res
           .status(400)
           .json({ status: false, message: "Invalid referral code." });
+      }
       sponsorId = sponsor[0].id;
       userType = "AFFILIATE";
+    } else {
+      // Fallback: If no referral code is provided, assign the first user in the database (root) as default sponsor
+      const [firstUser] = await db.query(
+        "SELECT id FROM users WHERE is_deleted = 0 ORDER BY id ASC LIMIT 1"
+      );
+      if (firstUser.length > 0) {
+        sponsorId = firstUser[0].id;
+        console.log(`[MLM Registration] No referral code. Assigned absolute root user (ID: ${sponsorId}) as default sponsor.`);
+      }
     }
 
     // 4. Send OTP (using helper)
@@ -357,19 +367,49 @@ exports.verifyRegistrationOtp = async (req, res) => {
       const now = moment().tz("Asia/Kolkata").format("YYYY-MM-DD HH:mm:ss");
 
       let binaryPlacementId = null;
-      let binaryPosition = null;
+      let isDefaultChain = 0;
 
-      if (userData.sponsorId) {
-        const placement = await binaryService.findPlacementParent(connection, userData.sponsorId, userData.preferred_position || 'LEFT');
-        binaryPlacementId = placement.placementParentId;
-        binaryPosition = placement.position;
-        console.log(`[Binary Placement] User ${userData.username} placed under Parent ID: ${binaryPlacementId} on ${binaryPosition} leg.`);
+      const hasReferralCode = userData.referral_code && userData.referral_code.trim() !== "";
+
+      if (!hasReferralCode) {
+        // Default chain logic (Rectangles in diagram): route to the last default chain user
+        const [lastDefaultRows] = await connection.query(
+          "SELECT id FROM users WHERE is_default_chain = 1 ORDER BY id DESC LIMIT 1"
+        );
+        if (lastDefaultRows.length > 0) {
+          binaryPlacementId = lastDefaultRows[0].id;
+          userData.sponsorId = lastDefaultRows[0].id;
+          isDefaultChain = 1;
+          console.log(`[MLM Placement] User ${userData.username} joined default chain under last default ID: ${binaryPlacementId}`);
+        } else {
+          // Fallback to absolute first user as root of default chain
+          const [firstUserRows] = await connection.query(
+            "SELECT id FROM users ORDER BY id ASC LIMIT 1"
+          );
+          if (firstUserRows.length > 0) {
+            binaryPlacementId = firstUserRows[0].id;
+            userData.sponsorId = firstUserRows[0].id;
+            isDefaultChain = 1;
+            console.log(`[MLM Placement] User ${userData.username} joined default chain as root descendant under ID: ${binaryPlacementId}`);
+          } else {
+            // First user in the system (absolute root)
+            binaryPlacementId = null;
+            userData.sponsorId = null;
+            isDefaultChain = 1;
+            console.log(`[MLM Placement] User ${userData.username} registered as absolute root of default chain.`);
+          }
+        }
+      } else {
+        // Normal referral logic: placed directly under their sponsor (Ovals in diagram)
+        binaryPlacementId = userData.sponsorId;
+        isDefaultChain = 0;
+        console.log(`[MLM Placement] User ${userData.username} placed directly under Sponsor ID: ${binaryPlacementId}`);
       }
 
       // Insert into Users
       const [result] = await connection.query(
-        `INSERT INTO users (full_name, username, password, email, mobile_number, referral_code, sponsor_id, binary_placement_id, binary_position, user_type, device_token, is_active, created_at, updated_at) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        `INSERT INTO users (full_name, username, password, email, mobile_number, referral_code, sponsor_id, binary_placement_id, binary_position, user_type, device_token, is_active, is_default_chain, created_at, updated_at) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
         [
           userData.full_name,
           userData.username,
@@ -379,9 +419,10 @@ exports.verifyRegistrationOtp = async (req, res) => {
           newUserReferralCode,
           userData.sponsorId,
           binaryPlacementId,
-          binaryPosition,
+          null, // binaryPosition is always null for unilevel placement
           userData.userType,
           userData.device_token,
+          isDefaultChain,
           now,
           now,
         ]
@@ -793,7 +834,7 @@ exports.getUserProfile = async (req, res) => {
 
     const query = "SELECT " +
       "u.id, u.full_name, u.email, u.mobile_number, u.username, " +
-      "u.`rank`, u.user_pic, " +
+      "u.`rank`, u.user_pic, u.binary_placement_preference, " +
       "ua.pincode, ua.address_line_1, ua.city, ua.state " +
       "FROM users u " +
       "LEFT JOIN user_addresses ua ON u.id = ua.user_id AND ua.is_default = TRUE " +
@@ -812,12 +853,12 @@ exports.getUserProfile = async (req, res) => {
 };
 
 /**
- * 2. UPDATE PROFILE (Handles Name, Email, Mobile, and Image)
+ * 2. UPDATE PROFILE (Handles Name, Email, Mobile, Preference, and Image)
  */
 exports.updateUserProfile = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { full_name, email, mobile_number } = req.body;
+    const { full_name, email, mobile_number, binary_placement_preference } = req.body;
 
     // 1. UNIQUE CHECKS (Email/Mobile)
     if (email || mobile_number) {
@@ -837,6 +878,15 @@ exports.updateUserProfile = async (req, res) => {
     if (full_name) { updateFields.push("full_name = ?"); queryValues.push(full_name); }
     if (email) { updateFields.push("email = ?"); queryValues.push(email); }
     if (mobile_number) { updateFields.push("mobile_number = ?"); queryValues.push(mobile_number); }
+    
+    if (binary_placement_preference) {
+      if (!['LEFT', 'RIGHT', 'AUTO'].includes(binary_placement_preference)) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ status: false, message: "Invalid binary placement preference. Must be LEFT, RIGHT, or AUTO." });
+      }
+      updateFields.push("binary_placement_preference = ?");
+      queryValues.push(binary_placement_preference);
+    }
 
     // 2. HANDLE IMAGE UPLOAD
     if (req.file) {

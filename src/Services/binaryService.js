@@ -26,43 +26,65 @@ exports.findPlacementParent = async (connection, sponsorId, preferredPosition) =
 };
 
 /**
- * Traverses upline path through binary placement parent, accumulates BV,
- * and records detailed entries for level-based binary matching.
+ * Traverses upline path through unilevel placement parent, accumulates BV leg-wise,
+ * and records detailed entries for depth-based multi-leg matching.
  */
 exports.addBVToBinaryUpline = async (connection, buyerId, bvAmount, orderId) => {
     if (bvAmount <= 0) return;
 
-    // First fetch the buyer's placement details
-    const [buyerRows] = await connection.query("SELECT binary_placement_id, binary_position FROM users WHERE id = ?", [buyerId]);
+    // Fetch buyer's placement details
+    const [buyerRows] = await connection.query("SELECT binary_placement_id FROM users WHERE id = ?", [buyerId]);
     if (!buyerRows.length) return;
 
     let parentId = buyerRows[0].binary_placement_id;
-    let currentPosition = buyerRows[0].binary_position;
-    let depth = 1;
+    let childId = buyerId; // The child just below the parent, representing the leg/branch
+    let currentDepth = 1;
 
     while (parentId) {
-        // 1. Update total leg BV in users table (Legacy compatibility & fast dashboard reads)
-        if (currentPosition === 'LEFT') {
-            await connection.query("UPDATE users SET left_leg_bv = left_leg_bv + ? WHERE id = ?", [bvAmount, parentId]);
-            console.log(`[Binary BV] Added ${bvAmount} BV to Left Leg of User ID ${parentId} (Level: ${depth})`);
-        } else if (currentPosition === 'RIGHT') {
-            await connection.query("UPDATE users SET right_leg_bv = right_leg_bv + ? WHERE id = ?", [bvAmount, parentId]);
-            console.log(`[Binary BV] Added ${bvAmount} BV to Right Leg of User ID ${parentId} (Level: ${depth})`);
-        }
+        const legUserId = childId;
 
-        // 2. Insert detailed entry in user_binary_bv_entries ledger
+        // 1. Insert detailed entry in user_binary_bv_entries ledger
         await connection.query(
-            `INSERT INTO user_binary_bv_entries (user_id, source_user_id, order_id, bv_amount, leg, depth) 
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [parentId, buyerId, orderId || 0, bvAmount, currentPosition, depth]
+            `INSERT INTO user_binary_bv_entries (user_id, source_user_id, leg_user_id, order_id, bv_amount, leg, depth, matched_amount) 
+             VALUES (?, ?, ?, ?, ?, NULL, ?, 0.00)`,
+            [parentId, buyerId, legUserId, orderId || 0, bvAmount, currentDepth]
+        );
+        console.log(`[MLM BV] Recorded ${bvAmount} BV for Parent ID ${parentId} from Buyer ID ${buyerId} under Leg Child ID ${legUserId} at relative depth ${currentDepth}`);
+
+        // 2. Recompute and cache the parent's left_leg_bv (Strongest Leg) and right_leg_bv (Other legs combined)
+        // This ensures the frontend dashboard displays correct volumes for matching
+        const [legBvs] = await connection.query(
+            `SELECT leg_user_id, SUM(bv_amount - matched_amount) as total_unmatched_bv 
+             FROM user_binary_bv_entries 
+             WHERE user_id = ? 
+             GROUP BY leg_user_id`,
+            [parentId]
         );
 
-        // Fetch the parent's placement to keep going up
-        const [parentRows] = await connection.query("SELECT binary_placement_id, binary_position FROM users WHERE id = ?", [parentId]);
+        let strongestBv = 0.00;
+        let weakerSum = 0.00;
+
+        if (legBvs && legBvs.length > 0) {
+            // Sort descending by total unmatched BV
+            legBvs.sort((a, b) => parseFloat(b.total_unmatched_bv) - parseFloat(a.total_unmatched_bv));
+            strongestBv = parseFloat(legBvs[0].total_unmatched_bv) || 0.00;
+            for (let i = 1; i < legBvs.length; i++) {
+                weakerSum += parseFloat(legBvs[i].total_unmatched_bv) || 0.00;
+            }
+        }
+
+        await connection.query(
+            "UPDATE users SET left_leg_bv = ?, right_leg_bv = ? WHERE id = ?",
+            [strongestBv, weakerSum, parentId]
+        );
+        console.log(`[MLM BV] Cached parent ${parentId} legs: Strongest (Left) = ${strongestBv}, Weaker Sum (Right) = ${weakerSum}`);
+
+        // Move to the next parent
+        childId = parentId;
+        const [parentRows] = await connection.query("SELECT binary_placement_id FROM users WHERE id = ?", [parentId]);
         if (!parentRows.length) break;
 
-        currentPosition = parentRows[0].binary_position;
         parentId = parentRows[0].binary_placement_id;
-        depth++;
+        currentDepth++;
     }
 };
