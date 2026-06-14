@@ -71,7 +71,7 @@ async function runBinaryMatching() {
 
                 // 2. Fetch all unmatched detailed entries for this user, joining users to get source buyer username
                 const [entries] = await connection.query(
-                    `SELECT e.id, e.bv_amount, e.matched_amount, e.leg, e.depth, e.source_user_id, e.order_id, u.username as source_username 
+                    `SELECT e.id, e.bv_amount, e.matched_amount, e.leg_user_id, e.depth, e.source_user_id, e.order_id, u.username as source_username 
                      FROM user_binary_bv_entries e
                      JOIN users u ON e.source_user_id = u.id 
                      WHERE e.user_id = ? AND e.bv_amount > e.matched_amount 
@@ -87,100 +87,115 @@ async function runBinaryMatching() {
                     continue;
                 }
 
-                // Group entries by depth and leg
-                const leftByDepth = {};
-                const rightByDepth = {};
-
+                // Group entries by depth
+                const entriesByDepth = {};
                 for (const entry of entries) {
                     const depth = entry.depth;
-                    const leg = entry.leg;
                     const unmatchedAmount = parseFloat(entry.bv_amount) - parseFloat(entry.matched_amount);
                     if (unmatchedAmount <= 0) continue;
 
-                    console.log(`[Binary Job Debug] Unmatched Entry -> ID: ${entry.id}, leg: ${leg}, depth: ${depth}, total_bv: ${entry.bv_amount}, unmatched: ${unmatchedAmount.toFixed(2)} (Buyer: ${entry.source_username}, Order ID: ${entry.order_id})`);
-
-                    const targetMap = leg === 'LEFT' ? leftByDepth : rightByDepth;
-                    if (!targetMap[depth]) {
-                        targetMap[depth] = [];
+                    if (!entriesByDepth[depth]) {
+                        entriesByDepth[depth] = [];
                     }
-                    targetMap[depth].push({
-                        id: entry.id,
-                        unmatched: unmatchedAmount,
-                        source_username: entry.source_username,
-                        order_id: entry.order_id
-                    });
-                }
-
-                // Find unique depths present in both legs
-                const leftDepths = Object.keys(leftByDepth).map(Number);
-                const rightDepths = Object.keys(rightByDepth).map(Number);
-                const commonDepths = leftDepths.filter(d => rightDepths.includes(d));
-
-                console.log(`[Binary Job Debug] Grouping Results -> Left Depths: ${JSON.stringify(leftDepths)}, Right Depths: ${JSON.stringify(rightDepths)}`);
-                console.log(`[Binary Job Debug] Common Depth levels to match: ${JSON.stringify(commonDepths)}`);
-
-                if (commonDepths.length === 0) {
-                    console.log(`[Binary Job Debug] No common depths found for user ${user.username}. Left and Right legs cannot match. Skipping.`);
-                    await connection.rollback();
-                    continue;
+                    entriesByDepth[depth].push(entry);
                 }
 
                 let totalMatchedBvThisRun = 0;
                 let totalPayoutThisRun = 0;
                 const dbUpdates = [];
 
+                const depths = Object.keys(entriesByDepth).map(Number).sort((a, b) => a - b);
+
                 // Process matching by depth level
-                for (const depth of commonDepths) {
-                    const leftList = leftByDepth[depth];
-                    const rightList = rightByDepth[depth];
+                for (const depth of depths) {
+                    const depthEntries = entriesByDepth[depth];
+                    
+                    // Group entries by leg_user_id (direct frontline leg)
+                    const legMap = {};
+                    for (const entry of depthEntries) {
+                        const legId = entry.leg_user_id;
+                        if (!legMap[legId]) {
+                            legMap[legId] = {
+                                leg_user_id: legId,
+                                total: 0.00,
+                                entries: []
+                            };
+                        }
+                        const unmatched = parseFloat(entry.bv_amount) - parseFloat(entry.matched_amount);
+                        legMap[legId].total += unmatched;
+                        legMap[legId].entries.push({
+                            ...entry,
+                            unmatched: unmatched
+                        });
+                    }
 
-                    console.log(`[Binary Job Debug] --- Processing match for DEPTH LEVEL: ${depth} ---`);
-                    let leftIdx = 0;
-                    let rightIdx = 0;
+                    const legBvs = Object.values(legMap);
 
-                    while (leftIdx < leftList.length && rightIdx < rightList.length) {
-                        const leftEntry = leftList[leftIdx];
-                        const rightEntry = rightList[rightIdx];
+                    while (true) {
+                        // Sort descending by total unmatched BV
+                        legBvs.sort((a, b) => b.total - a.total);
 
-                        const matchQty = Math.min(leftEntry.unmatched, rightEntry.unmatched);
-                        if (matchQty > 0) {
-                            totalMatchedBvThisRun += matchQty;
-
-                            // Determine percentage based on depth
-                            let percentage = 1.00; // default 21+
-                            if (depth <= 5) {
-                                percentage = 5.00;
-                            } else if (depth >= 6 && depth <= 10) {
-                                percentage = 4.00;
-                            } else if (depth >= 11 && depth <= 15) {
-                                percentage = 3.00;
-                            } else if (depth >= 16 && depth <= 20) {
-                                percentage = 2.00;
-                            }
-
-                            const rawPayout = matchQty * (percentage / 100);
-                            totalPayoutThisRun += rawPayout;
-
-                            console.log(`[Binary Job Debug] Match Step: Left Entry ID ${leftEntry.id} (Buyer: ${leftEntry.source_username}, Order: ${leftEntry.order_id}) <-> Right Entry ID ${rightEntry.id} (Buyer: ${rightEntry.source_username}, Order: ${rightEntry.order_id})`);
-                            console.log(`[Binary Job Debug] Match Qty: ${matchQty.toFixed(2)} BV at Depth ${depth}. Applied Rate: ${percentage}% (Slab: depth ${depth}), Payout: ₹${rawPayout.toFixed(2)} credited to ${user.username}`);
-
-                            // Deduct unmatched amount in memory
-                            leftEntry.unmatched -= matchQty;
-                            rightEntry.unmatched -= matchQty;
-
-                            // Queue DB updates for matching entries
-                            dbUpdates.push({
-                                query: "UPDATE user_binary_bv_entries SET matched_amount = matched_amount + ? WHERE id = ?",
-                                params: [matchQty, leftEntry.id]
-                            });
-                            dbUpdates.push({
-                                query: "UPDATE user_binary_bv_entries SET matched_amount = matched_amount + ? WHERE id = ?",
-                                params: [matchQty, rightEntry.id]
-                            });
+                        // Match requires at least 2 legs with at least 1,000 BV (1 pair) each
+                        if (legBvs.length < 2 || legBvs[1].total < 1000.00) {
+                            break;
                         }
 
-                        if (leftEntry.unmatched === 0) leftIdx++;
-                        if (rightEntry.unmatched === 0) rightIdx++;
+                        const leg1 = legBvs[0];
+                        const leg2 = legBvs[1];
+                        const matchQty = 1000.00; // Pair size
+
+                        totalMatchedBvThisRun += matchQty;
+
+                        // Determine percentage based on relative depth level
+                        let percentage = 1.00; // default for 21+
+                        if (depth <= 5) {
+                            percentage = 5.00;
+                        } else if (depth >= 6 && depth <= 10) {
+                            percentage = 4.00;
+                        } else if (depth >= 11 && depth <= 15) {
+                            percentage = 3.00;
+                        } else if (depth >= 16 && depth <= 20) {
+                            percentage = 2.00;
+                        }
+
+                        const rawPayout = matchQty * (percentage / 100);
+                        totalPayoutThisRun += rawPayout;
+
+                        console.log(`[Binary Job Debug] Match at Depth ${depth}: Leg ${leg1.leg_user_id} (${leg1.total.toFixed(2)} BV) <-> Leg ${leg2.leg_user_id} (${leg2.total.toFixed(2)} BV). Match Qty: ${matchQty} BV, Applied: ${percentage}%, Payout: ₹${rawPayout.toFixed(2)}`);
+
+                        // Consume 1000 BV from leg1 entries (FIFO order)
+                        let remainingToConsume1 = matchQty;
+                        for (const ent of leg1.entries) {
+                            if (ent.unmatched <= 0) continue;
+                            const consume = Math.min(remainingToConsume1, ent.unmatched);
+                            ent.unmatched -= consume;
+                            remainingToConsume1 -= consume;
+
+                            dbUpdates.push({
+                                query: "UPDATE user_binary_bv_entries SET matched_amount = matched_amount + ? WHERE id = ?",
+                                params: [consume, ent.id]
+                            });
+
+                            if (remainingToConsume1 <= 0) break;
+                        }
+                        leg1.total -= matchQty;
+
+                        // Consume 1000 BV from leg2 entries (FIFO order)
+                        let remainingToConsume2 = matchQty;
+                        for (const ent of leg2.entries) {
+                            if (ent.unmatched <= 0) continue;
+                            const consume = Math.min(remainingToConsume2, ent.unmatched);
+                            ent.unmatched -= consume;
+                            remainingToConsume2 -= consume;
+
+                            dbUpdates.push({
+                                query: "UPDATE user_binary_bv_entries SET matched_amount = matched_amount + ? WHERE id = ?",
+                                params: [consume, ent.id]
+                            });
+
+                            if (remainingToConsume2 <= 0) break;
+                        }
+                        leg2.total -= matchQty;
                     }
                 }
 
@@ -254,16 +269,35 @@ async function runBinaryMatching() {
                     await connection.query(update.query, update.params);
                 }
 
-                // Deduct matched BV from left/right legs and update binary levels
-                console.log(`[Binary Job Debug] Deducting matched ${totalMatchedBvThisRun.toFixed(2)} BV from aggregate left/right leg values in users table.`);
+                // Recalculate remaining unmatched BV for all legs and update left_leg_bv/right_leg_bv
+                const [remainingLegBvs] = await connection.query(
+                    `SELECT leg_user_id, SUM(bv_amount - matched_amount) as total_unmatched_bv 
+                     FROM user_binary_bv_entries 
+                     WHERE user_id = ? 
+                     GROUP BY leg_user_id`,
+                    [user.id]
+                );
+
+                let strongestBv = 0.00;
+                let weakerSum = 0.00;
+
+                if (remainingLegBvs && remainingLegBvs.length > 0) {
+                    remainingLegBvs.sort((a, b) => parseFloat(b.total_unmatched_bv) - parseFloat(a.total_unmatched_bv));
+                    strongestBv = parseFloat(remainingLegBvs[0].total_unmatched_bv) || 0.00;
+                    for (let i = 1; i < remainingLegBvs.length; i++) {
+                        weakerSum += parseFloat(remainingLegBvs[i].total_unmatched_bv) || 0.00;
+                    }
+                }
+
+                console.log(`[Binary Job Debug] Re-caching unmatched BVs for user ${user.username}: Strongest = ${strongestBv}, Weaker Sum = ${weakerSum}`);
                 await connection.query(
                     `UPDATE users 
-                     SET left_leg_bv = GREATEST(0, left_leg_bv - ?), 
-                         right_leg_bv = GREATEST(0, right_leg_bv - ?), 
+                     SET left_leg_bv = ?, 
+                         right_leg_bv = ?, 
                          total_matched_bv = total_matched_bv + ?,
                          binary_level_matched = binary_level_matched + 1
                      WHERE id = ?`,
-                    [totalMatchedBvThisRun, totalMatchedBvThisRun, totalMatchedBvThisRun, user.id]
+                    [strongestBv, weakerSum, totalMatchedBvThisRun, user.id]
                 );
 
                 await connection.commit();

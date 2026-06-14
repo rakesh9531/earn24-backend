@@ -97,7 +97,7 @@ router.get('/diagnose-binary-tree', async (req, res) => {
 
         const userMap = {};
         for (const u of users) {
-            userMap[u.id] = { ...u, left_children: [], right_children: [], extra: [] };
+            userMap[u.id] = { ...u, children: [], left_children: [], right_children: [], extra: [] };
         }
 
         // 2. Integrity Checks
@@ -112,6 +112,7 @@ router.get('/diagnose-binary-tree', async (req, res) => {
                 if (!parent) {
                     orphans.push({ user_id: u.id, username: u.username, missing_parent_id: pid });
                 } else {
+                    parent.children.push(u.id);
                     if (u.binary_position === 'LEFT') {
                         parent.left_children.push(u.id);
                     } else if (u.binary_position === 'RIGHT') {

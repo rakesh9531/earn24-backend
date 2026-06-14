@@ -179,6 +179,12 @@ async function testDatabaseConnection() {
       await connection.query("ALTER TABLE users ADD COLUMN binary_placement_preference ENUM('LEFT', 'RIGHT', 'AUTO') DEFAULT 'LEFT' AFTER binary_level_matched");
       console.log("Migration: Added binary_placement_preference to users");
     }
+    if (!userColNames.includes('is_default_chain')) {
+      await connection.query("ALTER TABLE users ADD COLUMN is_default_chain TINYINT(1) DEFAULT 0 AFTER user_pic");
+      console.log("Migration: Added is_default_chain to users");
+      // Initialize the root user as part of the default chain
+      await connection.query("UPDATE users SET is_default_chain = 1 WHERE id = (SELECT id FROM (SELECT id FROM users ORDER BY id ASC LIMIT 1) as tmp)");
+    }
 
     // Auto-migration for user_binary_bv_entries table
     await connection.query(`
@@ -186,9 +192,10 @@ async function testDatabaseConnection() {
         \`id\` INT AUTO_INCREMENT PRIMARY KEY,
         \`user_id\` INT NOT NULL,
         \`source_user_id\` INT NOT NULL,
+        \`leg_user_id\` INT NULL,
         \`order_id\` INT NOT NULL DEFAULT 0,
         \`bv_amount\` DECIMAL(15,2) NOT NULL,
-        \`leg\` ENUM('LEFT', 'RIGHT') NOT NULL,
+        \`leg\` ENUM('LEFT', 'RIGHT') NULL,
         \`depth\` INT NOT NULL DEFAULT 1,
         \`matched_amount\` DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
         \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -203,6 +210,22 @@ async function testDatabaseConnection() {
     if (bvEntryColumns.length === 0) {
       await connection.query("ALTER TABLE user_binary_bv_entries ADD COLUMN matched_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00 AFTER depth");
       console.log("Migration: Added matched_amount to user_binary_bv_entries");
+    }
+
+    const [bvEntryLegColumns] = await connection.query("SHOW COLUMNS FROM user_binary_bv_entries LIKE 'leg_user_id'");
+    if (bvEntryLegColumns.length === 0) {
+      await connection.query("ALTER TABLE user_binary_bv_entries ADD COLUMN leg_user_id INT NULL AFTER source_user_id");
+      console.log("Migration: Added leg_user_id to user_binary_bv_entries");
+    }
+
+    // Ensure leg column can be NULL in case it was NOT NULL in older versions
+    await connection.query("ALTER TABLE user_binary_bv_entries MODIFY COLUMN leg ENUM('LEFT', 'RIGHT') NULL");
+
+    // Add index if not exists
+    const [indexes] = await connection.query("SHOW INDEX FROM user_binary_bv_entries WHERE Key_name = 'idx_user_leg_depth'");
+    if (indexes.length === 0) {
+      await connection.query("ALTER TABLE user_binary_bv_entries ADD INDEX idx_user_leg_depth (user_id, leg_user_id, depth)");
+      console.log("Migration: Added index idx_user_leg_depth to user_binary_bv_entries");
     }
 
     // Auto-migration for binary_matching_payouts table

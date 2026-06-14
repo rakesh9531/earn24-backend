@@ -367,40 +367,49 @@ exports.verifyRegistrationOtp = async (req, res) => {
       const now = moment().tz("Asia/Kolkata").format("YYYY-MM-DD HH:mm:ss");
 
       let binaryPlacementId = null;
-      let binaryPosition = null;
+      let isDefaultChain = 0;
 
-      if (userData.sponsorId) {
-        // Fetch sponsor's current leg volumes to determine the weaker leg
-        const [sponsorLegs] = await connection.query(
-          "SELECT left_leg_bv, right_leg_bv FROM users WHERE id = ?",
-          [userData.sponsorId]
+      const hasReferralCode = userData.referral_code && userData.referral_code.trim() !== "";
+
+      if (!hasReferralCode) {
+        // Default chain logic (Rectangles in diagram): route to the last default chain user
+        const [lastDefaultRows] = await connection.query(
+          "SELECT id FROM users WHERE is_default_chain = 1 ORDER BY id DESC LIMIT 1"
         );
-        let pref = 'LEFT';
-        let prefSource = 'default (LEFT)';
-        
-        if (sponsorLegs.length > 0) {
-          const leftBv = parseFloat(sponsorLegs[0].left_leg_bv) || 0;
-          const rightBv = parseFloat(sponsorLegs[0].right_leg_bv) || 0;
-          pref = leftBv <= rightBv ? 'LEFT' : 'RIGHT';
-          prefSource = `AUTO weaker leg (Left BV: ${leftBv}, Right BV: ${rightBv} -> selected: ${pref})`;
+        if (lastDefaultRows.length > 0) {
+          binaryPlacementId = lastDefaultRows[0].id;
+          userData.sponsorId = lastDefaultRows[0].id;
+          isDefaultChain = 1;
+          console.log(`[MLM Placement] User ${userData.username} joined default chain under last default ID: ${binaryPlacementId}`);
+        } else {
+          // Fallback to absolute first user as root of default chain
+          const [firstUserRows] = await connection.query(
+            "SELECT id FROM users ORDER BY id ASC LIMIT 1"
+          );
+          if (firstUserRows.length > 0) {
+            binaryPlacementId = firstUserRows[0].id;
+            userData.sponsorId = firstUserRows[0].id;
+            isDefaultChain = 1;
+            console.log(`[MLM Placement] User ${userData.username} joined default chain as root descendant under ID: ${binaryPlacementId}`);
+          } else {
+            // First user in the system (absolute root)
+            binaryPlacementId = null;
+            userData.sponsorId = null;
+            isDefaultChain = 1;
+            console.log(`[MLM Placement] User ${userData.username} registered as absolute root of default chain.`);
+          }
         }
-
-        // If the registration explicitly requested a position (e.g. from postman or link override), use it
-        const finalPosition = userData.preferred_position || pref;
-        const placement = await binaryService.findPlacementParent(
-          connection,
-          userData.sponsorId,
-          finalPosition
-        );
-        binaryPlacementId = placement.placementParentId;
-        binaryPosition = placement.position;
-        console.log(`[Binary Placement] User ${userData.username} placed under Parent ID: ${binaryPlacementId} on ${binaryPosition} leg. (Placement source: ${userData.preferred_position ? 'direct override' : prefSource})`);
+      } else {
+        // Normal referral logic: placed directly under their sponsor (Ovals in diagram)
+        binaryPlacementId = userData.sponsorId;
+        isDefaultChain = 0;
+        console.log(`[MLM Placement] User ${userData.username} placed directly under Sponsor ID: ${binaryPlacementId}`);
       }
 
       // Insert into Users
       const [result] = await connection.query(
-        `INSERT INTO users (full_name, username, password, email, mobile_number, referral_code, sponsor_id, binary_placement_id, binary_position, user_type, device_token, is_active, created_at, updated_at) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        `INSERT INTO users (full_name, username, password, email, mobile_number, referral_code, sponsor_id, binary_placement_id, binary_position, user_type, device_token, is_active, is_default_chain, created_at, updated_at) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
         [
           userData.full_name,
           userData.username,
@@ -410,9 +419,10 @@ exports.verifyRegistrationOtp = async (req, res) => {
           newUserReferralCode,
           userData.sponsorId,
           binaryPlacementId,
-          binaryPosition,
+          null, // binaryPosition is always null for unilevel placement
           userData.userType,
           userData.device_token,
+          isDefaultChain,
           now,
           now,
         ]
