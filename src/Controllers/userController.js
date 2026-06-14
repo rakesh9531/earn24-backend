@@ -225,7 +225,7 @@ exports.registerInitiate = async (req, res) => {
       mobile_number,
       referral_code,
       device_token,
-      preferred_position = 'LEFT'
+      preferred_position
     } = req.body;
 
     // 2. Check if user exists in MAIN table
