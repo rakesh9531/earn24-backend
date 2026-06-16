@@ -624,14 +624,28 @@ exports.adminRespondToClaim = async (req, res) => {
  * ADMIN API: Manual Override (Force qualify or payout)
  */
 exports.adminManualOverride = async (req, res) => {
-    const { userId, rewardType, payoutAmount, claimMonth, adminNotes } = req.body;
+    const { userId, username, rewardType, payoutAmount, claimMonth, adminNotes } = req.body;
 
-    if (!userId || !rewardType || !claimMonth) {
-        return res.status(400).json({ status: false, message: "User ID, Reward Type, and Claim Month are required." });
+    let targetUserId = userId;
+
+    if (username) {
+        try {
+            const [userRows] = await db.query("SELECT id FROM users WHERE username = ? AND is_deleted = 0", [username]);
+            if (userRows.length === 0) {
+                return res.status(404).json({ status: false, message: `User with username '${username}' not found.` });
+            }
+            targetUserId = userRows[0].id;
+        } catch (dbErr) {
+            return res.status(500).json({ status: false, message: dbErr.message });
+        }
+    }
+
+    if (!targetUserId || !rewardType || !claimMonth) {
+        return res.status(400).json({ status: false, message: "User ID (or Username), Reward Type, and Claim Month are required." });
     }
 
     try {
-        // Create manual claim in PENDING state or directly in APPROVED state if requested
+        // Create manual claim in PENDING state
         const details = {
             payout_amount: payoutAmount || 0,
             is_manual_override: true,
@@ -641,7 +655,7 @@ exports.adminManualOverride = async (req, res) => {
         const [insertResult] = await db.query(
             `INSERT INTO reward_claims (user_id, reward_type, claim_month, status, user_details, admin_notes) 
              VALUES (?, ?, ?, 'PENDING', ?, ?)`,
-            [userId, rewardType, claimMonth, JSON.stringify(details), adminNotes || "Manual Override"]
+            [targetUserId, rewardType, claimMonth, JSON.stringify(details), adminNotes || "Manual Override"]
         );
 
         res.status(200).json({
