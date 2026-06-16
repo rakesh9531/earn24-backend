@@ -12,3 +12,8 @@ exports.createAdminSchema = Joi.object({
   admin_pic: Joi.string().allow(null, '')
 });
 
+exports.changePasswordSchema = Joi.object({
+  current_password: Joi.string().required(),
+  new_password: Joi.string().min(6).required()
+});
+
