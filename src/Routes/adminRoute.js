@@ -68,6 +68,7 @@ const landingUploadMiddleware = uploadLandingImages.fields([
 router.post('/createAdmin', adminController.createAdmin);
 
 // Protected routes below
+router.post('/change-password', auth, adminController.changeAdminPassword);
 router.post("/getAllUserList", auth, can('users:read'), adminController.getAllUserList);
 router.get("/users/:userId/details", auth, can('users:read'), adminController.getUserDetailsForAdmin);
 

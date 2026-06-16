@@ -4,7 +4,7 @@ const Admin = require('../Models/adminModel'); // Import the Admin model
 const bcrypt = require('bcrypt'); // For hashing passwords
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
-const { createAdminSchema } = require('../Validator/adminValidation');
+const { createAdminSchema, changePasswordSchema } = require('../Validator/adminValidation');
 const Category = require('../Models/categoryModel');
 const { createCategorySchema } = require('../Validator/categoryValidator');
 const moment = require('moment-timezone');
@@ -1636,6 +1636,59 @@ exports.runFundDistributionManual = async (req, res) => {
         });
     } finally {
         if (connection) connection.release();
+    }
+};
+
+exports.changeAdminPassword = async (req, res) => {
+    try {
+        // Validate req.body
+        const { error, value } = changePasswordSchema.validate(req.body);
+        if (error) {
+            return res.status(400).json({
+                status: false,
+                message: error.details[0].message
+            });
+        }
+
+        const { current_password, new_password } = value;
+        const adminId = req.user.id; // from auth middleware
+
+        // Fetch current admin password from db
+        const [adminRows] = await db.query(
+            "SELECT id, password FROM admins WHERE id = ? AND is_deleted = 0 AND status = 'active'",
+            [adminId]
+        );
+
+        if (adminRows.length === 0) {
+            return res.status(404).json({
+                status: false,
+                message: "Admin account not found or is inactive."
+            });
+        }
+
+        const admin = adminRows[0];
+        const isMatch = await bcrypt.compare(current_password, admin.password);
+        if (!isMatch) {
+            return res.status(400).json({
+                status: false,
+                message: "Incorrect current password."
+            });
+        }
+
+        // Hash and save new password
+        const hashedPassword = await bcrypt.hash(new_password, 10);
+        await db.query("UPDATE admins SET password = ?, updated_at = NOW() WHERE id = ?", [hashedPassword, adminId]);
+
+        return res.status(200).json({
+            status: true,
+            message: "Password changed successfully."
+        });
+    } catch (error) {
+        console.error("Error in changeAdminPassword:", error);
+        return res.status(500).json({
+            status: false,
+            message: "Internal server error"
+        });
     }
 };
 
