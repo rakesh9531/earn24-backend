@@ -60,7 +60,20 @@ exports.assignOrderForDelivery = async (req, res) => {
             return res.status(404).json({ status: false, message: 'Order not found.' });
         }
 
-        // TODO: In a real app, you would send a push notification to the delivery agent here.
+        // Emit real-time socket events for order assignment
+        const io = req.app.get('socketio');
+        if (io) {
+            io.to(`agent_${deliveryAgentId}`).emit('order_assigned', {
+                orderId: orderId,
+                deliveryAgentId,
+                message: "A new order has been assigned to you."
+            });
+            io.to('admins').emit('order_status_updated', {
+                orderId: orderId,
+                status: 'SHIPPED',
+                deliveryAgentId
+            });
+        }
 
         res.status(200).json({ status: true, message: "Order assigned for delivery successfully." });
 

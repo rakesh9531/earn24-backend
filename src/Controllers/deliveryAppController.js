@@ -333,6 +333,16 @@ exports.cancelAssignment = async (req, res) => {
 
         console.log(`Order ${orderId} rejected by agent ${agentId}. Reason: ${reason}`);
 
+        // Emit real-time socket event for assignment cancellation
+        const io = req.app.get('socketio');
+        if (io) {
+            io.to('admins').emit('assignment_cancelled', {
+                orderId: orderId,
+                agentId: agentId,
+                reason: reason || 'No reason provided'
+            });
+        }
+
         res.json({ status: true, message: "Assignment cancelled. Order returned to Admin pool." });
     } catch (e) {
         res.status(500).json({ status: false, message: e.message });
