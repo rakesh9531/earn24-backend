@@ -6,25 +6,23 @@ async function run() {
 
     try {
         // 1. Alter users table to add tracking columns
-        console.log("Altering users table...");
+        console.log("Checking users table columns...");
+        const [columns] = await db.query("SHOW COLUMNS FROM users");
+        const existingColumns = columns.map(c => c.Field.toLowerCase());
+
         const alterQueries = [
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS bike_fund_months_paid INT DEFAULT 0",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS car_fund_months_paid INT DEFAULT 0",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS house_fund_months_paid INT DEFAULT 0",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS qualifying_sponsor_ids JSON NULL"
+            { name: "bike_fund_months_paid", query: "ALTER TABLE users ADD COLUMN bike_fund_months_paid INT DEFAULT 0" },
+            { name: "car_fund_months_paid", query: "ALTER TABLE users ADD COLUMN car_fund_months_paid INT DEFAULT 0" },
+            { name: "house_fund_months_paid", query: "ALTER TABLE users ADD COLUMN house_fund_months_paid INT DEFAULT 0" },
+            { name: "qualifying_sponsor_ids", query: "ALTER TABLE users ADD COLUMN qualifying_sponsor_ids JSON NULL" }
         ];
 
-        for (const query of alterQueries) {
-            try {
-                await db.query(query);
-                console.log(`Success: ${query}`);
-            } catch (err) {
-                // If column already exists (e.g. duplicate runs), ignore error
-                if (err.errno === 1060) {
-                    console.log(`Column already exists: ${query.split("ADD COLUMN")[1]}`);
-                } else {
-                    throw err;
-                }
+        for (const alter of alterQueries) {
+            if (!existingColumns.includes(alter.name.toLowerCase())) {
+                await db.query(alter.query);
+                console.log(`Success: ${alter.query}`);
+            } else {
+                console.log(`Column already exists: ${alter.name}`);
             }
         }
 
