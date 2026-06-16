@@ -158,6 +158,17 @@ exports.createOrder = async (req, res) => {
         // when the customer successfully receives the order via OTP.
         
         await connection.commit();
+
+        const io = req.app.get('socketio');
+        if (io) {
+            io.to('admins').emit('new_order', {
+                orderId,
+                orderNumber,
+                totalAmount,
+                orderStatus
+            });
+        }
+
         res.status(201).json({ status: true, message: 'Order Placed!', data: { orderId, orderNumber, totalAmount } });
 
     } catch (error) {
