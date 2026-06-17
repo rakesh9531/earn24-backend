@@ -13,6 +13,32 @@ const { scheduleBinaryMatchingJob } = require('./src/jobs/binaryMatchingJob');
 
 
 const app = express();
+const http = require('http');
+const { Server } = require('socket.io');
+
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
+
+app.set('socketio', io);
+
+io.on('connection', (socket) => {
+  console.log('Client connected to socket:', socket.id);
+
+  socket.on('join', (room) => {
+    socket.join(room);
+    console.log(`Socket ${socket.id} joined room: ${room}`);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Client disconnected from socket:', socket.id);
+  });
+});
+
 
 
 
@@ -259,7 +285,8 @@ console.log('Scheduled MLM cron jobs have been initialized.');
 
 // Server Port
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log("Current Time:", moment().tz("Asia/Kolkata").format());
   console.log(`Server is running on port ${PORT}`);
 });
+

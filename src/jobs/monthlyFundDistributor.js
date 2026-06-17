@@ -125,7 +125,7 @@ async function distributeFund(fundName, requiredRank, connection, yearMonth) {
 
     // Fetch potential candidates
     const [candidates] = await connection.query(`
-        SELECT id, current_monthly_qualified_rank as rank, bike_fund_months_paid, car_fund_months_paid, house_fund_months_paid, qualifying_sponsor_ids 
+        SELECT id, current_monthly_qualified_rank as \`rank\`, bike_fund_months_paid, car_fund_months_paid, house_fund_months_paid, qualifying_sponsor_ids 
         FROM users WHERE current_monthly_qualified_rank IN (?) AND is_blocked = FALSE AND is_deleted = 0`, [qualifiedRanks]);
 
     if (candidates.length === 0) return;
