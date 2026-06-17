@@ -78,17 +78,51 @@ exports.getMyKycStatus = async (req, res) => {
 exports.getAllKycRequests = async (req, res) => {
     try {
         const { status = 'PENDING' } = req.query; // Default to showing pending requests
+        const page = parseInt(req.query.page, 10) || 1;
+        const limit = parseInt(req.query.limit, 10) || 10;
+        const offset = (page - 1) * limit;
+        const search = req.query.search ? req.query.search.trim() : '';
 
-        const query = `
+        let countQuery = `
+            SELECT COUNT(*) as total 
+            FROM user_kyc kyc
+            JOIN users u ON kyc.user_id = u.id
+            WHERE kyc.status = ?
+        `;
+        let dataQuery = `
             SELECT kyc.*, u.full_name as user_name, u.email as user_email 
             FROM user_kyc kyc
             JOIN users u ON kyc.user_id = u.id
             WHERE kyc.status = ?
-            ORDER BY kyc.updated_at ASC
         `;
-        const [requests] = await db.query(query, [status]);
 
-        res.status(200).json({ status: true, data: requests });
+        const queryParams = [status];
+
+        if (search) {
+            const searchPattern = `%${search}%`;
+            countQuery += ` AND (u.full_name LIKE ? OR u.email LIKE ? OR kyc.pan_number LIKE ? OR kyc.aadhaar_number LIKE ?)`;
+            dataQuery += ` AND (u.full_name LIKE ? OR u.email LIKE ? OR kyc.pan_number LIKE ? OR kyc.aadhaar_number LIKE ?)`;
+            queryParams.push(searchPattern, searchPattern, searchPattern, searchPattern);
+        }
+
+        dataQuery += ` ORDER BY kyc.updated_at DESC LIMIT ? OFFSET ?`;
+
+        const [countResult] = await db.query(countQuery, queryParams);
+        const totalRecords = countResult[0].total;
+
+        const dataParams = [...queryParams, limit, offset];
+        const [requests] = await db.query(dataQuery, dataParams);
+
+        res.status(200).json({ 
+            status: true, 
+            data: requests,
+            pagination: {
+                currentPage: page,
+                totalPages: Math.ceil(totalRecords / limit),
+                totalRecords: totalRecords,
+                limit: limit
+            }
+        });
     } catch (error) {
         console.error("Error fetching KYC requests:", error);
         res.status(500).json({ status: false, message: "An error occurred." });

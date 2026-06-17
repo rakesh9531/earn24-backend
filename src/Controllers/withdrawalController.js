@@ -106,23 +106,50 @@ exports.requestWithdrawal = async (req, res) => {
  */
 exports.adminGetWithdrawals = async (req, res) => {
     const { status } = req.query;
-    
-    let query = `
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 10;
+    const offset = (page - 1) * limit;
+    const search = req.query.search ? req.query.search.trim() : '';
+
+    let countQuery = `
+        SELECT COUNT(*) as total 
+        FROM user_withdraw_requests wr
+        JOIN users u ON wr.user_id = u.id
+    `;
+    let dataQuery = `
         SELECT wr.*, u.username, u.full_name, u.mobile_number 
         FROM user_withdraw_requests wr
         JOIN users u ON wr.user_id = u.id
     `;
+
+    const whereClauses = [];
     const params = [];
 
     if (status) {
-        query += " WHERE wr.status = ?";
+        whereClauses.push("wr.status = ?");
         params.push(status);
     }
 
-    query += " ORDER BY wr.requested_at DESC";
+    if (search) {
+        const searchPattern = `%${search}%`;
+        whereClauses.push("(u.full_name LIKE ? OR u.username LIKE ? OR u.mobile_number LIKE ? OR wr.utr_number LIKE ?)");
+        params.push(searchPattern, searchPattern, searchPattern, searchPattern);
+    }
+
+    if (whereClauses.length > 0) {
+        const whereString = " WHERE " + whereClauses.join(" AND ");
+        countQuery += whereString;
+        dataQuery += whereString;
+    }
+
+    dataQuery += " ORDER BY wr.requested_at DESC LIMIT ? OFFSET ?";
 
     try {
-        const [rows] = await db.query(query, params);
+        const [countResult] = await db.query(countQuery, params);
+        const totalRecords = countResult[0].total;
+
+        const dataParams = [...params, limit, offset];
+        const [rows] = await db.query(dataQuery, dataParams);
         
         // Parse snapshots
         const formattedRows = rows.map(r => {
@@ -134,7 +161,16 @@ exports.adminGetWithdrawals = async (req, res) => {
             return r;
         });
 
-        res.status(200).json({ status: true, data: formattedRows });
+        res.status(200).json({ 
+            status: true, 
+            data: formattedRows,
+            pagination: {
+                currentPage: page,
+                totalPages: Math.ceil(totalRecords / limit),
+                totalRecords: totalRecords,
+                limit: limit
+            }
+        });
     } catch (error) {
         console.error("Admin get withdrawals error:", error);
         res.status(500).json({ status: false, message: error.message });
