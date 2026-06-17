@@ -35,9 +35,11 @@ const express = require('express');
 const router = express.Router();
 const kycController = require('../Controllers/kycController');
 const { auth, can } = require('../Middleware/auth');
+const { kycDocUpload } = require('../Middleware/kycUpload');
 
 // --- User-Facing Routes ---
-router.post('/submit', auth, kycController.submitKyc);
+// kycDocUpload handles multipart/form-data with up to 3 document files
+router.post('/submit', auth, kycDocUpload, kycController.submitKyc);
 router.get('/my-status', auth, kycController.getMyKycStatus);
 
 // --- Admin-Only Routes ---
@@ -45,4 +47,8 @@ router.get('/all', auth, can('kyc:read'), kycController.getAllKycRequests);
 router.get('/:kycId', auth, can('kyc:read'), kycController.getKycDetailsById);
 router.put('/update-status/:kycId', auth, can('kyc:update'), kycController.updateKycStatus);
 
+// Admin: Force a user to re-submit their KYC (resets to NOT_SUBMITTED)
+router.post('/force-resubmit/:kycId', auth, can('kyc:update'), kycController.forceResubmitKyc);
+
 module.exports = router;
+
