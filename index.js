@@ -269,6 +269,33 @@ async function testDatabaseConnection() {
     `);
     console.log("Database verification: binary_matching_payouts table checked/created.");
 
+    // Auto-migration for setting key: min_withdrawal_limit
+    const [existingSetting] = await connection.query("SELECT * FROM app_settings WHERE setting_key = 'min_withdrawal_limit'");
+    if (existingSetting.length === 0) {
+      await connection.query(`
+        INSERT INTO app_settings (setting_key, setting_value, description) 
+        VALUES ('min_withdrawal_limit', '100', 'Minimum wallet withdrawal amount to bank account')
+      `);
+      console.log("Migration: Added min_withdrawal_limit setting (default 100).");
+    }
+
+    // Auto-migration for user_withdraw_requests table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS \`user_withdraw_requests\` (
+        \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+        \`user_id\` INT NOT NULL,
+        \`amount\` DECIMAL(12,2) NOT NULL,
+        \`status\` ENUM('PENDING', 'APPROVED', 'REJECTED') DEFAULT 'PENDING',
+        \`bank_details_snapshot\` JSON NOT NULL COMMENT 'Snapshot of approved bank info at the time of request',
+        \`utr_number\` VARCHAR(100) NULL COMMENT 'Bank transaction ID entered by Admin on approval',
+        \`admin_remarks\` TEXT NULL COMMENT 'Rejection reason or approval notes',
+        \`requested_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        \`processed_at\` TIMESTAMP NULL,
+        FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`)
+      ) ENGINE=InnoDB;
+    `);
+    console.log("Database verification: user_withdraw_requests table checked/created.");
+
     connection.release();
   } catch (error) {
     console.error('Unable to connect to the database:', error);
