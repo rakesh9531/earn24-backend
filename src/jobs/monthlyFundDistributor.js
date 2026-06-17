@@ -238,7 +238,7 @@ async function distributeReliefFund(connection, yearMonth) {
     }
 
     const [pools] = await connection.query(
-        `SELECT SUM(bonus_relief_fund) as total_relief_pool FROM monthly_company_pools WHERE year_month IN (?)`,
+        `SELECT SUM(bonus_relief_fund) as total_relief_pool FROM monthly_company_pools WHERE \`year_month\` IN (?)`,
         [yearMonthKeys]
     );
     const totalReliefPool = pools.length > 0 ? parseFloat(pools[0].total_relief_pool) : 0;
@@ -304,7 +304,7 @@ async function distributeReliefFund(connection, yearMonth) {
 
     // Reset relief fund pool values for the past 12 months
     await connection.query(
-        "UPDATE monthly_company_pools SET bonus_relief_fund = 0.00 WHERE year_month IN (?)",
+        "UPDATE monthly_company_pools SET bonus_relief_fund = 0.00 WHERE `year_month` IN (?)",
         [yearMonthKeys]
     );
 }
