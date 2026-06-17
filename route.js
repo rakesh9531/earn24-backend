@@ -43,6 +43,7 @@ const retailerAuthRoutes = require('./src/Routes/retailerAuthRoutes');
 const retailerInventoryRoutes = require('./src/Routes/retailerInventoryRoutes');
 const deliveryAppRoute = require('./src/Routes/deliveryAppRoutes');
 const rewardRoutes = require('./src/Routes/rewardRoutes');
+const withdrawalRoutes = require('./src/Routes/withdrawalRoutes');
 
 
 router.use('/auth', authRoutes);
@@ -83,6 +84,7 @@ router.use('/retailer/inventory', retailerInventoryRoutes); // Inventory Managem
 
 router.use('/delivery-app', deliveryAppRoute); // Inventory Management
 router.use('/rewards', rewardRoutes);
+router.use('/withdrawals', withdrawalRoutes);
 
 
 // Temporary Binary Tree Diagnostics Endpoint

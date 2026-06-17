@@ -386,6 +386,35 @@ exports.submitClaim = async (req, res) => {
         const month = now.getMonth() + 1;
         const currentMonthKey = year * 100 + month;
 
+        // Determine if it is a cash-based monthly fund
+        const isMonthlyFund = [
+            'BIKE_FUND', 'CAR_FUND', 'HOUSE_FUND', 'LEADERSHIP_FUND', 'TRAVEL_FUND', 'RELIEF_FUND'
+        ].includes(rewardType);
+
+        let finalDetails = userDetails || {};
+
+        if (isMonthlyFund) {
+            // Check if KYC is approved
+            const [kycRows] = await db.query(
+                "SELECT status, bank_account_holder_name, bank_account_number, bank_ifsc_code, bank_name, pan_number FROM user_kyc WHERE user_id = ?",
+                [userId]
+            );
+            if (kycRows.length === 0 || kycRows[0].status !== 'APPROVED') {
+                return res.status(400).json({ 
+                    status: false, 
+                    message: "Please complete and get your KYC verified first to claim cash rewards." 
+                });
+            }
+
+            // Snapshot the verified bank details to prevent typing errors and fraud
+            const kyc = kycRows[0];
+            finalDetails.bank_account_holder_name = kyc.bank_account_holder_name;
+            finalDetails.bank_account_number = kyc.bank_account_number;
+            finalDetails.bank_ifsc_code = kyc.bank_ifsc_code;
+            finalDetails.bank_name = kyc.bank_name;
+            finalDetails.pan_number = kyc.pan_number;
+        }
+
         // Check if there is already a claim for this month
         const [existing] = await db.query(
             "SELECT * FROM reward_claims WHERE user_id = ? AND reward_type = ? AND claim_month = ?",
@@ -400,7 +429,7 @@ exports.submitClaim = async (req, res) => {
             // Update user details for pending or rejected claims
             await db.query(
                 "UPDATE reward_claims SET user_details = ?, status = 'PENDING', updated_at = NOW() WHERE id = ?",
-                [JSON.stringify(userDetails || {}), claim.id]
+                [JSON.stringify(finalDetails), claim.id]
             );
             return res.status(200).json({ status: true, message: "Claim request details updated successfully.", claimId: claim.id });
         }
@@ -438,7 +467,7 @@ exports.submitClaim = async (req, res) => {
         const [insertResult] = await db.query(
             `INSERT INTO reward_claims (user_id, reward_type, claim_month, status, user_details) 
              VALUES (?, ?, ?, 'PENDING', ?)`,
-            [userId, rewardType, currentMonthKey, JSON.stringify(userDetails || {})]
+            [userId, rewardType, currentMonthKey, JSON.stringify(finalDetails)]
         );
 
         res.status(200).json({
@@ -568,24 +597,39 @@ exports.adminRespondToClaim = async (req, res) => {
                     return res.status(400).json({ status: false, message: "Payout amount is 0. Cannot approve a cash fund without a payout amount." });
                 }
 
-                // 2. Add to user's wallet
+                // Fetch user's KYC status to determine TDS rate (5% if approved PAN, 20% otherwise)
+                const [kycRows] = await connection.query(
+                    "SELECT status FROM user_kyc WHERE user_id = ?",
+                    [claim.user_id]
+                );
+                const hasApprovedPan = kycRows.length > 0 && kycRows[0].status === 'APPROVED';
+                const tdsRate = hasApprovedPan ? 0.05 : 0.20;
+                const serviceChargeRate = 0.05;
+
+                const serviceCharge = amount * serviceChargeRate;
+                const tds = amount * tdsRate;
+                const netPayout = amount - serviceCharge - tds;
+
+                // 2. Add to user's wallet (net payout after deductions)
                 await connection.query(
                     "UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?",
-                    [amount, claim.user_id]
+                    [netPayout, claim.user_id]
                 );
 
-                // 3. Write transaction log
+                // 3. Write transaction log with detailed remarks breakdown
+                const txnRemarks = `Approved ${claim.reward_type}: Gross: ₹${amount.toFixed(2)}, Service Charge: ₹${serviceCharge.toFixed(2)} (5%), TDS: ₹${tds.toFixed(2)} (${tdsRate * 100}%), Net: ₹${netPayout.toFixed(2)}`;
                 await connection.query(
                     `INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks) 
                      VALUES (?, 'credit', ?, 'manual', ?, ?)`,
-                    [claim.user_id, amount, `REWARD_${claim.id}`, `Approved payout for ${claim.reward_type}`]
+                    [claim.user_id, netPayout, `REWARD_${claim.id}`, txnRemarks]
                 );
 
-                // 4. Record to unified commission ledger (to match legacy MLM tracking)
+                // 4. Record to unified commission ledger with detailed breakdown notes
+                const ledgerNotes = `Approved Reward: ${claim.reward_type} (Gross: ₹${amount.toFixed(2)}, Service Charge (5%): ₹${serviceCharge.toFixed(2)}, TDS (${tdsRate * 100}%): ₹${tds.toFixed(2)})`;
                 await connection.query(
                     `INSERT INTO commission_ledger (user_id, source_user_id, source_order_id, commission_type, base_bv, percentage_applied, amount_credited, notes) 
                      VALUES (?, NULL, NULL, ?, 0, 0, ?, ?)`,
-                    [claim.user_id, claim.reward_type, amount, `Approved Reward Payout: ${claim.reward_type}`]
+                    [claim.user_id, claim.reward_type, netPayout, ledgerNotes]
                 );
 
                 // 5. Increment paid months count
