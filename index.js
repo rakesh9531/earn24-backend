@@ -117,9 +117,9 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
-
 app.use('/uploads', express.static('src/uploads'));
 app.use('/uploads', express.static('src/uploads/brand-logos'));
+app.use('/uploads/kyc-docs', express.static(path.join(__dirname, 'src/uploads/kyc-docs')));
 
 
 // Serve static files
@@ -277,6 +277,18 @@ async function testDatabaseConnection() {
         VALUES ('min_withdrawal_limit', '100', 'Minimum wallet withdrawal amount to bank account')
       `);
       console.log("Migration: Added min_withdrawal_limit setting (default 100).");
+    }
+
+    // Auto-migration for KYC document upload columns
+    const [kycColumns] = await connection.query("SHOW COLUMNS FROM user_kyc LIKE 'pan_card_doc'");
+    if (kycColumns.length === 0) {
+      console.log('Running user_kyc document columns migration...');
+      await connection.query("ALTER TABLE user_kyc ADD COLUMN pan_card_doc VARCHAR(500) NULL COMMENT 'Path to uploaded PAN card image' AFTER bank_name");
+      await connection.query("ALTER TABLE user_kyc ADD COLUMN aadhaar_card_doc VARCHAR(500) NULL COMMENT 'Path to uploaded Aadhaar card image' AFTER pan_card_doc");
+      await connection.query("ALTER TABLE user_kyc ADD COLUMN bank_passbook_doc VARCHAR(500) NULL COMMENT 'Path to uploaded Bank Passbook image' AFTER aadhaar_card_doc");
+      console.log("Migration: Added pan_card_doc, aadhaar_card_doc, bank_passbook_doc to user_kyc table.");
+    } else {
+      console.log("Database verification: user_kyc document columns already exist.");
     }
 
     // Auto-migration for user_withdraw_requests table

@@ -38,7 +38,7 @@ async function runMonthlyQualificationCheck() {
         const ranksToCheck = RANKS.slice(leaderIndex);
 
         const [usersToCheck] = await connection.query(
-            `SELECT id, \`rank\`, last_12_months_repurchase_bv FROM users WHERE \`rank\` IN (?) AND is_blocked = FALSE`,
+            `SELECT id, \`rank\`, last_12_months_repurchase_bv, last_rank_promoted_at, created_at FROM users WHERE \`rank\` IN (?) AND is_blocked = FALSE`,
             [ranksToCheck]
         );
 
@@ -81,12 +81,22 @@ async function runMonthlyQualificationCheck() {
 
             // 3. If still failed, check the new sponsors alternative
             if (!isQualified) {
-                const [newSponsors] = await connection.query(`
-                    SELECT COUNT(id) as count, SUM(aggregate_personal_bv) as total_bv FROM users 
-                    WHERE sponsor_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH) AND last_purchase_date >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
-                `, [user.id]);
-                if (newSponsors.length > 0 && newSponsors[0].count >= rules.NEW_SPONSORS_ALTERNATIVE_COUNT && newSponsors[0].total_bv >= rules.NEW_SPONSORS_ALTERNATIVE_BV) {
-                    isQualified = true;
+                const ruleHRanks = ['LEADER', 'TEAM_LEADER', 'ASSISTANT_SUPERVISOR', 'SUPERVISOR', 'ASSISTANT_MANAGER', 'MANAGER'];
+                if (ruleHRanks.includes(user.rank)) {
+                    const afterDate = user.last_rank_promoted_at || user.created_at;
+                    const { checkRuleHQualification } = require('../Services/rankService');
+                    const ruleHPassed = await checkRuleHQualification(user.id, afterDate, connection);
+                    if (ruleHPassed) {
+                        isQualified = true;
+                    }
+                } else {
+                    const [newSponsors] = await connection.query(`
+                        SELECT COUNT(id) as count, SUM(aggregate_personal_bv) as total_bv FROM users 
+                        WHERE sponsor_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH) AND last_purchase_date >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+                    `, [user.id]);
+                    if (newSponsors.length > 0 && newSponsors[0].count >= rules.NEW_SPONSORS_ALTERNATIVE_COUNT && newSponsors[0].total_bv >= rules.NEW_SPONSORS_ALTERNATIVE_BV) {
+                        isQualified = true;
+                    }
                 }
             }
 

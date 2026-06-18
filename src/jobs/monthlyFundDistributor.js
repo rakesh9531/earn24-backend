@@ -62,14 +62,13 @@ const checkSponsorsForReliefFundHelper = async (connection, userId) => {
         WHERE sponsor_id = ? AND created_at >= ? AND is_deleted = 0
     `, [userId, twelveMonthsAgo]);
 
-    const fastStartSponsors = newSponsors.filter(s => parseFloat(s.aggregate_personal_bv) >= 3000).length;
-    const min500BvSponsors = newSponsors.filter(s => parseFloat(s.aggregate_personal_bv) >= 500).length;
+    const sponsorsWith1000 = newSponsors.filter(s => parseFloat(s.aggregate_personal_bv) >= 1000).length;
+    const sponsorsWith500 = newSponsors.filter(s => parseFloat(s.aggregate_personal_bv) >= 500).length;
 
-    const eligibleOption1 = fastStartSponsors >= 2;
-    const eligibleOption2 = min500BvSponsors >= 4;
-    const eligibleOption3 = fastStartSponsors >= 1 && min500BvSponsors >= 3;
+    const eligibleOption1 = sponsorsWith1000 >= 1;
+    const eligibleOption2 = sponsorsWith500 >= 2;
 
-    return eligibleOption1 || eligibleOption2 || eligibleOption3;
+    return eligibleOption1 || eligibleOption2;
 };
 
 async function distributeFund(fundName, requiredRank, connection, yearMonth) {
@@ -125,7 +124,7 @@ async function distributeFund(fundName, requiredRank, connection, yearMonth) {
 
     // Fetch potential candidates
     const [candidates] = await connection.query(`
-        SELECT id, current_monthly_qualified_rank as \`rank\`, bike_fund_months_paid, car_fund_months_paid, house_fund_months_paid, qualifying_sponsor_ids 
+        SELECT id, current_monthly_qualified_rank as \`rank\`, bike_fund_months_paid, car_fund_months_paid, house_fund_months_paid, qualifying_sponsor_ids, last_rank_promoted_at, created_at 
         FROM users WHERE current_monthly_qualified_rank IN (?) AND is_blocked = FALSE AND is_deleted = 0`, [qualifiedRanks]);
 
     if (candidates.length === 0) return;
@@ -142,6 +141,18 @@ async function distributeFund(fundName, requiredRank, connection, yearMonth) {
         // 2. Check sponsor activity
         const sponsorActive = isSponsorActiveCached(user.qualifying_sponsor_ids);
         if (!sponsorActive) continue;
+
+        // 2b. Check Rule h direct active sponsor maintenance for Leader and above
+        const ruleHRanks = ['LEADER', 'TEAM_LEADER', 'ASSISTANT_SUPERVISOR', 'SUPERVISOR', 'ASSISTANT_MANAGER', 'MANAGER', 'SR_MANAGER', 'DIRECTOR'];
+        if (ruleHRanks.includes(user.rank)) {
+            const { checkRuleHQualification } = require('../Services/rankService');
+            const afterDate = user.last_rank_promoted_at || user.created_at;
+            const ruleHPassed = await checkRuleHQualification(user.id, afterDate, connection);
+            if (!ruleHPassed) {
+                console.log(`[Fund Distribution] Skipping user ${user.id} (${user.rank}) due to inactive/insufficient direct sponsors (Rule h T&C failure)`);
+                continue;
+            }
+        }
 
         // 3. Calculate this user's monthly Personal BV & TGBV
         const [personalRows] = await connection.query(
@@ -246,7 +257,7 @@ async function distributeReliefFund(connection, yearMonth) {
 
     // Fetch Senior Managers or above
     const [candidates] = await connection.query(
-        "SELECT id, `rank` FROM users WHERE `rank` IN ('SR_MANAGER', 'DIRECTOR') AND is_blocked = FALSE AND is_deleted = 0"
+        "SELECT id, `rank`, last_rank_promoted_at, created_at FROM users WHERE `rank` IN ('SR_MANAGER', 'DIRECTOR') AND is_blocked = FALSE AND is_deleted = 0"
     );
 
     const qualifiedUsers = [];
@@ -257,6 +268,15 @@ async function distributeReliefFund(connection, yearMonth) {
         const hasSponsors = await checkSponsorsForReliefFundHelper(connection, user.id);
 
         if (rollingPersonalBv >= 12000 && rollingTgbv >= 5000000 && hasSponsors) {
+            // Check Rule h active sponsor maintenance
+            const { checkRuleHQualification } = require('../Services/rankService');
+            const afterDate = user.last_rank_promoted_at || user.created_at;
+            const ruleHPassed = await checkRuleHQualification(user.id, afterDate, connection);
+            if (!ruleHPassed) {
+                console.log(`[Relief Fund] Skipping user ${user.id} due to inactive direct sponsors (Rule h T&C failure)`);
+                continue;
+            }
+
             qualifiedUsers.push({
                 id: user.id,
                 personalBv: rollingPersonalBv

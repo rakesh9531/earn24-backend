@@ -14,7 +14,8 @@ async function run() {
             { name: "bike_fund_months_paid", query: "ALTER TABLE users ADD COLUMN bike_fund_months_paid INT DEFAULT 0" },
             { name: "car_fund_months_paid", query: "ALTER TABLE users ADD COLUMN car_fund_months_paid INT DEFAULT 0" },
             { name: "house_fund_months_paid", query: "ALTER TABLE users ADD COLUMN house_fund_months_paid INT DEFAULT 0" },
-            { name: "qualifying_sponsor_ids", query: "ALTER TABLE users ADD COLUMN qualifying_sponsor_ids JSON NULL" }
+            { name: "qualifying_sponsor_ids", query: "ALTER TABLE users ADD COLUMN qualifying_sponsor_ids JSON NULL" },
+            { name: "last_rank_promoted_at", query: "ALTER TABLE users ADD COLUMN last_rank_promoted_at TIMESTAMP NULL DEFAULT NULL COMMENT 'Date when user was promoted to current rank' AFTER `rank`" }
         ];
 
         for (const alter of alterQueries) {
@@ -25,6 +26,10 @@ async function run() {
                 console.log(`Column already exists: ${alter.name}`);
             }
         }
+
+        // Initialize last_rank_promoted_at for existing users
+        console.log("Initializing last_rank_promoted_at for users...");
+        await db.query("UPDATE users SET last_rank_promoted_at = created_at WHERE last_rank_promoted_at IS NULL");
 
         // 2. Create reward_claims table
         console.log("\nCreating reward_claims table...");
@@ -56,6 +61,35 @@ async function run() {
                 console.log("Index idx_user_status already exists.");
             } else {
                 throw err;
+            }
+        }
+
+        // 3. Alter user_kyc table to add document upload columns
+        console.log("\nChecking user_kyc table for document columns...");
+        const [kycCols] = await db.query("SHOW COLUMNS FROM user_kyc");
+        const existingKycColumns = kycCols.map(c => c.Field.toLowerCase());
+
+        const kycDocAlters = [
+            {
+                name: "pan_card_doc",
+                query: "ALTER TABLE `user_kyc` ADD COLUMN `pan_card_doc` VARCHAR(500) NULL COMMENT 'Server path to uploaded PAN Card image/PDF' AFTER `bank_name`"
+            },
+            {
+                name: "aadhaar_card_doc",
+                query: "ALTER TABLE `user_kyc` ADD COLUMN `aadhaar_card_doc` VARCHAR(500) NULL COMMENT 'Server path to uploaded Aadhaar Card image/PDF' AFTER `pan_card_doc`"
+            },
+            {
+                name: "bank_passbook_doc",
+                query: "ALTER TABLE `user_kyc` ADD COLUMN `bank_passbook_doc` VARCHAR(500) NULL COMMENT 'Server path to uploaded Bank Passbook image/PDF' AFTER `aadhaar_card_doc`"
+            }
+        ];
+
+        for (const alter of kycDocAlters) {
+            if (!existingKycColumns.includes(alter.name.toLowerCase())) {
+                await db.query(alter.query);
+                console.log(`✅ Added column: ${alter.name}`);
+            } else {
+                console.log(`⏭️  Column already exists: ${alter.name}`);
             }
         }
 
