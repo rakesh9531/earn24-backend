@@ -36,7 +36,7 @@ async function runBinaryMatching() {
     try {
         // Fetch all active, non-deleted users who have BV in left and right legs
         const [users] = await connection.query(
-            "SELECT id, username, left_leg_bv, right_leg_bv, total_matched_bv FROM users WHERE is_deleted = 0 AND is_blocked = 0 AND (left_leg_bv > 0 AND right_leg_bv > 0)"
+            "SELECT id, username, left_leg_bv, right_leg_bv, total_matched_bv, `rank` FROM users WHERE is_deleted = 0 AND is_blocked = 0 AND (left_leg_bv > 0 AND right_leg_bv > 0)"
         );
 
         console.log(`[Binary Job] Found ${users.length} users qualified for binary matching evaluation.`);
@@ -59,7 +59,8 @@ async function runBinaryMatching() {
                 );
 
                 const currentMonthPayout = parseFloat(payoutRows[0].total_month_payout) || 0;
-                const cappingLimit = 5000.00;
+                const isDistributor = ['CUSTOMER', 'DISTRIBUTOR_SILVER', 'DISTRIBUTOR_GOLD', 'DISTRIBUTOR_DIAMOND'].includes(user.rank);
+                const cappingLimit = isDistributor ? 5000.00 : 99999999.00;
                 const remainingLimit = Math.max(0, cappingLimit - currentMonthPayout);
                 console.log(`[Binary Job Debug] Monthly payout status: Already paid this month: ₹${currentMonthPayout.toFixed(2)}, Remaining limit: ₹${remainingLimit.toFixed(2)}`);
 
