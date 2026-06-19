@@ -320,6 +320,26 @@ async function testDatabaseConnection() {
       console.log("Database verification: user_withdraw_requests columns already exist.");
     }
 
+    // Sync historical profit ledger records into user_wallet_transactions
+    console.log("Checking and syncing historical profit ledger records to user_wallet_transactions...");
+    await connection.query(`
+      INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks, created_at)
+      SELECT 
+        pdl.user_id, 
+        'credit' AS txn_type, 
+        pdl.amount_credited AS amount, 
+        'level_income' AS source, 
+        CONCAT('ORDER_ITEM_', pdl.order_item_id) AS reference_id, 
+        CONCAT(REPLACE(pdl.distribution_type, '_', ' '), ' from Order Item #', pdl.order_item_id) AS remarks, 
+        pdl.transaction_date AS created_at
+      FROM profit_distribution_ledger pdl
+      LEFT JOIN user_wallet_transactions uwt 
+        ON uwt.user_id = pdl.user_id 
+        AND uwt.reference_id = CONCAT('ORDER_ITEM_', pdl.order_item_id)
+      WHERE uwt.id IS NULL
+    `);
+    console.log("Migration: Historical profit ledger records successfully synced to user_wallet_transactions.");
+
     connection.release();
   } catch (error) {
     console.error('Unable to connect to the database:', error);
