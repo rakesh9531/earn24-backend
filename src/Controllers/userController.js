@@ -1224,7 +1224,7 @@ exports.getWalletHistory = async (req, res) => {
 
     // 1. Fetch Data
     const sql = `
-            SELECT id, amount, type, description, reference_id, created_at 
+            SELECT id, amount, txn_type, source, remarks, reference_id, created_at 
             FROM user_wallet_transactions 
             WHERE user_id = ? 
             ORDER BY created_at DESC 
