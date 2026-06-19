@@ -1692,3 +1692,137 @@ exports.changeAdminPassword = async (req, res) => {
     }
 };
 
+exports.getFinanceReport = async (req, res) => {
+    try {
+        const { page = 1, limit = 20, startDate, endDate, search } = req.query;
+        const pageNum = parseInt(page) || 1;
+        const limitNum = parseInt(limit) || 20;
+        const offset = (pageNum - 1) * limitNum;
+
+        let whereClause = " WHERE 1=1";
+        const params = [];
+
+        if (startDate && endDate) {
+            whereClause += " AND o.created_at BETWEEN ? AND ?";
+            params.push(`${startDate} 00:00:00`, `${endDate} 23:59:59`);
+        }
+
+        if (search) {
+            whereClause += " AND (o.order_number LIKE ? OR u.full_name LIKE ? OR u.username LIKE ? OR oi.product_name LIKE ?)";
+            const term = `%${search}%`;
+            params.push(term, term, term, term);
+        }
+
+        // Count query
+        const countQuery = `
+            SELECT COUNT(oi.id) as total 
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.id
+            JOIN users u ON o.user_id = u.id
+            ${whereClause}
+        `;
+        const [countResult] = await db.query(countQuery, params);
+        const totalRecords = countResult[0].total;
+
+        // Data query
+        const dataQuery = `
+            SELECT 
+                oi.id as order_item_id,
+                o.id as order_id,
+                o.order_number,
+                o.order_status,
+                o.created_at as order_date,
+                u.id as user_id,
+                u.full_name as buyer_name,
+                u.username as buyer_username,
+                oi.product_name,
+                oi.quantity,
+                oi.price_per_unit,
+                oi.total_price,
+                oi.purchase_price,
+                oi.gst_percentage,
+                oi.total_bv_earned,
+                (oi.total_price / (1 + (oi.gst_percentage / 100))) as taxable_base_price,
+                (oi.total_price - (oi.total_price / (1 + (oi.gst_percentage / 100)))) as gst_amount,
+                COALESCE((
+                    SELECT SUM(amount_credited) 
+                    FROM profit_distribution_ledger pdl 
+                    WHERE pdl.order_item_id = oi.id AND pdl.distribution_type = 'CASHBACK'
+                ), 0.00) as cashback_distributed,
+                COALESCE((
+                    SELECT SUM(amount_credited) 
+                    FROM profit_distribution_ledger pdl 
+                    WHERE pdl.order_item_id = oi.id AND pdl.distribution_type = 'PERFORMANCE_BONUS'
+                ), 0.00) as performance_bonus_distributed,
+                COALESCE((
+                    SELECT SUM(amount_credited) 
+                    FROM profit_distribution_ledger pdl 
+                    WHERE pdl.order_item_id = oi.id AND pdl.distribution_type LIKE 'ROYALTY%'
+                ), 0.00) as royalty_distributed
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.id
+            JOIN users u ON o.user_id = u.id
+            ${whereClause}
+            ORDER BY o.created_at DESC
+            LIMIT ? OFFSET ?
+        `;
+
+        const [rows] = await db.query(dataQuery, [...params, limitNum, offset]);
+
+        res.status(200).json({
+            status: true,
+            data: rows,
+            pagination: {
+                currentPage: pageNum,
+                totalPages: Math.ceil(totalRecords / limitNum),
+                totalRecords: totalRecords,
+                limit: limitNum
+            }
+        });
+    } catch (error) {
+        console.error("Error in getFinanceReport:", error);
+        res.status(500).json({ status: false, message: "Internal server error." });
+    }
+};
+
+exports.getFundDistributionReport = async (req, res) => {
+    try {
+        const { claimMonth, rewardType, search } = req.query;
+        let whereClause = " WHERE 1=1";
+        const params = [];
+
+        if (claimMonth) {
+            whereClause += " AND rc.claim_month = ?";
+            params.push(parseInt(claimMonth));
+        }
+        if (rewardType) {
+            whereClause += " AND rc.reward_type = ?";
+            params.push(rewardType);
+        }
+        if (search) {
+            whereClause += " AND (u.username LIKE ? OR u.full_name LIKE ?)";
+            const term = `%${search}%`;
+            params.push(term, term);
+        }
+
+        const query = `
+            SELECT 
+                rc.id, rc.reward_type, rc.claim_month, rc.status, rc.user_details, rc.created_at,
+                u.id as user_id, u.username, u.full_name
+            FROM reward_claims rc
+            JOIN users u ON rc.user_id = u.id
+            ${whereClause}
+            ORDER BY rc.created_at DESC
+        `;
+        const [rows] = await db.query(query, params);
+
+        res.status(200).json({
+            status: true,
+            data: rows
+        });
+    } catch (error) {
+        console.error("Error in getFundDistributionReport:", error);
+        res.status(500).json({ status: false, message: "Internal server error." });
+    }
+};
+

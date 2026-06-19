@@ -120,13 +120,13 @@ exports.createOrder = async (req, res) => {
             const orderItemSql = `
                 INSERT INTO order_items (
                     order_id, product_id, seller_product_id, product_name, 
-                    attributes_snapshot, quantity, price_per_unit, total_price, 
+                    attributes_snapshot, quantity, price_per_unit, purchase_price, gst_percentage, total_price, 
                     bv_earned_per_unit, total_bv_earned
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
             await connection.query(orderItemSql, [
                 orderId, item.product_id, item.seller_product_id, item.product_name,
                 JSON.stringify(snapshot),
-                item.quantity, item.selling_price, item.selling_price * item.quantity,
+                item.quantity, item.selling_price, item.purchase_price, item.gst_percentage || 0.00, item.selling_price * item.quantity,
                 bvEarnedPerUnit, bvEarnedPerUnit * item.quantity
             ]);
 

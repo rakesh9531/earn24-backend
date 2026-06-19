@@ -320,6 +320,27 @@ async function testDatabaseConnection() {
       console.log("Database verification: user_withdraw_requests columns already exist.");
     }
 
+    // Auto-migration for order_items table to add purchase_price and gst_percentage snapshots
+    const [orderItemColumns] = await connection.query("SHOW COLUMNS FROM order_items LIKE 'purchase_price'");
+    if (orderItemColumns.length === 0) {
+      console.log('Running order_items purchase_price and gst_percentage snapshots migration...');
+      await connection.query("ALTER TABLE order_items ADD COLUMN purchase_price DECIMAL(10, 2) NOT NULL DEFAULT 0.00 AFTER price_per_unit");
+      await connection.query("ALTER TABLE order_items ADD COLUMN gst_percentage DECIMAL(5, 2) NOT NULL DEFAULT 0.00 AFTER purchase_price");
+      
+      // Backfill historical rows
+      await connection.query(`
+        UPDATE order_items oi
+        JOIN seller_products sp ON oi.seller_product_id = sp.id
+        JOIN products p ON sp.product_id = p.id
+        LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
+        SET oi.purchase_price = sp.purchase_price, oi.gst_percentage = IFNULL(h.gst_percentage, 0.00)
+        WHERE oi.purchase_price = 0.00 AND oi.gst_percentage = 0.00
+      `);
+      console.log("Migration: Added purchase_price and gst_percentage columns to order_items and backfilled historical records.");
+    } else {
+      console.log("Database verification: order_items purchase_price snapshot column already exists.");
+    }
+
     // Sync historical profit ledger records into user_wallet_transactions
     console.log("Checking and syncing historical profit ledger records to user_wallet_transactions...");
     await connection.query(`

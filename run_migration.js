@@ -122,6 +122,37 @@ async function run() {
             }
         }
 
+        // 5. Alter order_items table to add purchase_price and gst_percentage snapshots
+        console.log("\nChecking order_items table for snapshot columns...");
+        const [orderItemCols] = await db.query("SHOW COLUMNS FROM order_items");
+        const existingOrderItemCols = orderItemCols.map(c => c.Field.toLowerCase());
+
+        if (!existingOrderItemCols.includes("purchase_price")) {
+            await db.query("ALTER TABLE order_items ADD COLUMN purchase_price DECIMAL(10, 2) NOT NULL DEFAULT 0.00 AFTER price_per_unit");
+            console.log("✅ Added column: purchase_price to order_items");
+        } else {
+            console.log("⏭️  Column already exists: purchase_price in order_items");
+        }
+
+        if (!existingOrderItemCols.includes("gst_percentage")) {
+            await db.query("ALTER TABLE order_items ADD COLUMN gst_percentage DECIMAL(5, 2) NOT NULL DEFAULT 0.00 AFTER purchase_price");
+            console.log("✅ Added column: gst_percentage to order_items");
+        } else {
+            console.log("⏭️  Column already exists: gst_percentage in order_items");
+        }
+
+        // Backfill historical rows
+        console.log("Backfilling historical order_items snapshots...");
+        await db.query(`
+            UPDATE order_items oi
+            JOIN seller_products sp ON oi.seller_product_id = sp.id
+            JOIN products p ON oi.product_id = p.id
+            LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
+            SET oi.purchase_price = sp.purchase_price, oi.gst_percentage = IFNULL(h.gst_percentage, 0.00)
+            WHERE oi.purchase_price = 0.00 AND oi.gst_percentage = 0.00
+        `);
+        console.log("✅ Backfilled historical order_items snapshots.");
+
         console.log("\n=== MIGRATIONS COMPLETED SUCCESSFULLY ===");
 
     } catch (err) {
