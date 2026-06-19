@@ -205,7 +205,7 @@ exports.getUserRewardsDashboard = async (req, res) => {
         const rewardDefinitions = [
             {
                 type: 'LEADERSHIP_FUND',
-                name: 'Leadership Fund (2%)',
+                name: 'Leadership Fund',
                 requiredRank: 'LEADER',
                 targetSelfBv: 1000,
                 targetTgbv: 50000,
@@ -213,7 +213,7 @@ exports.getUserRewardsDashboard = async (req, res) => {
             },
             {
                 type: 'TRAVEL_FUND',
-                name: 'Travel Fund (2%)',
+                name: 'Travel Fund',
                 requiredRank: 'TEAM_LEADER',
                 targetSelfBv: 1000,
                 targetTgbv: 75000,
@@ -221,7 +221,7 @@ exports.getUserRewardsDashboard = async (req, res) => {
             },
             {
                 type: 'BIKE_FUND',
-                name: 'Bike Fund (₹2,500/mo or 2%)',
+                name: 'Bike Fund',
                 requiredRank: 'ASSISTANT_SUPERVISOR',
                 targetSelfBv: 1000,
                 targetTgbv: 100000,
@@ -231,7 +231,7 @@ exports.getUserRewardsDashboard = async (req, res) => {
             },
             {
                 type: 'CAR_FUND',
-                name: 'Car Fund (2%)',
+                name: 'Car Fund',
                 requiredRank: 'SUPERVISOR',
                 targetSelfBv: 1000,
                 targetTgbv: 200000,
@@ -247,7 +247,7 @@ exports.getUserRewardsDashboard = async (req, res) => {
             },
             {
                 type: 'HOUSE_FUND',
-                name: 'House Fund (2%)',
+                name: 'House Fund',
                 requiredRank: 'ASSISTANT_MANAGER',
                 targetSelfBv: 1000,
                 targetTgbv: 200000,
@@ -275,7 +275,7 @@ exports.getUserRewardsDashboard = async (req, res) => {
             },
             {
                 type: 'RELIEF_FUND',
-                name: 'Relief Fund (2%)',
+                name: 'Relief Fund',
                 requiredRank: 'SR_MANAGER',
                 isAnnual: true
             }
