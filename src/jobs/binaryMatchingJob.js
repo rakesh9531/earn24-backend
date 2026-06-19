@@ -34,9 +34,9 @@ async function runBinaryMatching() {
     const connection = await db.getConnection();
     
     try {
-        // Fetch all active, non-deleted users who have BV in left and right legs
+        // Fetch all active, non-deleted users who have BV in left and right legs (excluding LEADER and above)
         const [users] = await connection.query(
-            "SELECT id, username, left_leg_bv, right_leg_bv, total_matched_bv, `rank` FROM users WHERE is_deleted = 0 AND is_blocked = 0 AND (left_leg_bv > 0 AND right_leg_bv > 0)"
+            "SELECT id, username, left_leg_bv, right_leg_bv, total_matched_bv, `rank` FROM users WHERE is_deleted = 0 AND is_blocked = 0 AND (left_leg_bv > 0 AND right_leg_bv > 0) AND `rank` NOT IN ('LEADER', 'TEAM_LEADER', 'ASSISTANT_SUPERVISOR', 'SUPERVISOR', 'ASSISTANT_MANAGER', 'MANAGER', 'SR_MANAGER', 'DIRECTOR')"
         );
 
         console.log(`[Binary Job] Found ${users.length} users qualified for binary matching evaluation.`);

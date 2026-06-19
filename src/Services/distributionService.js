@@ -251,6 +251,18 @@ async function recordProfitEntry(connection, userId, orderItemId, type, netProfi
         `INSERT INTO commission_ledger (user_id, source_user_id, source_order_id, commission_type, base_bv, percentage_applied, amount_credited, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [userId, buyerId, orderId, type, netProfit, pctApplied, amtCredited, `Profit from Order Item #${orderItemId}`]
     );
+
+    // 3. Record in User Wallet Transactions (for unified user passbook history)
+    await connection.query(
+        `INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks) 
+         VALUES (?, 'credit', ?, 'level_income', ?, ?)`,
+        [
+            userId, 
+            amtCredited, 
+            `ORDER_${orderId}`, 
+            `${type.replace(/_/g, ' ')}: ₹${amtCredited.toFixed(2)} from Order #${orderId}`
+        ]
+    );
 }
 
 /**
