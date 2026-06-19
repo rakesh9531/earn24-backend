@@ -115,4 +115,8 @@ router.post('/update-landing',auth,can('settings:manage'),landingUploadMiddlewar
 router.post('/run-binary-matching', auth, can('settings:manage'), adminController.runBinaryMatchingManual);
 router.post('/run-fund-distribution', auth, can('settings:manage'), adminController.runFundDistributionManual);
 
+// Reports routes
+router.get('/reports/finance', auth, can('settings:read'), adminController.getFinanceReport);
+router.get('/reports/fund-distributions', auth, can('settings:read'), adminController.getFundDistributionReport);
+
 module.exports = router;
