@@ -93,6 +93,35 @@ async function run() {
             }
         }
 
+        // 4. Alter user_withdraw_requests table to add missing withdrawal columns
+        console.log("\nChecking user_withdraw_requests table columns...");
+        const [withdrawCols] = await db.query("SHOW COLUMNS FROM user_withdraw_requests");
+        const existingWithdrawColumns = withdrawCols.map(c => c.Field.toLowerCase());
+
+        const withdrawAlters = [
+            {
+                name: "bank_details_snapshot",
+                query: "ALTER TABLE `user_withdraw_requests` ADD COLUMN `bank_details_snapshot` JSON NULL COMMENT 'Snapshot of approved bank info at the time of request' AFTER `status`"
+            },
+            {
+                name: "utr_number",
+                query: "ALTER TABLE `user_withdraw_requests` ADD COLUMN `utr_number` VARCHAR(100) NULL COMMENT 'Bank transaction ID entered by Admin on approval' AFTER `bank_details_snapshot`"
+            },
+            {
+                name: "admin_remarks",
+                query: "ALTER TABLE `user_withdraw_requests` ADD COLUMN `admin_remarks` TEXT NULL COMMENT 'Rejection reason or approval notes' AFTER `utr_number`"
+            }
+        ];
+
+        for (const alter of withdrawAlters) {
+            if (!existingWithdrawColumns.includes(alter.name.toLowerCase())) {
+                await db.query(alter.query);
+                console.log(`✅ Added column: ${alter.name}`);
+            } else {
+                console.log(`⏭️  Column already exists: ${alter.name}`);
+            }
+        }
+
         console.log("\n=== MIGRATIONS COMPLETED SUCCESSFULLY ===");
 
     } catch (err) {

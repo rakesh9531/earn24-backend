@@ -308,6 +308,18 @@ async function testDatabaseConnection() {
     `);
     console.log("Database verification: user_withdraw_requests table checked/created.");
 
+    // In case the table already existed but without the new columns, perform auto-migration
+    const [withdrawColumns] = await connection.query("SHOW COLUMNS FROM user_withdraw_requests LIKE 'bank_details_snapshot'");
+    if (withdrawColumns.length === 0) {
+      console.log('Running user_withdraw_requests table columns migration...');
+      await connection.query("ALTER TABLE user_withdraw_requests ADD COLUMN bank_details_snapshot JSON NULL COMMENT 'Snapshot of approved bank info at the time of request' AFTER status");
+      await connection.query("ALTER TABLE user_withdraw_requests ADD COLUMN utr_number VARCHAR(100) NULL COMMENT 'Bank transaction ID entered by Admin on approval' AFTER bank_details_snapshot");
+      await connection.query("ALTER TABLE user_withdraw_requests ADD COLUMN admin_remarks TEXT NULL COMMENT 'Rejection reason or approval notes' AFTER utr_number");
+      console.log("Migration: Added bank_details_snapshot, utr_number, admin_remarks to user_withdraw_requests table.");
+    } else {
+      console.log("Database verification: user_withdraw_requests columns already exist.");
+    }
+
     connection.release();
   } catch (error) {
     console.error('Unable to connect to the database:', error);
