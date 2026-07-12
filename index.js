@@ -279,6 +279,16 @@ async function testDatabaseConnection() {
       console.log("Migration: Added min_withdrawal_limit setting (default 100).");
     }
 
+    // Auto-migration for setting key: payout_mode
+    const [existingPayoutMode] = await connection.query("SELECT * FROM app_settings WHERE setting_key = 'payout_mode'");
+    if (existingPayoutMode.length === 0) {
+      await connection.query(`
+        INSERT INTO app_settings (setting_key, setting_value, description) 
+        VALUES ('payout_mode', 'manual', 'Payout Mode (manual or automatic)')
+      `);
+      console.log("Migration: Added payout_mode setting (default manual).");
+    }
+
     // Auto-migration for KYC document upload columns
     const [kycColumns] = await connection.query("SHOW COLUMNS FROM user_kyc LIKE 'pan_card_doc'");
     if (kycColumns.length === 0) {

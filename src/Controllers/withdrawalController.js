@@ -1,5 +1,6 @@
 // src/Controllers/withdrawalController.js
 const db = require('../../db');
+const payuPayoutService = require('../Services/payuPayoutService');
 
 /**
  * USER API: Submit a withdrawal request
@@ -191,7 +192,20 @@ exports.adminProcessWithdrawal = async (req, res) => {
         return res.status(400).json({ status: false, message: "Status must be APPROVED or REJECTED." });
     }
 
-    if (status === 'APPROVED' && !utrNumber) {
+    // Fetch current payout mode
+    let payoutMode = 'manual';
+    try {
+        const [modeRows] = await db.query(
+            "SELECT setting_value FROM app_settings WHERE setting_key = 'payout_mode'"
+        );
+        if (modeRows.length > 0) {
+            payoutMode = modeRows[0].setting_value;
+        }
+    } catch (modeErr) {
+        console.error("Error reading payout_mode setting, falling back to manual:", modeErr.message);
+    }
+
+    if (status === 'APPROVED' && payoutMode === 'manual' && !utrNumber) {
         return res.status(400).json({ status: false, message: "UTR/Transaction Reference Number is required for approval." });
     }
 
@@ -218,8 +232,43 @@ exports.adminProcessWithdrawal = async (req, res) => {
         }
 
         const amount = parseFloat(withdrawReq.amount);
+        let finalUtrNumber = utrNumber;
 
         if (status === 'APPROVED') {
+            if (payoutMode === 'automatic') {
+                const bankDetails = typeof withdrawReq.bank_details_snapshot === 'string'
+                    ? JSON.parse(withdrawReq.bank_details_snapshot)
+                    : withdrawReq.bank_details_snapshot;
+
+                const payoutResult = await payuPayoutService.processPayout({
+                    requestId: requestId,
+                    amount: amount,
+                    bankDetails
+                });
+
+                if (payoutResult.status === 'SUCCESS') {
+                    finalUtrNumber = payoutResult.utr;
+                } else if (payoutResult.status === 'PENDING') {
+                    // Update admin remarks and commit
+                    await connection.query(
+                        "UPDATE user_withdraw_requests SET admin_remarks = ? WHERE id = ?",
+                        ["Processing via PayU Payouts...", requestId]
+                    );
+                    await connection.commit();
+                    return res.status(200).json({ 
+                        status: true, 
+                        message: "Payout request initiated successfully. Status is processing at PayU." 
+                    });
+                } else {
+                    // Fail the request if transfer failed
+                    await connection.rollback();
+                    return res.status(400).json({ 
+                        status: false, 
+                        message: `PayU Payout failed: ${payoutResult.message}` 
+                    });
+                }
+            }
+
             // Permanent debit: subtract from locked balance
             await connection.query(
                 "UPDATE user_wallets SET locked_balance = locked_balance - ? WHERE user_id = ?",
@@ -227,7 +276,7 @@ exports.adminProcessWithdrawal = async (req, res) => {
             );
 
             // Update transaction remarks to append UTR for simple audits
-            const newRemarks = `Withdrawal request approved. Paid amount: ₹${amount.toFixed(2)}. UTR: ${utrNumber}`;
+            const newRemarks = `Withdrawal request approved. Paid amount: ₹${amount.toFixed(2)}. UTR: ${finalUtrNumber}`;
             await connection.query(
                 "UPDATE user_wallet_transactions SET remarks = ? WHERE user_id = ? AND reference_id = ?",
                 [newRemarks, withdrawReq.user_id, `WITHDRAW_${requestId}`]
@@ -236,10 +285,10 @@ exports.adminProcessWithdrawal = async (req, res) => {
             // Update request details
             await connection.query(
                 "UPDATE user_withdraw_requests SET status = 'APPROVED', utr_number = ?, admin_remarks = ?, processed_at = NOW() WHERE id = ?",
-                [utrNumber, adminRemarks || "Approved", requestId]
+                [finalUtrNumber, adminRemarks || "Approved", requestId]
             );
 
-            console.log(`[Payout] Withdrawal APPROVED for Request ID ${requestId}, UTR: ${utrNumber}`);
+            console.log(`[Payout] Withdrawal APPROVED for Request ID ${requestId}, UTR: ${finalUtrNumber}`);
         } else {
             // Rejection: refund locked balance back to active balance
             await connection.query(
@@ -298,5 +347,169 @@ exports.getUserWithdrawals = async (req, res) => {
     } catch (error) {
         console.error("User get withdrawals error:", error);
         res.status(500).json({ status: false, message: error.message });
+    }
+};
+
+/**
+ * ADMIN API: Export withdrawal requests as CSV
+ */
+exports.adminExportWithdrawals = async (req, res) => {
+    try {
+        const { status } = req.query;
+        
+        let query = `
+            SELECT wr.id, wr.user_id, wr.amount, wr.status, wr.bank_details_snapshot, wr.utr_number, wr.requested_at, wr.processed_at,
+                   u.username, u.full_name, u.mobile_number 
+            FROM user_withdraw_requests wr
+            JOIN users u ON wr.user_id = u.id
+        `;
+        const params = [];
+        if (status) {
+            query += " WHERE wr.status = ?";
+            params.push(status);
+        }
+        query += " ORDER BY wr.requested_at DESC";
+        
+        const [rows] = await db.query(query, params);
+        
+        let csvContent = "Request ID,User ID,Username,Full Name,Mobile,Amount,Status,Requested At,Processed At,Bank Name,Account Number,IFSC Code,Holder Name\n";
+        
+        for (const row of rows) {
+            let bankName = "";
+            let accNum = "";
+            let ifsc = "";
+            let holder = "";
+            
+            try {
+                const bank = typeof row.bank_details_snapshot === 'string'
+                    ? JSON.parse(row.bank_details_snapshot)
+                    : row.bank_details_snapshot;
+                if (bank) {
+                    bankName = bank.bank_name || "";
+                    accNum = bank.bank_account_number || "";
+                    ifsc = bank.bank_ifsc_code || "";
+                    holder = bank.bank_account_holder_name || "";
+                }
+            } catch (err) {
+                console.error("Error parsing bank details for request", row.id, err);
+            }
+            
+            const clean = (val) => {
+                if (val === null || val === undefined) return "";
+                const str = String(val).replace(/"/g, '""');
+                return str.includes(",") || str.includes("\n") || str.includes('"') ? `"${str}"` : str;
+            };
+            
+            csvContent += `${row.id},${row.user_id},${clean(row.username)},${clean(row.full_name)},${clean(row.mobile_number)},${row.amount},${row.status},${row.requested_at ? new Date(row.requested_at).toISOString() : ""},${row.processed_at ? new Date(row.processed_at).toISOString() : ""},${clean(bankName)},${clean(accNum)},${clean(ifsc)},${clean(holder)}\n`;
+        }
+        
+        res.setHeader("Content-Type", "text/csv");
+        res.setHeader("Content-Disposition", `attachment; filename=withdrawals_${status || 'all'}_export_${Date.now()}.csv`);
+        return res.status(200).send(csvContent);
+        
+    } catch (error) {
+        console.error("Admin export withdrawals error:", error);
+        res.status(500).json({ status: false, message: error.message });
+    }
+};
+
+/**
+ * PUBLIC API: PayU Payout Status Webhook (Asynchronous Callback)
+ */
+exports.payuPayoutWebhook = async (req, res) => {
+    // PayU sends webhook payload
+    const payload = req.body;
+    console.log("[PayU Payout Webhook Received]:", JSON.stringify(payload));
+
+    // Support both formats (object-level and flat-level structures)
+    const status = payload.status || payload.data?.status;
+    const refId = payload.merchantRefId || payload.data?.merchantRefId || payload.txnid;
+    const utr = payload.utr || payload.data?.utr;
+    const message = payload.message || payload.data?.errorMessage || "Updated via Webhook";
+
+    if (!refId) {
+        return res.status(400).json({ status: false, message: "Missing transaction reference ID" });
+    }
+
+    // Extract request ID (e.g. from 'WITHDRAW_123' -> 123)
+    const requestId = refId.startsWith('WITHDRAW_') ? parseInt(refId.split('_')[1], 10) : parseInt(refId, 10);
+    if (isNaN(requestId)) {
+        return res.status(400).json({ status: false, message: "Invalid request ID format" });
+    }
+
+    const connection = await db.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        const [reqRows] = await connection.query(
+            "SELECT * FROM user_withdraw_requests WHERE id = ? FOR UPDATE",
+            [requestId]
+        );
+
+        if (reqRows.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ status: false, message: "Withdrawal request not found." });
+        }
+
+        const withdrawReq = reqRows[0];
+
+        if (withdrawReq.status !== 'PENDING') {
+            await connection.rollback();
+            // Responding 200 OK anyway to prevent PayU retrying infinitely
+            return res.status(200).json({ status: true, message: "Request already processed" });
+        }
+
+        const amount = parseFloat(withdrawReq.amount);
+
+        if (status === 'SUCCESS' || status === 'success' || status === 'APPROVED') {
+            // Success transition
+            await connection.query(
+                "UPDATE user_wallets SET locked_balance = locked_balance - ? WHERE user_id = ?",
+                [amount, withdrawReq.user_id]
+            );
+
+            const newRemarks = `Withdrawal request approved. Paid amount: ₹${amount.toFixed(2)}. UTR: ${utr || "PAYU_AUTO"}`;
+            await connection.query(
+                "UPDATE user_wallet_transactions SET remarks = ? WHERE user_id = ? AND reference_id = ?",
+                [newRemarks, withdrawReq.user_id, `WITHDRAW_${requestId}`]
+            );
+
+            await connection.query(
+                "UPDATE user_withdraw_requests SET status = 'APPROVED', utr_number = ?, admin_remarks = ?, processed_at = NOW() WHERE id = ?",
+                [utr || "PAYU_AUTO", "Approved via PayU webhook callback", requestId]
+            );
+
+            console.log(`[Webhook Success] Withdrawal APPROVED for Request ID ${requestId}, UTR: ${utr}`);
+        } else if (status === 'FAILED' || status === 'failed' || status === 'REJECTED') {
+            // Failure transition
+            await connection.query(
+                "UPDATE user_wallets SET balance = balance + ?, locked_balance = locked_balance - ? WHERE user_id = ?",
+                [amount, amount, withdrawReq.user_id]
+            );
+
+            const refundRemarks = `Refund: Rejected withdrawal request #${requestId}. Reason: PayU Payout Failed - ${message}`;
+            await connection.query(
+                `INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks) 
+                 VALUES (?, 'credit', ?, 'refund', ?, ?)`,
+                [withdrawReq.user_id, amount, `WITHDRAW_REFUND_${requestId}`, refundRemarks]
+            );
+
+            await connection.query(
+                "UPDATE user_withdraw_requests SET status = 'REJECTED', admin_remarks = ?, processed_at = NOW() WHERE id = ?",
+                [`PayU Payout failed: ${message}`, requestId]
+            );
+
+            console.log(`[Webhook Failed] Withdrawal REJECTED for Request ID ${requestId}. Refunded to user.`);
+        }
+
+        await connection.commit();
+        return res.status(200).json({ status: true, message: "Webhook processed successfully" });
+
+    } catch (err) {
+        await connection.rollback();
+        console.error("Error processing PayU Payout Webhook:", err);
+        return res.status(500).json({ status: false, message: err.message });
+    } finally {
+        connection.release();
     }
 };
