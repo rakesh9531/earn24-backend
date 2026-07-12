@@ -44,16 +44,22 @@ exports.updateSettings = async (req, res) => {
     }, {});
 
     // 2. Validate the distribution percentages
+    // IMPORTANT: Only validate if the request actually contains profit_dist_ keys.
+    // If we are updating an unrelated setting (e.g., payout_mode, min_withdrawal_limit),
+    // skip this validation entirely to avoid false errors.
     const distributionKeys = Object.keys(settingsMap).filter(key => key.startsWith('profit_dist_'));
-    const totalDistributionPct = distributionKeys.reduce((sum, key) => sum + settingsMap[key], 0);
 
-    // Check if the sum of all distribution parts (cashback, sponsor, etc.) equals 100%
-    // We use a small tolerance for floating point math issues.
-    if (Math.abs(totalDistributionPct - 100.0) > 0.01) {
-        return res.status(400).json({ 
-            status: false, 
-            message: `Validation Error: The sum of all distribution percentages must equal 100%. Current sum is ${totalDistributionPct.toFixed(2)}%.` 
-        });
+    if (distributionKeys.length > 0) {
+        const totalDistributionPct = distributionKeys.reduce((sum, key) => sum + settingsMap[key], 0);
+
+        // Check if the sum of all distribution parts (cashback, sponsor, etc.) equals 100%
+        // We use a small tolerance for floating point math issues.
+        if (Math.abs(totalDistributionPct - 100.0) > 0.01) {
+            return res.status(400).json({ 
+                status: false, 
+                message: `Validation Error: The sum of all distribution percentages must equal 100%. Current sum is ${totalDistributionPct.toFixed(2)}%.` 
+            });
+        }
     }
 
     // --- END OF VALIDATION LOGIC ---
