@@ -2014,14 +2014,13 @@ exports.approveOrRejectMerchant = async (req, res) => {
 
     try {
         const isActive = status === 'APPROVED' ? 1 : 0;
-        let result;
         try {
-            [result] = await db.query(
-                "UPDATE merchants SET admin_approval_status = ?, is_active = ? WHERE id = ?",
-                [status, isActive, merchantId]
+            await db.query(
+                "UPDATE merchants SET admin_approval_status = ?, approval_status = ?, is_active = ? WHERE id = ?",
+                [status, status, isActive, merchantId]
             );
         } catch (err) {
-            [result] = await db.query(
+            await db.query(
                 "UPDATE merchants SET is_active = ? WHERE id = ?",
                 [isActive, merchantId]
             );
@@ -2036,6 +2035,7 @@ exports.approveOrRejectMerchant = async (req, res) => {
         res.status(500).json({ status: false, message: "Internal server error." });
     }
 };
+
 
 /**
  * Admin Soft-Delete / Remove Merchant Account
