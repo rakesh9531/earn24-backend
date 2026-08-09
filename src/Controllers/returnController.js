@@ -82,7 +82,8 @@ exports.getReturnRequests = async (req, res) => {
     try {
         const { status, role, userId } = req.query;
         let query = `
-            SELECT r.*, o.order_number, u.full_name as user_name, u.phone_number as user_phone
+            SELECT r.*, o.order_number, u.full_name as user_name, IFNULL(u.mobile_number, '') as user_phone
+
             FROM order_returns r
             JOIN orders o ON r.order_id = o.id
             JOIN users u ON r.user_id = u.id

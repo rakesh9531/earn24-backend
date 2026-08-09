@@ -271,7 +271,8 @@ exports.getMerchantOrders = async (req, res) => {
     try {
         const query = `
             SELECT DISTINCT o.id as order_id, o.order_number, o.order_status, o.total_amount, o.created_at,
-                   oi.product_name, oi.quantity, oi.price_per_unit, u.full_name as customer_name, u.phone_number as customer_phone
+                   oi.product_name, oi.quantity, oi.price_per_unit, u.full_name as customer_name, IFNULL(u.mobile_number, '') as customer_phone
+
             FROM orders o
             JOIN order_items oi ON o.id = oi.order_id
             JOIN seller_products sp ON oi.seller_product_id = sp.id
