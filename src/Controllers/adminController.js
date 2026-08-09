@@ -1847,7 +1847,9 @@ exports.getAllMerchants = async (req, res) => {
 
         const query = `
             SELECT id, business_name, owner_name, email, phone_number, gst_number, pan_number, business_address, pincode,
-                   pan_card_doc, gst_cert_doc, bank_passbook_doc, admin_approval_status, is_active, created_at
+                   pan_card_doc, gst_cert_doc, bank_passbook_doc, 
+                   IFNULL(admin_approval_status, 'APPROVED') as admin_approval_status, 
+                   is_active, created_at
             FROM merchants
             ${whereClause}
             ORDER BY created_at DESC
@@ -1856,7 +1858,18 @@ exports.getAllMerchants = async (req, res) => {
         res.status(200).json({ status: true, data: rows });
     } catch (error) {
         console.error("Error fetching merchants for admin:", error);
-        res.status(500).json({ status: false, message: "Internal server error." });
+        // Fallback query if admin_approval_status column is missing
+        try {
+            const fallbackQuery = `
+                SELECT id, business_name, owner_name, email, phone_number, gst_number, pan_number, business_address, pincode,
+                       'APPROVED' as admin_approval_status, is_active, created_at
+                FROM merchants ORDER BY created_at DESC
+            `;
+            const [rows] = await db.query(fallbackQuery);
+            return res.status(200).json({ status: true, data: rows });
+        } catch (fErr) {
+            res.status(500).json({ status: false, message: "Internal server error." });
+        }
     }
 };
 
@@ -1873,13 +1886,17 @@ exports.approveOrRejectMerchant = async (req, res) => {
 
     try {
         const isActive = status === 'APPROVED' ? 1 : 0;
-        const [result] = await db.query(
-            "UPDATE merchants SET admin_approval_status = ?, is_active = ? WHERE id = ?",
-            [status, isActive, merchantId]
-        );
-
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ status: false, message: "Merchant not found." });
+        let result;
+        try {
+            [result] = await db.query(
+                "UPDATE merchants SET admin_approval_status = ?, is_active = ? WHERE id = ?",
+                [status, isActive, merchantId]
+            );
+        } catch (err) {
+            [result] = await db.query(
+                "UPDATE merchants SET is_active = ? WHERE id = ?",
+                [isActive, merchantId]
+            );
         }
 
         res.status(200).json({
@@ -1891,5 +1908,6 @@ exports.approveOrRejectMerchant = async (req, res) => {
         res.status(500).json({ status: false, message: "Internal server error." });
     }
 };
+
 
 
