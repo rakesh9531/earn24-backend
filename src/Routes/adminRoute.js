@@ -98,6 +98,8 @@ const merchantDocUpload = upload.fields([
 router.get("/merchants/all", auth, can('users:read'), adminController.getAllMerchants);
 router.post("/merchants/create", auth, can('merchants:create'), merchantDocUpload, adminController.createMerchantByAdmin);
 router.post("/merchants/action/:merchantId", auth, adminController.approveOrRejectMerchant);
+router.get("/merchants/:merchantId/details", auth, adminController.getMerchantDetailsForAdmin);
+
 
 
 

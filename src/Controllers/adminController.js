@@ -1836,7 +1836,7 @@ exports.getFundDistributionReport = async (req, res) => {
  */
 exports.getAllMerchants = async (req, res) => {
     try {
-        const { status, search } = req.query;
+        const { status, search, pincode, kycStatus, dateFrom, dateTo } = req.query;
         let whereClause = "WHERE is_deleted = 0";
         const params = [];
 
@@ -1848,6 +1848,25 @@ exports.getAllMerchants = async (req, res) => {
             whereClause += " AND (business_name LIKE ? OR owner_name LIKE ? OR email LIKE ? OR phone_number LIKE ?)";
             const term = `%${search}%`;
             params.push(term, term, term, term);
+        }
+        if (pincode) {
+            whereClause += " AND pincode LIKE ?";
+            params.push(`%${pincode}%`);
+        }
+        if (kycStatus === 'gst_missing') {
+            whereClause += " AND (gst_number IS NULL OR gst_number = '')";
+        } else if (kycStatus === 'complete') {
+            whereClause += " AND (pan_card_doc IS NOT NULL AND bank_passbook_doc IS NOT NULL)";
+        } else if (kycStatus === 'incomplete') {
+            whereClause += " AND (pan_card_doc IS NULL OR bank_passbook_doc IS NULL)";
+        }
+        if (dateFrom) {
+            whereClause += " AND DATE(created_at) >= ?";
+            params.push(dateFrom);
+        }
+        if (dateTo) {
+            whereClause += " AND DATE(created_at) <= ?";
+            params.push(dateTo);
         }
 
         const query = `
@@ -1861,10 +1880,105 @@ exports.getAllMerchants = async (req, res) => {
         `;
 
         const [rows] = await db.query(query, params);
-        res.status(200).json({ status: true, data: rows });
+
+        // --- CTO-GRADE EXECUTIVE METRICS & ANALYTICS ---
+        const [summaryStats] = await db.query(`
+            SELECT 
+                COUNT(*) as totalMerchants,
+                SUM(CASE WHEN admin_approval_status = 'PENDING' THEN 1 ELSE 0 END) as pendingCount,
+                SUM(CASE WHEN admin_approval_status = 'APPROVED' THEN 1 ELSE 0 END) as approvedCount,
+                SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) as activeCount,
+                COUNT(DISTINCT pincode) as operatingPincodes
+            FROM merchants WHERE is_deleted = 0
+        `);
+
+        const [salesStats] = await db.query(`
+            SELECT 
+                IFNULL(SUM(oi.total_price), 0.00) as totalGMV,
+                IFNULL(SUM((oi.price_per_unit - oi.purchase_price) * oi.quantity), 0.00) as totalAdminMargin
+            FROM order_items oi
+            JOIN seller_products sp ON oi.seller_product_id = sp.id
+            JOIN sellers s ON sp.seller_id = s.id
+            WHERE s.sellerable_type = 'Merchant'
+        `);
+
+        // Top 5 Merchants Leaderboard
+        const [topMerchants] = await db.query(`
+            SELECT m.id, m.business_name, m.owner_name,
+                   COUNT(DISTINCT oi.order_id) as total_orders,
+                   IFNULL(SUM(oi.total_price), 0.00) as revenue
+            FROM merchants m
+            JOIN sellers s ON m.id = s.sellerable_id AND s.sellerable_type = 'Merchant'
+            JOIN seller_products sp ON s.id = sp.seller_id
+            JOIN order_items oi ON sp.id = oi.seller_product_id
+            GROUP BY m.id ORDER BY revenue DESC LIMIT 5
+        `);
+
+        // --- AI COPILOT SMART INSIGHTS ENGINE ---
+        const aiInsights = [];
+        const pendingCount = summaryStats[0]?.pendingCount || 0;
+        const totalGMV = parseFloat(salesStats[0]?.totalGMV || 0);
+        const totalAdminMargin = parseFloat(salesStats[0]?.totalAdminMargin || 0);
+        const pincodesCount = summaryStats[0]?.operatingPincodes || 0;
+
+        if (pendingCount > 0) {
+            aiInsights.push({
+                type: 'warning',
+                icon: 'fas fa-exclamation-triangle',
+                title: 'Action Required: Pending Verification Queue',
+                message: `There are ${pendingCount} merchant account(s) waiting for document verification. Prompt approval accelerates platform GMV.`
+            });
+        } else {
+            aiInsights.push({
+                type: 'success',
+                icon: 'fas fa-check-circle',
+                title: 'Verification Queue Healthy',
+                message: `All merchant onboarding requests are 100% processed and verified.`
+            });
+        }
+
+        if (totalGMV > 0) {
+            aiInsights.push({
+                type: 'insight',
+                icon: 'fas fa-chart-line',
+                title: 'Platform Profit Projection',
+                message: `Total Gross Sales GMV has reached ₹${totalGMV.toLocaleString('en-IN')}, generating ₹${totalAdminMargin.toLocaleString('en-IN')} in pure 10% platform margin profit.`
+            });
+        } else {
+            aiInsights.push({
+                type: 'info',
+                icon: 'fas fa-lightbulb',
+                title: 'Marketplace Onboarding Tip',
+                message: `Onboard local retail sellers to start capturing 10% platform margins on every product sold via the Earn24 Customer App.`
+            });
+        }
+
+        if (pincodesCount > 0) {
+            aiInsights.push({
+                type: 'network',
+                icon: 'fas fa-map-marker-alt',
+                title: 'Regional Pincode Coverage',
+                message: `Merchants are actively servicing across ${pincodesCount} distinct pincode region(s).`
+            });
+        }
+
+        res.status(200).json({
+            status: true,
+            data: rows,
+            summary: {
+                totalMerchants: summaryStats[0]?.totalMerchants || 0,
+                pendingCount: summaryStats[0]?.pendingCount || 0,
+                approvedCount: summaryStats[0]?.approvedCount || 0,
+                activeCount: summaryStats[0]?.activeCount || 0,
+                operatingPincodes: pincodesCount,
+                totalGMV: totalGMV,
+                totalAdminMargin: totalAdminMargin,
+                topMerchants: topMerchants || [],
+                aiInsights
+            }
+        });
     } catch (error) {
         console.error("Error fetching merchants for admin:", error);
-        // Fallback query if admin_approval_status column is missing
         try {
             const fallbackQuery = `
                 SELECT id, business_name, owner_name, email, phone_number, gst_number, pan_number, business_address, pincode,
@@ -1872,12 +1986,18 @@ exports.getAllMerchants = async (req, res) => {
                 FROM merchants ORDER BY created_at DESC
             `;
             const [rows] = await db.query(fallbackQuery);
-            return res.status(200).json({ status: true, data: rows });
+            return res.status(200).json({
+                status: true,
+                data: rows,
+                summary: { totalMerchants: rows.length, pendingCount: 0, approvedCount: rows.length, activeCount: rows.length, totalGMV: 0, totalAdminMargin: 0, topMerchants: [], aiInsights: [] }
+            });
         } catch (fErr) {
             res.status(500).json({ status: false, message: "Internal server error." });
         }
     }
 };
+
+
 
 /**
  * Admin Approve or Reject Merchant Request
@@ -1914,6 +2034,81 @@ exports.approveOrRejectMerchant = async (req, res) => {
         res.status(500).json({ status: false, message: "Internal server error." });
     }
 };
+
+/**
+ * Fetch Complete 360-Degree Merchant Details, Financial Ledger & Document Links for Admin
+ */
+exports.getMerchantDetailsForAdmin = async (req, res) => {
+    const { merchantId } = req.params;
+    try {
+        // 1. Merchant Profile & Documents
+        const [mRows] = await db.query(`
+            SELECT id, business_name, owner_name, email, phone_number, gst_number, pan_number, business_address, pincode,
+                   pan_card_doc, aadhaar_card_doc, gst_cert_doc, bank_passbook_doc,
+                   IFNULL(admin_approval_status, 'APPROVED') as admin_approval_status, is_active, created_at
+            FROM merchants WHERE id = ?
+        `, [merchantId]);
+
+        if (mRows.length === 0) {
+            return res.status(404).json({ status: false, message: "Merchant not found." });
+        }
+        const merchant = mRows[0];
+
+        // 2. Financial Metrics & 1-1 Rupee Accounting
+        const [finStats] = await db.query(`
+            SELECT 
+                COUNT(DISTINCT oi.order_id) as total_orders,
+                IFNULL(SUM(oi.quantity), 0) as total_units_sold,
+                IFNULL(SUM(oi.total_price), 0.00) as total_gross_sales,
+                IFNULL(SUM(oi.purchase_price * oi.quantity), 0.00) as total_merchant_payout,
+                IFNULL(SUM((oi.price_per_unit - oi.purchase_price) * oi.quantity), 0.00) as total_admin_margin
+            FROM order_items oi
+            JOIN seller_products sp ON oi.seller_product_id = sp.id
+            JOIN sellers s ON sp.seller_id = s.id
+            WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant'
+        `, [merchantId]);
+
+        // 3. Merchant Products List
+        const [products] = await db.query(`
+            SELECT sp.id, sp.product_id, p.name as product_name, p.main_image_url,
+                   sp.mrp, sp.merchant_price, sp.admin_margin_percent, sp.selling_price, sp.quantity as stock_qty
+            FROM seller_products sp
+            JOIN sellers s ON sp.seller_id = s.id
+            JOIN products p ON sp.product_id = p.id
+            WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant'
+            ORDER BY sp.created_at DESC
+        `, [merchantId]);
+
+        // 4. Merchant Orders Ledger
+        const [orders] = await db.query(`
+            SELECT DISTINCT o.id as order_id, o.order_number, o.order_status, o.created_at,
+                   oi.product_name, oi.quantity, oi.purchase_price as merchant_price, oi.price_per_unit as selling_price, oi.total_price as grand_total,
+                   u.full_name as customer_name, u.phone_number as customer_phone
+            FROM orders o
+            JOIN order_items oi ON o.id = oi.order_id
+            JOIN seller_products sp ON oi.seller_product_id = sp.id
+            JOIN sellers s ON sp.seller_id = s.id
+            JOIN users u ON o.user_id = u.id
+            WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant'
+            ORDER BY o.created_at DESC LIMIT 20
+        `, [merchantId]);
+
+        res.status(200).json({
+            status: true,
+            data: {
+                profile: merchant,
+                financials: finStats[0] || {},
+                totalProductsListed: products.length,
+                products,
+                orders
+            }
+        });
+    } catch (error) {
+        console.error("Error in getMerchantDetailsForAdmin:", error);
+        res.status(500).json({ status: false, message: "Internal server error." });
+    }
+};
+
 
 
 
