@@ -1,15 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const returnController = require('../Controllers/returnController');
-const authMiddleware = require('../Middleware/authMiddleware');
+const { auth } = require('../Middleware/auth');
 
 // Customer submits a return/replacement request
-router.post('/submit', authMiddleware, returnController.submitReturnRequest);
+router.post('/submit', auth, returnController.submitReturnRequest);
 
 // Fetch return requests (Admin / Merchant)
-router.get('/list', authMiddleware, returnController.getReturnRequests);
+router.get('/list', auth, returnController.getReturnRequests);
 
 // Action (Approve / Reject) return request
-router.post('/action/:returnId', authMiddleware, returnController.actionReturnRequest);
+router.post('/action/:returnId', auth, returnController.actionReturnRequest);
 
 module.exports = router;
