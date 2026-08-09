@@ -1224,25 +1224,30 @@ exports.createMerchantByAdmin = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, 10);
         const now = moment().tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss');
 
-        // --- THE FIX: Add `pincode` to the INSERT query ---
+        const panDoc = req.files?.pan_card_doc?.[0]?.path || null;
+        const aadhaarDoc = req.files?.aadhaar_card_doc?.[0]?.path || null;
+        const gstDoc = req.files?.gst_cert_doc?.[0]?.path || null;
+        const passbookDoc = req.files?.bank_passbook_doc?.[0]?.path || null;
+
         const merchantSql = `
             INSERT INTO merchants 
-            (business_name, owner_name, phone_number, email, password, gst_number, pan_number, business_address, pincode, approval_status, is_active, created_at, updated_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', 1, ?, ?)
+            (business_name, owner_name, phone_number, email, password, gst_number, pan_number, business_address, pincode, pan_card_doc, aadhaar_card_doc, gst_cert_doc, bank_passbook_doc, approval_status, is_active, created_at, updated_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', 1, ?, ?)
         `;
         
-        // --- THE FIX: Add `pincode` to the values array in the correct order ---
         const [merchantResult] = await connection.query(merchantSql, [
             business_name, owner_name, phone_number, email, hashedPassword,
-            gst_number, pan_number, business_address, pincode, now, now
+            gst_number || null, pan_number || null, business_address, pincode,
+            panDoc, aadhaarDoc, gstDoc, passbookDoc, now, now
         ]);
         const newMerchantId = merchantResult.insertId;
 
-        // This part remains correct
         const sellerSql = `INSERT INTO sellers (sellerable_id, sellerable_type, display_name, created_at) VALUES (?, ?, ?, ?)`;
         await connection.query(sellerSql, [newMerchantId, 'Merchant', business_name, now]);
 
+
         await connection.commit();
+
         res.status(201).json({ status: true, message: 'Merchant created and approved successfully.', merchantId: newMerchantId });
 
     } catch (error) {
@@ -1847,13 +1852,14 @@ exports.getAllMerchants = async (req, res) => {
 
         const query = `
             SELECT id, business_name, owner_name, email, phone_number, gst_number, pan_number, business_address, pincode,
-                   pan_card_doc, gst_cert_doc, bank_passbook_doc, 
+                   pan_card_doc, aadhaar_card_doc, gst_cert_doc, bank_passbook_doc, 
                    IFNULL(admin_approval_status, 'APPROVED') as admin_approval_status, 
                    is_active, created_at
             FROM merchants
             ${whereClause}
             ORDER BY created_at DESC
         `;
+
         const [rows] = await db.query(query, params);
         res.status(200).json({ status: true, data: rows });
     } catch (error) {
