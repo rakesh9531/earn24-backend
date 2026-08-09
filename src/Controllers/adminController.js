@@ -2036,6 +2036,25 @@ exports.approveOrRejectMerchant = async (req, res) => {
 };
 
 /**
+ * Admin Soft-Delete / Remove Merchant Account
+ */
+exports.deleteMerchantByAdmin = async (req, res) => {
+    const { merchantId } = req.params;
+    try {
+        try {
+            await db.query("UPDATE merchants SET is_deleted = 1, is_active = 0 WHERE id = ?", [merchantId]);
+        } catch (err) {
+            await db.query("DELETE FROM merchants WHERE id = ?", [merchantId]);
+        }
+        res.status(200).json({ status: true, message: "Merchant deleted successfully." });
+    } catch (error) {
+        console.error("Error deleting merchant:", error);
+        res.status(500).json({ status: false, message: "Failed to delete merchant." });
+    }
+};
+
+
+/**
  * Fetch Complete 360-Degree Merchant Details, Financial Ledger & Document Links for Admin
  */
 exports.getMerchantDetailsForAdmin = async (req, res) => {
