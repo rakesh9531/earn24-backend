@@ -89,6 +89,7 @@ router.delete('/deleteSubCategory/:id', auth, can('subcategories:delete'), admin
 
 router.get("/merchants/all", auth, can('users:read'), adminController.getAllMerchants);
 router.post("/merchants/create", auth, can('merchants:create'), adminController.createMerchantByAdmin);
+router.post("/merchants/action/:merchantId", auth, adminController.approveOrRejectMerchant);
 
 
 

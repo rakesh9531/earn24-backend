@@ -1,17 +1,16 @@
-// File: /src/Routes/merchantRoutes.js
-
 const express = require('express');
 const router = express.Router();
-const merchantController = require('../Controllers/merchantController'); // <-- Use the new dedicated controller
+const merchantController = require('../Controllers/merchantController');
+const authMiddleware = require('../Middleware/authMiddleware');
 
-// This is the public registration endpoint for merchants
-// POST /api/merchant/register
+// Public Merchant Routes
 router.post('/register', merchantController.registerMerchant);
+router.post('/login', merchantController.loginMerchant);
 
-// Example of a future protected route for a logged-in merchant
-/*
-const { auth, authorize } = require('../../Middleware/auth');
-router.get('/my-dashboard', auth, authorize(['Merchant']), merchantController.getDashboard);
-*/
+// Protected Merchant Routes (Requires Auth Token)
+router.get('/profile', authMiddleware, merchantController.getMerchantProfile);
+router.post('/products/add', authMiddleware, merchantController.addMerchantProduct);
+router.get('/products', authMiddleware, merchantController.getMerchantProducts);
+router.get('/orders', authMiddleware, merchantController.getMerchantOrders);
 
 module.exports = router;
