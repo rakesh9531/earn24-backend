@@ -44,6 +44,9 @@ const retailerInventoryRoutes = require('./src/Routes/retailerInventoryRoutes');
 const deliveryAppRoute = require('./src/Routes/deliveryAppRoutes');
 const rewardRoutes = require('./src/Routes/rewardRoutes');
 const withdrawalRoutes = require('./src/Routes/withdrawalRoutes');
+const returnRoutes = require('./src/Routes/returnRoutes');
+
+router.use('/returns', returnRoutes);
 
 
 router.use('/auth', authRoutes);

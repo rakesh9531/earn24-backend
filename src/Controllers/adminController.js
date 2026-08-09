@@ -1826,3 +1826,70 @@ exports.getFundDistributionReport = async (req, res) => {
     }
 };
 
+/**
+ * Fetch all merchants (with status filter) for Admin Review
+ */
+exports.getAllMerchants = async (req, res) => {
+    try {
+        const { status, search } = req.query;
+        let whereClause = "WHERE is_deleted = 0";
+        const params = [];
+
+        if (status) {
+            whereClause += " AND admin_approval_status = ?";
+            params.push(status);
+        }
+        if (search) {
+            whereClause += " AND (business_name LIKE ? OR owner_name LIKE ? OR email LIKE ? OR phone_number LIKE ?)";
+            const term = `%${search}%`;
+            params.push(term, term, term, term);
+        }
+
+        const query = `
+            SELECT id, business_name, owner_name, email, phone_number, gst_number, pan_number, business_address, pincode,
+                   pan_card_doc, gst_cert_doc, bank_passbook_doc, admin_approval_status, is_active, created_at
+            FROM merchants
+            ${whereClause}
+            ORDER BY created_at DESC
+        `;
+        const [rows] = await db.query(query, params);
+        res.status(200).json({ status: true, data: rows });
+    } catch (error) {
+        console.error("Error fetching merchants for admin:", error);
+        res.status(500).json({ status: false, message: "Internal server error." });
+    }
+};
+
+/**
+ * Admin Approve or Reject Merchant Request
+ */
+exports.approveOrRejectMerchant = async (req, res) => {
+    const { merchantId } = req.params;
+    const { status } = req.body; // 'APPROVED' or 'REJECTED'
+
+    if (!['APPROVED', 'REJECTED'].includes(status)) {
+        return res.status(400).json({ status: false, message: "Invalid status. Must be APPROVED or REJECTED." });
+    }
+
+    try {
+        const isActive = status === 'APPROVED' ? 1 : 0;
+        const [result] = await db.query(
+            "UPDATE merchants SET admin_approval_status = ?, is_active = ? WHERE id = ?",
+            [status, isActive, merchantId]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ status: false, message: "Merchant not found." });
+        }
+
+        res.status(200).json({
+            status: true,
+            message: `Merchant account has been ${status.toLowerCase()} successfully.`
+        });
+    } catch (error) {
+        console.error("Error approving/rejecting merchant:", error);
+        res.status(500).json({ status: false, message: "Internal server error." });
+    }
+};
+
+
