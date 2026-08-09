@@ -14,7 +14,7 @@ exports.registerMerchant = async (req, res) => {
         gst_number, pan_number, business_address, pincode
     } = req.body;
 
-    if (!business_name || !owner_name || !phone_number || !email || !password || !gst_number || !business_address || !pincode) {
+    if (!business_name || !owner_name || !phone_number || !email || !password || !business_address || !pincode) {
         return res.status(400).json({ status: false, message: 'All required merchant fields, including pincode, must be provided.' });
     }
 
@@ -35,20 +35,22 @@ exports.registerMerchant = async (req, res) => {
 
         // Extract document files uploaded via multer if present
         const panDoc = req.files?.pan_card_doc?.[0]?.path || null;
+        const aadhaarDoc = req.files?.aadhaar_card_doc?.[0]?.path || null;
         const gstDoc = req.files?.gst_cert_doc?.[0]?.path || null;
         const passbookDoc = req.files?.bank_passbook_doc?.[0]?.path || null;
 
         const merchantSql = `
             INSERT INTO merchants 
-            (business_name, owner_name, phone_number, email, password, gst_number, pan_number, business_address, pincode, pan_card_doc, gst_cert_doc, bank_passbook_doc, admin_approval_status, is_active, created_at, updated_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, ?, ?)
+            (business_name, owner_name, phone_number, email, password, gst_number, pan_number, business_address, pincode, pan_card_doc, aadhaar_card_doc, gst_cert_doc, bank_passbook_doc, admin_approval_status, is_active, created_at, updated_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, ?, ?)
         `;
         const [merchantResult] = await connection.query(merchantSql, [
             business_name, owner_name, phone_number, email, hashedPassword,
-            gst_number, pan_number || null, business_address, pincode,
-            panDoc, gstDoc, passbookDoc, now, now
+            gst_number || null, pan_number || null, business_address, pincode,
+            panDoc, aadhaarDoc, gstDoc, passbookDoc, now, now
         ]);
         const newMerchantId = merchantResult.insertId;
+
 
         const sellerSql = `
             INSERT INTO sellers (sellerable_id, sellerable_type, display_name, created_at) 

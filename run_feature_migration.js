@@ -40,21 +40,19 @@ async function runMigration() {
       }
     }
 
-    // 4. Add admin_approval_status & doc columns to merchants
+    // 4. Add admin_approval_status & doc columns (including aadhaar_card_doc) to merchants
     try {
       await connection.query("ALTER TABLE merchants ADD COLUMN admin_approval_status ENUM('PENDING', 'APPROVED', 'REJECTED') DEFAULT 'APPROVED';");
       console.log("✅ Added admin_approval_status to merchants");
     } catch (err) {
       if (err.code === 'ER_DUP_FIELDNAME') {
         console.log("ℹ️ admin_approval_status already exists in merchants");
-      } else {
-        console.error("Error adding admin_approval_status:", err.message);
       }
     }
 
     try {
-      await connection.query("ALTER TABLE merchants ADD COLUMN pan_card_doc VARCHAR(500) NULL, ADD COLUMN gst_cert_doc VARCHAR(500) NULL, ADD COLUMN bank_passbook_doc VARCHAR(500) NULL;");
-      console.log("✅ Added document columns to merchants");
+      await connection.query("ALTER TABLE merchants ADD COLUMN pan_card_doc VARCHAR(500) NULL, ADD COLUMN aadhaar_card_doc VARCHAR(500) NULL, ADD COLUMN gst_cert_doc VARCHAR(500) NULL, ADD COLUMN bank_passbook_doc VARCHAR(500) NULL;");
+      console.log("✅ Added document columns (including aadhaar_card_doc) to merchants");
     } catch (err) {
       if (err.code === 'ER_DUP_FIELDNAME') {
         console.log("ℹ️ Document columns already exist in merchants");

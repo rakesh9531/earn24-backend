@@ -87,9 +87,18 @@ router.patch('/updateSubCategory/:id', auth, can('subcategories:update'), upload
 router.delete('/deleteSubCategory/:id', auth, can('subcategories:delete'), adminController.deleteSubCategory);
 
 
+const merchantDocUpload = upload.fields([
+    { name: 'pan_card_doc', maxCount: 1 },
+    { name: 'aadhaar_card_doc', maxCount: 1 },
+    { name: 'gst_cert_doc', maxCount: 1 },
+    { name: 'bank_passbook_doc', maxCount: 1 }
+]);
+
+
 router.get("/merchants/all", auth, can('users:read'), adminController.getAllMerchants);
-router.post("/merchants/create", auth, can('merchants:create'), adminController.createMerchantByAdmin);
+router.post("/merchants/create", auth, can('merchants:create'), merchantDocUpload, adminController.createMerchantByAdmin);
 router.post("/merchants/action/:merchantId", auth, adminController.approveOrRejectMerchant);
+
 
 
 
