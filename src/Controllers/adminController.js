@@ -1231,9 +1231,10 @@ exports.createMerchantByAdmin = async (req, res) => {
 
         const merchantSql = `
             INSERT INTO merchants 
-            (business_name, owner_name, phone_number, email, password, gst_number, pan_number, business_address, pincode, pan_card_doc, aadhaar_card_doc, gst_cert_doc, bank_passbook_doc, approval_status, is_active, created_at, updated_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', 1, ?, ?)
+            (business_name, owner_name, phone_number, email, password, gst_number, pan_number, business_address, pincode, pan_card_doc, aadhaar_card_doc, gst_cert_doc, bank_passbook_doc, admin_approval_status, is_active, created_at, updated_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, ?, ?)
         `;
+
         
         const [merchantResult] = await connection.query(merchantSql, [
             business_name, owner_name, phone_number, email, hashedPassword,
@@ -1248,7 +1249,8 @@ exports.createMerchantByAdmin = async (req, res) => {
 
         await connection.commit();
 
-        res.status(201).json({ status: true, message: 'Merchant created and approved successfully.', merchantId: newMerchantId });
+        res.status(201).json({ status: true, message: 'Merchant registered successfully. Account is pending admin approval.', merchantId: newMerchantId });
+
 
     } catch (error) {
         await connection.rollback();
@@ -2076,6 +2078,50 @@ exports.toggleMerchantStatus = async (req, res) => {
         res.status(500).json({ status: false, message: "Internal server error." });
     }
 };
+
+/**
+ * Update Merchant Details & Uploaded Documents by Admin
+ */
+exports.updateMerchantByAdmin = async (req, res) => {
+    const { merchantId } = req.params;
+    const {
+        business_name, owner_name, phone_number, email,
+        gst_number, pan_number, business_address, pincode
+    } = req.body;
+
+    try {
+        const panDoc = req.files?.pan_card_doc?.[0]?.path;
+        const aadhaarDoc = req.files?.aadhaar_card_doc?.[0]?.path;
+        const gstDoc = req.files?.gst_cert_doc?.[0]?.path;
+        const passbookDoc = req.files?.bank_passbook_doc?.[0]?.path;
+
+        let updateSql = `
+            UPDATE merchants SET 
+                business_name = ?, owner_name = ?, phone_number = ?, email = ?, 
+                gst_number = ?, pan_number = ?, business_address = ?, pincode = ?
+        `;
+        const params = [
+            business_name, owner_name, phone_number, email,
+            gst_number || null, pan_number || null, business_address, pincode
+        ];
+
+        if (panDoc) { updateSql += `, pan_card_doc = ?`; params.push(panDoc); }
+        if (aadhaarDoc) { updateSql += `, aadhaar_card_doc = ?`; params.push(aadhaarDoc); }
+        if (gstDoc) { updateSql += `, gst_cert_doc = ?`; params.push(gstDoc); }
+        if (passbookDoc) { updateSql += `, bank_passbook_doc = ?`; params.push(passbookDoc); }
+
+        updateSql += ` WHERE id = ?`;
+        params.push(merchantId);
+
+        await db.query(updateSql, params);
+
+        res.status(200).json({ status: true, message: "Merchant details updated successfully." });
+    } catch (error) {
+        console.error("Error updating merchant:", error);
+        res.status(500).json({ status: false, message: "Failed to update merchant details." });
+    }
+};
+
 
 
 
