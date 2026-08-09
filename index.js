@@ -351,7 +351,36 @@ async function testDatabaseConnection() {
       console.log("Database verification: order_items purchase_price snapshot column already exists.");
     }
 
+    // Auto-migration for merchants table document and status columns
+    const [merchantCols] = await connection.query("SHOW COLUMNS FROM merchants");
+    const mColNames = merchantCols.map(c => c.Field);
+    if (!mColNames.includes('aadhaar_card_doc')) {
+      await connection.query("ALTER TABLE merchants ADD COLUMN aadhaar_card_doc VARCHAR(500) NULL");
+      console.log("Migration: Added aadhaar_card_doc to merchants table.");
+    }
+    if (!mColNames.includes('pan_card_doc')) {
+      await connection.query("ALTER TABLE merchants ADD COLUMN pan_card_doc VARCHAR(500) NULL");
+      console.log("Migration: Added pan_card_doc to merchants table.");
+    }
+    if (!mColNames.includes('gst_cert_doc')) {
+      await connection.query("ALTER TABLE merchants ADD COLUMN gst_cert_doc VARCHAR(500) NULL");
+      console.log("Migration: Added gst_cert_doc to merchants table.");
+    }
+    if (!mColNames.includes('bank_passbook_doc')) {
+      await connection.query("ALTER TABLE merchants ADD COLUMN bank_passbook_doc VARCHAR(500) NULL");
+      console.log("Migration: Added bank_passbook_doc to merchants table.");
+    }
+    if (!mColNames.includes('admin_approval_status')) {
+      await connection.query("ALTER TABLE merchants ADD COLUMN admin_approval_status ENUM('PENDING', 'APPROVED', 'REJECTED') DEFAULT 'APPROVED'");
+      console.log("Migration: Added admin_approval_status to merchants table.");
+    }
+    if (!mColNames.includes('is_deleted')) {
+      await connection.query("ALTER TABLE merchants ADD COLUMN is_deleted TINYINT(1) DEFAULT 0");
+      console.log("Migration: Added is_deleted to merchants table.");
+    }
+
     // Sync historical profit ledger records into user_wallet_transactions
+
     console.log("Checking and syncing historical profit ledger records to user_wallet_transactions...");
     await connection.query(`
       INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks, created_at)

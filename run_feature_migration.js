@@ -18,48 +18,51 @@ async function runMigration() {
 
     // 2. Add merchant_price & admin_margin_percent to seller_products
     try {
-      await connection.query("ALTER TABLE seller_products ADD COLUMN merchant_price DECIMAL(15,2) NULL, ADD COLUMN admin_margin_percent DECIMAL(5,2) DEFAULT 10.00;");
-      console.log("✅ Added merchant_price & admin_margin_percent to seller_products");
-    } catch (err) {
-      if (err.code === 'ER_DUP_FIELDNAME') {
-        console.log("ℹ️ merchant_price/admin_margin_percent already exist in seller_products");
-      } else {
-        console.error("Error updating seller_products:", err.message);
-      }
-    }
+      await connection.query("ALTER TABLE seller_products ADD COLUMN merchant_price DECIMAL(15,2) NULL;");
+      console.log("✅ Added merchant_price to seller_products");
+    } catch (err) {}
+
+    try {
+      await connection.query("ALTER TABLE seller_products ADD COLUMN admin_margin_percent DECIMAL(5,2) DEFAULT 10.00;");
+      console.log("✅ Added admin_margin_percent to seller_products");
+    } catch (err) {}
 
     // 3. Add serviceable_pincodes to delivery_agents
     try {
       await connection.query("ALTER TABLE delivery_agents ADD COLUMN serviceable_pincodes TEXT NULL;");
       console.log("✅ Added serviceable_pincodes to delivery_agents");
-    } catch (err) {
-      if (err.code === 'ER_DUP_FIELDNAME') {
-        console.log("ℹ️ serviceable_pincodes already exists in delivery_agents");
-      } else {
-        console.error("Error adding serviceable_pincodes:", err.message);
-      }
-    }
+    } catch (err) {}
 
-    // 4. Add admin_approval_status & doc columns (including aadhaar_card_doc) to merchants
+    // 4. Add admin_approval_status, is_deleted & document columns individually to merchants
     try {
       await connection.query("ALTER TABLE merchants ADD COLUMN admin_approval_status ENUM('PENDING', 'APPROVED', 'REJECTED') DEFAULT 'APPROVED';");
       console.log("✅ Added admin_approval_status to merchants");
-    } catch (err) {
-      if (err.code === 'ER_DUP_FIELDNAME') {
-        console.log("ℹ️ admin_approval_status already exists in merchants");
-      }
-    }
+    } catch (err) {}
 
     try {
-      await connection.query("ALTER TABLE merchants ADD COLUMN pan_card_doc VARCHAR(500) NULL, ADD COLUMN aadhaar_card_doc VARCHAR(500) NULL, ADD COLUMN gst_cert_doc VARCHAR(500) NULL, ADD COLUMN bank_passbook_doc VARCHAR(500) NULL;");
-      console.log("✅ Added document columns (including aadhaar_card_doc) to merchants");
-    } catch (err) {
-      if (err.code === 'ER_DUP_FIELDNAME') {
-        console.log("ℹ️ Document columns already exist in merchants");
-      } else {
-        console.error("Error adding merchant doc columns:", err.message);
-      }
-    }
+      await connection.query("ALTER TABLE merchants ADD COLUMN is_deleted TINYINT(1) DEFAULT 0;");
+      console.log("✅ Added is_deleted to merchants");
+    } catch (err) {}
+
+    try {
+      await connection.query("ALTER TABLE merchants ADD COLUMN pan_card_doc VARCHAR(500) NULL;");
+      console.log("✅ Added pan_card_doc to merchants");
+    } catch (err) {}
+
+    try {
+      await connection.query("ALTER TABLE merchants ADD COLUMN aadhaar_card_doc VARCHAR(500) NULL;");
+      console.log("✅ Added aadhaar_card_doc to merchants");
+    } catch (err) {}
+
+    try {
+      await connection.query("ALTER TABLE merchants ADD COLUMN gst_cert_doc VARCHAR(500) NULL;");
+      console.log("✅ Added gst_cert_doc to merchants");
+    } catch (err) {}
+
+    try {
+      await connection.query("ALTER TABLE merchants ADD COLUMN bank_passbook_doc VARCHAR(500) NULL;");
+      console.log("✅ Added bank_passbook_doc to merchants");
+    } catch (err) {}
 
     // 5. Create order_returns table
     const createReturnsSql = `
