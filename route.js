@@ -77,6 +77,8 @@ router.use('/notifications', notificationRoutes);
 router.use('/retailer', retailerRoutes);
 
 router.use('/merchant', merchantRoutes);
+router.use('/merchants', merchantRoutes);
+
 
 router.use('/webhooks', paymentWebhookRoutes); // <-- ADD THIS
 
