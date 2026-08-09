@@ -2053,6 +2053,31 @@ exports.deleteMerchantByAdmin = async (req, res) => {
     }
 };
 
+/**
+ * Toggle Merchant Active/Inactive Status for Admin
+ */
+exports.toggleMerchantStatus = async (req, res) => {
+    const { merchantId } = req.params;
+    const { is_active } = req.body;
+
+    try {
+        const isActiveValue = (is_active === true || is_active === 1 || is_active === '1') ? 1 : 0;
+        await db.query(
+            "UPDATE merchants SET is_active = ? WHERE id = ?",
+            [isActiveValue, merchantId]
+        );
+
+        res.status(200).json({
+            status: true,
+            message: `Merchant has been ${isActiveValue ? 'activated' : 'deactivated'} successfully.`
+        });
+    } catch (error) {
+        console.error("Error toggling merchant status:", error);
+        res.status(500).json({ status: false, message: "Internal server error." });
+    }
+};
+
+
 
 /**
  * Fetch Complete 360-Degree Merchant Details, Financial Ledger & Document Links for Admin
