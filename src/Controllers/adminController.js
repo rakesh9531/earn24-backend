@@ -2127,7 +2127,7 @@ exports.getMerchantDetailsForAdmin = async (req, res) => {
         const [orders] = await db.query(`
             SELECT DISTINCT o.id as order_id, o.order_number, o.order_status, o.created_at,
                    oi.product_name, oi.quantity, oi.purchase_price as merchant_price, oi.price_per_unit as selling_price, oi.total_price as grand_total,
-                   u.full_name as customer_name, u.phone_number as customer_phone
+                   u.full_name as customer_name, IFNULL(u.mobile_number, '') as customer_phone
             FROM orders o
             JOIN order_items oi ON o.id = oi.order_id
             JOIN seller_products sp ON oi.seller_product_id = sp.id
@@ -2136,6 +2136,7 @@ exports.getMerchantDetailsForAdmin = async (req, res) => {
             WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant'
             ORDER BY o.created_at DESC LIMIT 20
         `, [merchantId]);
+
 
         res.status(200).json({
             status: true,
