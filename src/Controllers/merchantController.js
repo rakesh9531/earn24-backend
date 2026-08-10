@@ -161,17 +161,29 @@ exports.getMerchantProfile = async (req, res) => {
 };
 
 /**
- * Merchant Add Product Listing (With 10% Admin Margin Auto Calculation)
+ * Merchant Add Product Listing (With Master Product creation & 10% Admin Margin)
  */
 exports.addMerchantProduct = async (req, res) => {
     const merchantId = req.user.id;
-    const {
-        productId, sku, mrp, merchantPrice, adminMarginPercent = 10.0, quantity,
-        pincodes, low_stock_threshold = 5, isUniversalPincode = 0
-    } = req.body;
+    const body = req.body;
 
-    if (!productId || !mrp || !merchantPrice || !quantity) {
-        return res.status(400).json({ status: false, message: "Product ID, MRP, Merchant Price, and Quantity are required." });
+    // Normalize field names (support camelCase and snake_case)
+    let name = body.product_name || body.name;
+    let description = body.description || '';
+    let categoryId = body.categoryId || body.category_id || body.category;
+    let subcategoryId = body.subcategoryId || body.sub_category_id || body.sub_category;
+    let brandId = body.brandId || body.brand_id || body.brand;
+    let hsnCodeId = body.hsnCodeId || body.hsn_code_id || body.hsn_code;
+
+    let mrp = parseFloat(body.mrp || 0);
+    let price = parseFloat(body.price || body.selling_price || body.merchant_price || 0);
+    let quantity = parseInt(body.stock_quantity || body.quantity || 0, 10);
+    let sku = body.sku || null;
+
+    let productId = body.productId || body.product_id;
+
+    if ((!productId && !name) || !mrp || !price || isNaN(quantity)) {
+        return res.status(400).json({ status: false, message: "Product name, MRP, Price, and Stock Quantity are required." });
     }
 
     const connection = await db.getConnection();
@@ -186,7 +198,6 @@ exports.addMerchantProduct = async (req, res) => {
 
         let sellerId;
         if (sellerRows.length === 0) {
-            // Create seller profile if missing
             const [sRes] = await connection.query(
                 'INSERT INTO sellers (sellerable_id, sellerable_type, display_name) VALUES (?, "Merchant", "Merchant")',
                 [merchantId]
@@ -196,30 +207,73 @@ exports.addMerchantProduct = async (req, res) => {
             sellerId = sellerRows[0].id;
         }
 
-        // 2. Calculate User Selling Price (Merchant Price + 10% Admin Margin)
-        const parsedMerchantPrice = parseFloat(merchantPrice);
-        const marginPct = parseFloat(adminMarginPercent);
-        const sellingPrice = parsedMerchantPrice + (parsedMerchantPrice * (marginPct / 100));
+        // 2. If master product doesn't exist, create it in `products` table
+        if (!productId) {
+            let mainImageUrl = null;
+            let galleryUrls = [];
 
-        // 3. Update Master Product Universal Pincode Flag if specified
-        if (isUniversalPincode) {
-            await connection.query("UPDATE products SET is_universal_pincode = ? WHERE id = ?", [isUniversalPincode ? 1 : 0, productId]);
+            if (req.files && Array.isArray(req.files)) {
+                req.files.forEach((f, idx) => {
+                    const relativePath = `/uploads/${f.filename}`;
+                    if (idx === 0) mainImageUrl = relativePath;
+                    else galleryUrls.push(relativePath);
+                });
+            } else if (req.file) {
+                mainImageUrl = `/uploads/${req.file.filename}`;
+            }
+
+            const isUniversal = (body.delivery_type === 'universal') ? 1 : 0;
+
+            const masterSql = `
+                INSERT INTO products 
+                  (name, description, category_id, subcategory_id, brand_id, hsn_code_id, main_image_url, gallery_image_urls, is_universal_pincode, created_at, updated_at) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+            `;
+            const [mRes] = await connection.query(masterSql, [
+                name,
+                description,
+                categoryId ? parseInt(categoryId, 10) : null,
+                subcategoryId ? parseInt(subcategoryId, 10) : null,
+                brandId ? parseInt(brandId, 10) : null,
+                hsnCodeId ? parseInt(hsnCodeId, 10) : null,
+                mainImageUrl,
+                JSON.stringify(galleryUrls),
+                isUniversal
+            ]);
+            productId = mRes.insertId;
         }
 
-        // 4. Insert into seller_products
+        // 3. Price calculations (Selling price = Price given by merchant, Admin Margin 10%)
+        const merchantPrice = price;
+        const adminMarginPercent = 10.0;
+        const sellingPrice = merchantPrice; // Customer pays selling price
+
+        // Parse pincodes and variants
+        let pincodes = body.pincodes;
+        if (typeof pincodes === 'string') {
+            try { pincodes = JSON.parse(pincodes); } catch (e) { pincodes = []; }
+        }
+        if (!Array.isArray(pincodes)) pincodes = [];
+
+        let variants = body.variants;
+        if (typeof variants === 'string') {
+            try { variants = JSON.parse(variants); } catch (e) { variants = []; }
+        }
+
+        // 4. Insert into `seller_products` or `merchant_products`
         const offerQuery = `
             INSERT INTO seller_products 
               (seller_id, product_id, sku, mrp, merchant_price, admin_margin_percent, selling_price, purchase_price, quantity, low_stock_threshold) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         const [result] = await connection.query(offerQuery, [
-            sellerId, productId, sku || null, mrp, parsedMerchantPrice, marginPct, sellingPrice, parsedMerchantPrice, quantity, low_stock_threshold
+            sellerId, productId, sku, mrp, merchantPrice, adminMarginPercent, sellingPrice, merchantPrice, quantity, body.low_stock_alert || 5
         ]);
         const newOfferId = result.insertId;
 
-        // 5. Save Pincodes
-        if (Array.isArray(pincodes) && pincodes.length > 0) {
-            const pincodeValues = pincodes.map(p => [newOfferId, p.trim()]);
+        // 5. Save pincodes
+        if (pincodes.length > 0) {
+            const pincodeValues = pincodes.map(p => [newOfferId, String(p).trim()]);
             await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES ?', [pincodeValues]);
         }
 
@@ -228,8 +282,9 @@ exports.addMerchantProduct = async (req, res) => {
             status: true,
             message: "Merchant product offer listed successfully.",
             offerId: newOfferId,
-            merchantPrice: parsedMerchantPrice,
-            userDisplayPrice: sellingPrice
+            productId: productId,
+            merchantPrice: merchantPrice,
+            sellingPrice: sellingPrice
         });
 
     } catch (error) {
