@@ -1581,7 +1581,7 @@ exports.getAdminDashboardStats = async (req, res) => {
 
             // 12. RANK ACHIEVERS & MLM DISTRIBUTION BREAKDOWN
             db.query(`
-                SELECT rank, COUNT(*) as count FROM users WHERE rank IS NOT NULL AND rank != '' GROUP BY rank
+                SELECT \`rank\`, COUNT(*) as count FROM users WHERE \`rank\` IS NOT NULL AND \`rank\` != '' GROUP BY \`rank\`
             `)
         ]);
 
