@@ -137,4 +137,14 @@ router.post('/run-fund-distribution', auth, can('settings:manage'), adminControl
 router.get('/reports/finance', auth, can('settings:read'), adminController.getFinanceReport);
 router.get('/reports/fund-distributions', auth, can('settings:read'), adminController.getFundDistributionReport);
 
+// ── Merchant Settlements (Admin) ──
+const walletCtrl = require('../Controllers/merchantWalletController');
+router.get('/settlements/pending',       auth, walletCtrl.adminGetAllSettlements);
+router.patch('/settlements/:id/pay',     auth, walletCtrl.adminMarkSettlementPaid);
+
+// ── Return & Replacement Management (Admin) ──
+const returnCtrl = require('../Controllers/returnController');
+router.get('/returns/all',              auth, returnCtrl.adminGetAllReturnRequests);
+router.patch('/returns/:id/resolve',    auth, returnCtrl.adminResolveReturn);
+
 module.exports = router;
