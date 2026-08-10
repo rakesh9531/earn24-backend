@@ -1442,7 +1442,9 @@ exports.getAdminDashboardStats = async (req, res) => {
             topSellingProducts,
             revenueTrend,
             mlmPools,
-            settlementLogs
+            settlementLogs,
+            merchantActivity,
+            rankAchievers
         ] = await Promise.all([
             // 1. COMPREHENSIVE FINANCIAL OVERVIEW
             db.query(`
@@ -1567,6 +1569,19 @@ exports.getAdminDashboardStats = async (req, res) => {
                 JOIN orders o ON sl.order_id = o.id
                 JOIN delivery_agents da ON sl.agent_id = da.id
                 ORDER BY sl.settled_at DESC LIMIT 10
+            `),
+
+            // 11. MERCHANT SETTLEMENTS & RETURNS STATS
+            db.query(`
+                SELECT 
+                    (SELECT COUNT(*) FROM merchant_settlements WHERE status = 'PENDING') as pendingMerchantPayoutsCount,
+                    (SELECT IFNULL(SUM(amount), 0) FROM merchant_settlements WHERE status = 'PENDING') as pendingMerchantPayoutsAmount,
+                    (SELECT COUNT(*) FROM order_returns WHERE status = 'PENDING') as pendingReturnClaimsCount
+            `),
+
+            // 12. RANK ACHIEVERS & MLM DISTRIBUTION BREAKDOWN
+            db.query(`
+                SELECT rank, COUNT(*) as count FROM users WHERE rank IS NOT NULL AND rank != '' GROUP BY rank
             `)
         ]);
 
@@ -1582,6 +1597,12 @@ exports.getAdminDashboardStats = async (req, res) => {
                     costOfGoods: financialStats[0][0].costOfGoods,
                     cashOnStreet: financialStats[0][0].cashOnStreet
                 },
+                mlmOverview: {
+                    totalBvGenerated: mlmFinancials[0][0].totalBvGenerated || 0,
+                    totalCommissionsPaid: mlmFinancials[0][0].totalCommissionsPaid || 0,
+                    totalUserLiability: mlmFinancials[0][0].totalUserLiability || 0,
+                    rankDistribution: rankAchievers[0] || []
+                },
                 funds: mlmPools[0][0],
                 users: userStats[0][0],
                 inventory: inventoryHealth[0][0],
@@ -1589,7 +1610,12 @@ exports.getAdminDashboardStats = async (req, res) => {
                 topPincodes: topPerformingPincodes[0],
                 topProducts: topSellingProducts[0],
                 chartData: revenueTrend[0],
-                recentSettlements: settlementLogs[0] // Added logs
+                recentSettlements: settlementLogs[0],
+                merchantStats: {
+                    pendingPayoutsCount: merchantActivity[0]?.[0]?.pendingMerchantPayoutsCount || 0,
+                    pendingPayoutsAmount: merchantActivity[0]?.[0]?.pendingMerchantPayoutsAmount || 0,
+                    pendingReturnsCount: merchantActivity[0]?.[0]?.pendingReturnClaimsCount || 0
+                }
             }
         });
 
