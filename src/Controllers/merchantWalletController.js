@@ -11,45 +11,66 @@ const RETURN_WINDOW_DAYS   = 7;
 // INTERNAL HELPER — Called when an order is DELIVERED
 // Creates merchant_transaction + updates merchant_wallet
 // ─────────────────────────────────────────────────────────────
-exports.creditMerchantOnDelivery = async (orderId, merchantId, grossAmount) => {
-    const platformFee = Math.round(grossAmount * PLATFORM_FEE_PERCENT * 100) / 100;
-    const netAmount   = Math.round((grossAmount - platformFee) * 100) / 100;
-
-    const deliveryDate = moment().tz(IST).format('YYYY-MM-DD HH:mm:ss');
-    const releaseDate  = moment().tz(IST).add(RETURN_WINDOW_DAYS, 'days').format('YYYY-MM-DD HH:mm:ss');
-
+exports.creditMerchantOnDelivery = async (orderId, inputMerchantId = null, inputGrossAmount = null) => {
     const conn = await db.getConnection();
     try {
         await conn.beginTransaction();
 
-        // 1. Record transaction (status = PENDING while in return window)
-        await conn.query(`
-            INSERT INTO merchant_transactions
-              (merchant_id, order_id, gross_amount, platform_fee, net_amount,
-               status, delivery_date, release_date)
-            VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?)
-            ON DUPLICATE KEY UPDATE gross_amount=VALUES(gross_amount)
-        `, [merchantId, orderId, grossAmount, platformFee, netAmount, deliveryDate, releaseDate]);
+        // Mark delivered_at on the order
+        await conn.query(`UPDATE orders SET delivered_at = NOW() WHERE id = ? AND delivered_at IS NULL`, [orderId]);
 
-        // 2. Create wallet row if not exists, then add to pending
-        await conn.query(`
-            INSERT INTO merchant_wallet (merchant_id, pending_amount, platform_fee_total)
-            VALUES (?, ?, ?)
-            ON DUPLICATE KEY UPDATE
-              pending_amount     = pending_amount + VALUES(pending_amount),
-              platform_fee_total = platform_fee_total + VALUES(platform_fee_total),
-              total_earned       = total_earned + ?
-        `, [merchantId, netAmount, platformFee, netAmount]);
+        let itemsToCredit = [];
 
-        // 3. Mark delivered_at on the order
-        await conn.query(
-            `UPDATE orders SET delivered_at = NOW() WHERE id = ?`,
-            [orderId]
-        );
+        if (inputMerchantId && inputGrossAmount) {
+            itemsToCredit.push({ merchant_id: inputMerchantId, gross_amount: parseFloat(inputGrossAmount) });
+        } else {
+            // Find merchants for items in this order
+            const [rows] = await conn.query(`
+                SELECT s.sellerable_id as merchant_id, SUM(oi.total_price) as gross_amount
+                FROM order_items oi
+                JOIN seller_products sp ON oi.seller_product_id = sp.id
+                JOIN sellers s ON sp.seller_id = s.id
+                WHERE oi.order_id = ? AND s.sellerable_type = 'Merchant'
+                GROUP BY s.sellerable_id
+            `, [orderId]);
+            itemsToCredit = rows.map(r => ({ merchant_id: r.merchant_id, gross_amount: parseFloat(r.gross_amount) }));
+        }
+
+        const deliveryDate = moment().tz(IST).format('YYYY-MM-DD HH:mm:ss');
+        const releaseDate  = moment().tz(IST).add(RETURN_WINDOW_DAYS, 'days').format('YYYY-MM-DD HH:mm:ss');
+
+        for (const item of itemsToCredit) {
+            const mId = item.merchant_id;
+            const gross = item.gross_amount;
+            if (!mId || gross <= 0) continue;
+
+            const platformFee = Math.round(gross * PLATFORM_FEE_PERCENT * 100) / 100;
+            const netAmount   = Math.round((gross - platformFee) * 100) / 100;
+
+            // 1. Record transaction (status = PENDING while in return window)
+            await conn.query(`
+                INSERT INTO merchant_transactions
+                  (merchant_id, order_id, gross_amount, platform_fee, net_amount,
+                   status, delivery_date, release_date)
+                VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?)
+                ON DUPLICATE KEY UPDATE gross_amount=VALUES(gross_amount), net_amount=VALUES(net_amount)
+            `, [mId, orderId, gross, platformFee, netAmount, deliveryDate, releaseDate]);
+
+            // 2. Create or update merchant_wallet
+            await conn.query(`
+                INSERT INTO merchant_wallet (merchant_id, pending_amount, platform_fee_total, total_earned)
+                VALUES (?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                  pending_amount     = pending_amount + VALUES(pending_amount),
+                  platform_fee_total = platform_fee_total + VALUES(platform_fee_total),
+                  total_earned       = total_earned + VALUES(total_earned)
+            `, [mId, netAmount, platformFee, netAmount]);
+
+            console.log(`[Wallet] Credited ₹${netAmount} PENDING for merchant ${mId}, order ${orderId}`);
+        }
 
         await conn.commit();
-        console.log(`[Wallet] Credited ₹${netAmount} PENDING for merchant ${merchantId}, order ${orderId}`);
-        return { success: true, netAmount, releaseDate };
+        return { success: true };
 
     } catch (err) {
         await conn.rollback();

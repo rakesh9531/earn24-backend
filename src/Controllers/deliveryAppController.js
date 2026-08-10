@@ -258,7 +258,13 @@ exports.completeDelivery = async (req, res) => {
 
             await connection.commit();
 
-            // 4. Run Rank Promotion AFTER commit - avoids DB lock wait timeout
+            // 4. Trigger Merchant Wallet Credit
+            const merchantWalletController = require('./merchantWalletController');
+            await merchantWalletController.creditMerchantOnDelivery(orderId).catch(err =>
+                console.error('[Merchant Wallet Credit Error]', err.message)
+            );
+
+            // 5. Run Rank Promotion AFTER commit - avoids DB lock wait timeout
             if (buyerIdForPromotion) {
                 const rankService = require('../Services/rankService');
                 await rankService.checkAndPromoteUser(buyerIdForPromotion).catch(err =>

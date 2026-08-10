@@ -722,10 +722,12 @@ exports.getAllSellerOffers = async (req, res) => {
 
         const dataQuery = `
             SELECT 
-                sp.id, sp.sku, sp.mrp, sp.selling_price, sp.purchase_price, sp.quantity,
-                sp.is_active, sp.low_stock_threshold, sp.minimum_order_quantity,
-                p.id AS product_id, p.name AS product_name, p.main_image_url, p.description,
-                s.display_name AS seller_name, h.gst_percentage,
+                sp.id, sp.sku, sp.mrp, sp.selling_price, sp.purchase_price, sp.merchant_price, sp.admin_margin_percent, sp.quantity,
+                sp.is_active, sp.low_stock_threshold, sp.minimum_order_quantity, sp.created_at,
+                p.id AS product_id, p.name AS product_name, p.main_image_url, p.description, p.is_universal_pincode,
+                s.display_name AS seller_name, s.sellerable_type, s.sellerable_id,
+                m.business_name AS merchant_business_name, m.owner_name AS merchant_owner_name, m.phone_number AS merchant_phone,
+                h.gst_percentage,
                 (SELECT GROUP_CONCAT(pincode) FROM seller_product_pincodes WHERE seller_product_id = sp.id) AS pincodes,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']')
@@ -737,14 +739,15 @@ exports.getAllSellerOffers = async (req, res) => {
             FROM seller_products sp
             JOIN products p ON sp.product_id = p.id
             JOIN sellers s ON sp.seller_id = s.id
+            LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-            WHERE (p.name LIKE ? OR s.display_name LIKE ?)
+            WHERE (p.name LIKE ? OR s.display_name LIKE ? OR m.business_name LIKE ? OR m.owner_name LIKE ?)
             GROUP BY sp.id
             ORDER BY sp.created_at DESC
             LIMIT ? OFFSET ?
         `;
 
-        const [rows] = await db.query(dataQuery, [searchPattern, searchPattern, limit, offset]);
+        const [rows] = await db.query(dataQuery, [searchPattern, searchPattern, searchPattern, searchPattern, limit, offset]);
 
         const data = rows.map(offer => ({
             ...offer,
@@ -753,8 +756,8 @@ exports.getAllSellerOffers = async (req, res) => {
             gst_percentage: parseFloat(offer.gst_percentage) || 0
         }));
 
-        const countQuery = `SELECT COUNT(DISTINCT sp.id) AS total FROM seller_products sp JOIN products p ON sp.product_id = p.id JOIN sellers s ON sp.seller_id = s.id WHERE (p.name LIKE ? OR s.display_name LIKE ?)`;
-        const [countRows] = await db.query(countQuery, [searchPattern, searchPattern]);
+        const countQuery = `SELECT COUNT(DISTINCT sp.id) AS total FROM seller_products sp JOIN products p ON sp.product_id = p.id JOIN sellers s ON sp.seller_id = s.id LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant' WHERE (p.name LIKE ? OR s.display_name LIKE ? OR m.business_name LIKE ? OR m.owner_name LIKE ?)`;
+        const [countRows] = await db.query(countQuery, [searchPattern, searchPattern, searchPattern, searchPattern]);
 
         res.status(200).json({
             status: true,
