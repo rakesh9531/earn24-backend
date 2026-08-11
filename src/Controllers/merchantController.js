@@ -277,6 +277,21 @@ exports.addMerchantProduct = async (req, res) => {
             await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES ?', [pincodeValues]);
         }
 
+        // 6. Save Dynamic Category Attributes
+        let attributeValueIds = body.attributeValueIds;
+        if (typeof attributeValueIds === 'string') {
+            try { attributeValueIds = JSON.parse(attributeValueIds); } catch (e) { attributeValueIds = []; }
+        }
+        if (Array.isArray(attributeValueIds) && attributeValueIds.length > 0 && productId) {
+            try {
+                await connection.query('DELETE FROM product_attributes WHERE product_id = ?', [productId]);
+                const attrValues = attributeValueIds.map(valId => [productId, parseInt(valId, 10)]);
+                await connection.query('INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?', [attrValues]);
+            } catch (attrErr) {
+                console.warn("Could not save product attributes:", attrErr.message);
+            }
+        }
+
         await connection.commit();
         res.status(201).json({
             status: true,
@@ -303,7 +318,14 @@ exports.getMerchantProducts = async (req, res) => {
     const merchantId = req.user.id;
     try {
         const query = `
-            SELECT sp.*, p.name as product_name, p.main_image_url, p.is_universal_pincode
+            SELECT sp.*, p.name as product_name, p.main_image_url, p.is_universal_pincode,
+                (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                    FROM product_attributes pa
+                    JOIN attribute_values av ON pa.attribute_value_id = av.id
+                    JOIN attributes attr ON av.attribute_id = attr.id
+                    WHERE pa.product_id = p.id
+                ) as attributes
             FROM seller_products sp
             JOIN sellers s ON sp.seller_id = s.id
             JOIN products p ON sp.product_id = p.id
@@ -311,7 +333,11 @@ exports.getMerchantProducts = async (req, res) => {
             ORDER BY sp.created_at DESC
         `;
         const [rows] = await db.query(query, [merchantId]);
-        res.status(200).json({ status: true, data: rows });
+        const processedData = rows.map(row => ({
+            ...row,
+            attributes: row.attributes ? JSON.parse(row.attributes) : []
+        }));
+        res.status(200).json({ status: true, data: processedData });
     } catch (error) {
         console.error("Error fetching merchant products:", error);
         res.status(500).json({ status: false, message: 'An error occurred.' });

@@ -159,6 +159,12 @@ exports.createOrder = async (req, res) => {
         
         await connection.commit();
 
+        // Trigger Smart Auto-Dispatch Engine asynchronously
+        const deliveryAppController = require('./deliveryAppController');
+        deliveryAppController.autoDispatchOrder(orderId).catch(err => 
+            console.error('[Auto-Dispatch Trigger Error]', err.message)
+        );
+
         const io = req.app.get('socketio');
         if (io) {
             io.to('admins').emit('new_order', {
