@@ -1579,7 +1579,7 @@ exports.getAdminDashboardStats = async (req, res) => {
                     (SELECT COUNT(*) FROM order_returns WHERE status = 'PENDING') as pendingReturnClaimsCount
             `),
 
-            // 12. RANK ACHIEVERS & MLM DISTRIBUTION BREAKDOWN
+            // 12. RANK ACHIEVERS & MLM DISTRIBUTION BREAKDOWN FOR EXECUTIVE DASHBOARD
             db.query(`
                 SELECT \`rank\`, COUNT(*) as count FROM users WHERE \`rank\` IS NOT NULL AND \`rank\` != '' GROUP BY \`rank\`
             `)

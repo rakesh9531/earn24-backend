@@ -45,7 +45,9 @@ exports.login = async (req, res) => {
             agent: { 
                 name: rows[0].full_name, 
                 id: rows[0].id,
-                phoneNumber: rows[0].phone_number // <--- ADD THIS LINE
+                phoneNumber: rows[0].phone_number,
+                serviceablePincodes: rows[0].serviceable_pincodes || '',
+                isOnline: rows[0].is_online !== undefined ? rows[0].is_online === 1 : true
             } 
         });
     } catch (e) { res.status(500).json({ status: false, message: "Server Error" }); }
@@ -469,4 +471,131 @@ exports.getEarningsSummary = async (req, res) => {
             pagination: { currentPage: page, totalPages }
         });
     } catch (e) { res.status(500).json({ status: false, message: e.message }); }
+};
+
+/**
+ * 9. TOGGLE DUTY STATUS (Online / Offline)
+ */
+exports.toggleDutyStatus = async (req, res) => {
+    const agentId = req.user.id;
+    const { isOnline } = req.body;
+    try {
+        await db.query("UPDATE delivery_agents SET is_online = ? WHERE id = ?", [isOnline ? 1 : 0, agentId]);
+        res.json({ status: true, message: `Duty status updated to ${isOnline ? 'ONLINE' : 'OFFLINE'}.` });
+    } catch (e) {
+        res.status(500).json({ status: false, message: e.message });
+    }
+};
+
+/**
+ * 10. SMART AUTO-DISPATCH ALGORITHM
+ * 1. Checks Local Delivery Agents matching shipping pincode.
+ * 2. If no local rider covers pincode -> Routes to Shiprocket Pan-India Courier (if Admin Toggle is ON).
+ */
+exports.autoDispatchOrder = async (orderId) => {
+    try {
+        // Fetch order shipping pincode & items
+        const [[order]] = await db.query(
+            `SELECT o.id, o.order_number, o.total_amount, sa.pincode, sa.address_line_1, sa.city, sa.state 
+             FROM orders o 
+             JOIN user_addresses sa ON o.shipping_address_id = sa.id 
+             WHERE o.id = ?`,
+            [orderId]
+        );
+
+        if (!order) return { success: false, message: 'Order not found' };
+        const shippingPincode = String(order.pincode).trim();
+
+        // 1. Search for Local Online Delivery Agents matching this exact pincode
+        const [agents] = await db.query(
+            `SELECT id, full_name, phone_number, serviceable_pincodes 
+             FROM delivery_agents 
+             WHERE is_active = 1 AND is_online = 1 
+               AND (serviceable_pincodes IS NULL OR serviceable_pincodes = '' OR FIND_IN_SET(?, REPLACE(serviceable_pincodes, ' ', '')) > 0)
+             ORDER BY RAND() LIMIT 5`,
+            [shippingPincode]
+        );
+
+        if (agents.length > 0) {
+            // Auto-assign to matched local rider
+            const selectedAgent = agents[0];
+            await db.query(
+                "UPDATE orders SET delivery_agent_id = ?, order_status = 'CONFIRMED' WHERE id = ?",
+                [selectedAgent.id, orderId]
+            );
+            console.log(`[Auto-Dispatch] Order #${order.order_number} matched local rider ${selectedAgent.full_name} for Pincode ${shippingPincode}`);
+            return { success: true, mode: 'LOCAL_RIDER', agent: selectedAgent };
+        }
+
+        // 2. No Local Rider found. Check if Pan-India Shiprocket Courier Toggle is ON in app_settings
+        const [[settingsRow]] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key = 'is_shiprocket_active'");
+        const isShiprocketActive = settingsRow ? parseInt(settingsRow.setting_value, 10) === 1 : true;
+
+        if (isShiprocketActive) {
+            console.log(`[Auto-Dispatch] Routing Order #${order.order_number} to Shiprocket Pan-India Courier Partner...`);
+            const shiprocketService = require('../Services/shiprocketService');
+            
+            const shipmentResult = await shiprocketService.createForwardOrder({
+                order_id: order.order_number,
+                order_date: new Date().toISOString(),
+                pickup_location: "Primary",
+                billing_customer_name: "Customer",
+                billing_address: order.address_line_1 || "Address",
+                billing_city: order.city || "City",
+                billing_pincode: shippingPincode,
+                billing_state: order.state || "State",
+                billing_country: "India",
+                billing_email: "customer@earn24.com",
+                billing_phone: "9999999999",
+                shipping_is_billing: true,
+                order_items: [{ name: "Catalog Items", sku: "EARN24-PROD", units: 1, selling_price: order.total_amount }],
+                payment_method: "Prepaid",
+                sub_total: order.total_amount,
+                length: 10, width: 10, height: 10, weight: 0.5
+            }).catch(err => ({ success: false, error: err.message }));
+
+            if (shipmentResult.success) {
+                await db.query(
+                    "UPDATE orders SET order_status = 'SHIPPED_SHIPROCKET', tracking_number = ? WHERE id = ?",
+                    [shipmentResult.awb_code || shipmentResult.shipment_id, orderId]
+                );
+                return { success: true, mode: 'SHIPROCKET_COURIER', shipment: shipmentResult };
+            }
+        }
+
+        console.log(`[Auto-Dispatch] Order #${order.order_number} remaining in Admin Pool (No matching local rider & Shiprocket toggle check)`);
+        return { success: false, message: 'No local rider available and Pan-India courier fallback pending.' };
+    } catch (e) {
+        console.error('[Auto-Dispatch Error]', e.message);
+        return { success: false, message: e.message };
+    }
+};
+
+/**
+ * 11. GET AGENT PROFILE (with Assigned Pincodes)
+ */
+exports.getProfile = async (req, res) => {
+    const agentId = req.user.id;
+    try {
+        const [rows] = await db.query(
+            "SELECT id, full_name, phone_number, serviceable_pincodes, is_online, is_active FROM delivery_agents WHERE id = ?",
+            [agentId]
+        );
+        if (rows.length === 0) return res.status(404).json({ status: false, message: "Agent profile not found." });
+
+        const agent = rows[0];
+        res.json({
+            status: true,
+            data: {
+                id: agent.id,
+                name: agent.full_name,
+                phoneNumber: agent.phone_number,
+                serviceablePincodes: agent.serviceablePincodes || '',
+                isOnline: agent.is_online === 1,
+                isActive: agent.is_active === 1
+            }
+        });
+    } catch (e) {
+        res.status(500).json({ status: false, message: e.message });
+    }
 };
