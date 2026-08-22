@@ -697,6 +697,7 @@ exports.findProductsByPincode = async (req, res) => {
                 LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
                 LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
                 LEFT JOIN brands b ON p.brand_id = b.id
+                LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
                 WHERE 
                     (spp.pincode = ? OR spp.pincode IS NULL OR spp.pincode = '')
                     AND (p.name LIKE ? OR b.name LIKE ?)
@@ -727,6 +728,7 @@ exports.findProductsByPincode = async (req, res) => {
                 JOIN sellers s ON sp.seller_id = s.id
                 LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
                 LEFT JOIN brands b ON p.brand_id = b.id
+                LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
                 WHERE 
                     (p.name LIKE ? OR b.name LIKE ?)
                     AND sp.is_active = TRUE AND p.is_active = TRUE AND p.is_approved = TRUE
