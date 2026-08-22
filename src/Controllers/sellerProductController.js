@@ -676,16 +676,21 @@ exports.findProductsByPincode = async (req, res) => {
         if (isPincodeProvided) {
             query = `
                 SELECT
-                    p.id as product_id, p.name, p.main_image_url, b.name as brand_name,
-                    sp.id as offer_id, sp.selling_price, sp.mrp, sp.quantity,
+                    p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls, b.name as brand_name,
+                    sp.id as offer_id, sp.selling_price, sp.mrp, sp.quantity, sp.minimum_order_quantity,
                     COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * 0.80, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * 0.80)) as bv_earned,
                     (
                         SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                         FROM product_attributes pa
                         JOIN attribute_values av ON pa.attribute_value_id = av.id
                         JOIN attributes attr ON av.attribute_id = attr.id
                         WHERE pa.product_id = p.id
-                    ) as attributes
+                    ) as attributes,
+                    (
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                        FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
+                    ) as variants
                 FROM seller_products sp
                 JOIN products p ON sp.product_id = p.id
                 JOIN sellers s ON sp.seller_id = s.id
@@ -702,16 +707,21 @@ exports.findProductsByPincode = async (req, res) => {
         } else {
             query = `
                 SELECT
-                    p.id as product_id, p.name, p.main_image_url, b.name as brand_name,
-                    sp.id as offer_id, sp.selling_price, sp.mrp, sp.quantity,
+                    p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls, b.name as brand_name,
+                    sp.id as offer_id, sp.selling_price, sp.mrp, sp.quantity, sp.minimum_order_quantity,
                     COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * 0.80, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * 0.80)) as bv_earned,
                     (
                         SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                         FROM product_attributes pa
                         JOIN attribute_values av ON pa.attribute_value_id = av.id
                         JOIN attributes attr ON av.attribute_id = attr.id
                         WHERE pa.product_id = p.id
-                    ) as attributes
+                    ) as attributes,
+                    (
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                        FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
+                    ) as variants
                 FROM seller_products sp
                 JOIN products p ON sp.product_id = p.id
                 JOIN sellers s ON sp.seller_id = s.id
@@ -729,7 +739,9 @@ exports.findProductsByPincode = async (req, res) => {
 
         const processedData = rows.map(row => ({
             ...row,
-            attributes: row.attributes ? JSON.parse(row.attributes) : []
+            attributes: row.attributes ? JSON.parse(row.attributes) : [],
+            gallery_image_urls: row.gallery_image_urls ? (typeof row.gallery_image_urls === 'string' ? JSON.parse(row.gallery_image_urls) : row.gallery_image_urls) : [],
+            variants: row.variants ? (typeof row.variants === 'string' ? JSON.parse(row.variants) : row.variants) : []
         }));
 
         res.status(200).json({ status: true, data: processedData });
