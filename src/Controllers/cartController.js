@@ -25,13 +25,26 @@ exports.getCart = async (req, res) => {
         const bvSetting = settingsRows.find(s => s.setting_key === 'bv_generation_pct_of_profit');
         const bvGenerationPct = bvSetting ? parseFloat(bvSetting.setting_value) : 80.0;
 
+        // Auto-migration: ensure seller_product_variant_id column exists
+        try {
+            await db.query("ALTER TABLE cart_items ADD COLUMN seller_product_variant_id INT NULL AFTER seller_product_id");
+        } catch (e) {
+            // Column already exists
+        }
+
         let query = `
             SELECT 
-                ci.id as cart_item_id, ci.quantity, sp.id as offer_id, p.id as product_id, p.name,
-                p.main_image_url, b.name as brand_name, sp.selling_price, sp.mrp,
+                ci.id as cart_item_id, ci.quantity, ci.seller_product_variant_id,
+                sp.id as offer_id, p.id as product_id,
+                IF(spv.id IS NOT NULL, CONCAT(p.name, ' (', IFNULL(spv.title, CONCAT(IFNULL(spv.color,''), ' ', IFNULL(spv.size,''))), ')'), p.name) as name,
+                COALESCE(spv.variant_image_url, p.main_image_url) as main_image_url,
+                b.name as brand_name,
+                COALESCE(spv.price, sp.selling_price) as selling_price,
+                COALESCE(spv.mrp, sp.mrp) as mrp,
                 sp.minimum_order_quantity, sp.purchase_price, h.gst_percentage,
                 s.display_name as seller_name,
-                GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100)) as bv_earned,
+                spv.title as variant_title, spv.color as variant_color, spv.size as variant_size, spv.sku as variant_sku,
+                GREATEST(0, ((COALESCE(spv.price, sp.selling_price) / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100)) as bv_earned,
                 (
                     ? = '' 
                     OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = ci.seller_product_id)
@@ -41,6 +54,7 @@ exports.getCart = async (req, res) => {
             JOIN seller_products sp ON ci.seller_product_id = sp.id
             JOIN products p ON sp.product_id = p.id
             JOIN sellers s ON sp.seller_id = s.id
+            LEFT JOIN seller_product_variants spv ON ci.seller_product_variant_id = spv.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE ci.cart_id = ?
@@ -72,10 +86,10 @@ exports.getCart = async (req, res) => {
     }
 };
 
-// POST /add - Add an item to the cart
+// POST /add - Add an item to the cart (with variant support)
 exports.addItemToCart = async (req, res) => {
     const userId = req.user.id;
-    const { sellerProductId, quantity } = req.body;
+    const { sellerProductId, variantId, quantity } = req.body;
 
     if (!sellerProductId || !quantity || quantity < 1) {
         return res.status(400).json({ status: false, message: 'Product ID and a valid quantity are required.' });
@@ -86,12 +100,19 @@ exports.addItemToCart = async (req, res) => {
         await connection.beginTransaction();
         const cartId = await getOrCreateCart(connection, userId);
 
+        // Ensure seller_product_variant_id column exists
+        try {
+            await connection.query("ALTER TABLE cart_items ADD COLUMN seller_product_variant_id INT NULL AFTER seller_product_id");
+        } catch (e) {
+            // Column already exists
+        }
+
         const query = `
-            INSERT INTO cart_items (cart_id, seller_product_id, quantity)
-            VALUES (?, ?, ?)
+            INSERT INTO cart_items (cart_id, seller_product_id, seller_product_variant_id, quantity)
+            VALUES (?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity)
         `;
-        await connection.query(query, [cartId, sellerProductId, quantity]);
+        await connection.query(query, [cartId, sellerProductId, variantId || null, quantity]);
         await connection.commit();
         
         res.status(200).json({ status: true, message: 'Item added to cart.' });
