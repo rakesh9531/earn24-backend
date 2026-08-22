@@ -41,11 +41,16 @@ exports.createOrder = async (req, res) => {
         // 2. Fetch specific items with full details (Filter by cartItemIds if provided)
         const itemQuery = `
             SELECT 
-                ci.id as cart_item_id, ci.quantity, sp.id as seller_product_id, p.id as product_id, p.name as product_name,
-                sp.selling_price, sp.purchase_price, h.gst_percentage, u.sponsor_id, sp.quantity as stock_available
+                ci.id as cart_item_id, ci.quantity, ci.seller_product_variant_id,
+                sp.id as seller_product_id, p.id as product_id, p.name as product_name,
+                sp.selling_price, sp.purchase_price, h.gst_percentage, u.sponsor_id, sp.quantity as stock_available,
+                spv.id as variant_id, spv.title as variant_title, spv.color as variant_color,
+                spv.size as variant_size, spv.sku as variant_sku, spv.price as variant_price,
+                spv.variant_image_url as variant_image_url
             FROM cart_items ci
             JOIN seller_products sp ON ci.seller_product_id = sp.id
             JOIN products p ON sp.product_id = p.id
+            LEFT JOIN seller_product_variants spv ON ci.seller_product_variant_id = spv.id
             JOIN users u ON u.id = ?
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE ci.cart_id = ? ${cartItemIds ? 'AND ci.id IN (?)' : ''} FOR UPDATE;
@@ -76,14 +81,15 @@ exports.createOrder = async (req, res) => {
         let calculatedTotalBv = 0;
         let finalSubtotal = 0;
         for (const item of items) {
+            const effectivePrice = item.variant_price ? parseFloat(item.variant_price) : parseFloat(item.selling_price);
             if (item.quantity > item.stock_available) throw new Error(`Insufficient stock for ${item.product_name}`);
 
-            const basePrice = item.selling_price / (1 + ((item.gst_percentage || 0) / 100));
+            const basePrice = effectivePrice / (1 + ((item.gst_percentage || 0) / 100));
             const netProfit = basePrice - item.purchase_price;
             const bvEarnedPerUnit = (netProfit > 0) ? netProfit * (bvGenerationPct / 100) : 0;
 
             calculatedTotalBv += bvEarnedPerUnit * item.quantity;
-            finalSubtotal += (item.selling_price * item.quantity);
+            finalSubtotal += (effectivePrice * item.quantity);
         }
 
         const deliveryFee = (calculatedTotalBv >= bvThreshold) ? specialFee : standardFee;
@@ -100,6 +106,11 @@ exports.createOrder = async (req, res) => {
 
         // 6. Loop Items: Process Attributes, Stock, and Line Records
         for (const item of items) {
+            const effectivePrice = item.variant_price ? parseFloat(item.variant_price) : parseFloat(item.selling_price);
+            const effectiveName = item.variant_title 
+                ? `${item.product_name} (${item.variant_title})` 
+                : (item.variant_color || item.variant_size ? `${item.product_name} (${[item.variant_color, item.variant_size].filter(Boolean).join(' ')})` : item.product_name);
+
             // A. Fetch Attribute Snapshot (Size, Color, etc.)
             const [attrRows] = await connection.query(`
                 SELECT a.name as attr_key, av.value as attr_value
@@ -110,9 +121,14 @@ exports.createOrder = async (req, res) => {
 
             const snapshot = {};
             attrRows.forEach(row => { snapshot[row.attr_key] = row.attr_value; });
+            if (item.variant_title) snapshot['Selected Variant'] = item.variant_title;
+            if (item.variant_color) snapshot['Color'] = item.variant_color;
+            if (item.variant_size) snapshot['Size'] = item.variant_size;
+            if (item.variant_sku) snapshot['SKU'] = item.variant_sku;
+            if (item.variant_image_url) snapshot['Variant Image'] = item.variant_image_url;
 
             // B. Calculate Profit on this specific line
-            const basePrice = item.selling_price / (1 + ((item.gst_percentage || 0) / 100));
+            const basePrice = effectivePrice / (1 + ((item.gst_percentage || 0) / 100));
             const netProfitOnUnit = (basePrice - item.purchase_price);
             const bvEarnedPerUnit = (netProfitOnUnit > 0) ? netProfitOnUnit * (bvGenerationPct / 100) : 0;
 
@@ -124,13 +140,19 @@ exports.createOrder = async (req, res) => {
                     bv_earned_per_unit, total_bv_earned
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
             await connection.query(orderItemSql, [
-                orderId, item.product_id, item.seller_product_id, item.product_name,
+                orderId, item.product_id, item.seller_product_id, effectiveName,
                 JSON.stringify(snapshot),
-                item.quantity, item.selling_price, item.purchase_price, item.gst_percentage || 0.00, item.selling_price * item.quantity,
+                item.quantity, effectivePrice, item.purchase_price, item.gst_percentage || 0.00, effectivePrice * item.quantity,
                 bvEarnedPerUnit, bvEarnedPerUnit * item.quantity
             ]);
 
             // D. Deduct Stock
+            if (item.variant_id) {
+                await connection.query(
+                    'UPDATE seller_product_variants SET stock_quantity = stock_quantity - ? WHERE id = ? AND stock_quantity >= ?',
+                    [item.quantity, item.variant_id, item.quantity]
+                );
+            }
             const [updateResult] = await connection.query(
                 'UPDATE seller_products SET quantity = quantity - ? WHERE id = ? AND quantity >= ?',
                 [item.quantity, item.seller_product_id, item.quantity]

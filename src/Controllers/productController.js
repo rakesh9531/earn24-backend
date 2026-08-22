@@ -1316,6 +1316,8 @@ exports.searchProducts = async (req, res) => {
     // --- 4. Final Data Query with BV Calculation & Attribute Subquery ---
     const baseSelectAndJoins = `
             FROM seller_products sp
+            JOIN sellers s ON sp.seller_id = s.id
+            LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
             JOIN products p ON sp.product_id = p.id
             LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
             LEFT JOIN brands b ON p.brand_id = b.id
@@ -1335,17 +1337,20 @@ exports.searchProducts = async (req, res) => {
                 sp.selling_price, 
                 sp.mrp, 
                 sp.minimum_order_quantity,
-                p.popularity, -- ✅ ADDED THIS to fix the ORDER BY error
-                -- ✅ BV CALCULATION FROM HOME SCREEN (ENFORCE NON-NEGATIVE)
-                GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (${bvGenerationPct} / 100)) as bv_earned,
-                -- ✅ ATTRIBUTES SUBQUERY FROM HOME SCREEN
+                p.popularity,
+                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * 0.80, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * 0.80)) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                     FROM product_attributes pa
                     JOIN attribute_values av ON pa.attribute_value_id = av.id
                     JOIN attributes attr ON av.attribute_id = attr.id
                     WHERE pa.product_id = p.id
-                ) as attributes
+                ) as attributes,
+                (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                    FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
+                ) as variants
             ${baseSelectAndJoins} ${whereString} ${orderByClause} LIMIT ? OFFSET ?
         `;
 
@@ -1360,9 +1365,10 @@ exports.searchProducts = async (req, res) => {
       ...p,
       bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
       gallery_image_urls: p.gallery_image_urls
-        ? JSON.parse(p.gallery_image_urls)
+        ? (typeof p.gallery_image_urls === 'string' ? JSON.parse(p.gallery_image_urls) : p.gallery_image_urls)
         : [],
       attributes: p.attributes ? JSON.parse(p.attributes) : [],
+      variants: p.variants ? (typeof p.variants === 'string' ? JSON.parse(p.variants) : p.variants) : [],
     }));
 
     // Get total count
