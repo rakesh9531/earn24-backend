@@ -473,6 +473,52 @@ exports.cancelUserOrder = async (req, res) => {
     }
 };
 
+exports.requestReturnOrReplacement = async (req, res) => {
+    const userId = req.user.id;
+    const { orderId } = req.params;
+    const { reason, type = 'RETURN' } = req.body;
+
+    if (!reason) {
+        return res.status(400).json({ status: false, message: 'Reason for return or replacement is required.' });
+    }
+
+    try {
+        const [orders] = await db.query(
+            `SELECT id, order_status, created_at FROM orders WHERE id = ? AND user_id = ?`,
+            [orderId, userId]
+        );
+
+        if (orders.length === 0) {
+            return res.status(404).json({ status: false, message: 'Order not found.' });
+        }
+
+        const order = orders[0];
+        if (order.order_status !== 'DELIVERED') {
+            return res.status(400).json({ status: false, message: 'Only delivered orders can be submitted for return or replacement.' });
+        }
+
+        const daysDiff = (new Date() - new Date(order.created_at)) / (1000 * 60 * 60 * 24);
+        if (daysDiff > 7) {
+            return res.status(400).json({ status: false, message: 'The 7-day return/replacement window for this order has expired.' });
+        }
+
+        await db.query(
+            `UPDATE orders 
+             SET return_status = 'REQUESTED', return_reason = ?, return_type = ? 
+             WHERE id = ?`,
+            [reason, type, orderId]
+        );
+
+        res.status(200).json({ 
+            status: true, 
+            message: `Your ${type === 'REPLACEMENT' ? 'replacement' : 'return'} request has been submitted successfully.` 
+        });
+    } catch (error) {
+        console.error("Error in requestReturnOrReplacement:", error);
+        res.status(500).json({ status: false, message: 'Failed to submit return request.' });
+    }
+};
+
 /*
 =============================================================================
                           PREVIOUS CODE REFERENCE

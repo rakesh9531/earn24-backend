@@ -212,14 +212,15 @@ exports.addMerchantProduct = async (req, res) => {
             let mainImageUrl = null;
             let galleryUrls = [];
 
+            const { getRelativeUrl } = require('../utils/fileHelper');
             if (req.files && Array.isArray(req.files)) {
                 req.files.forEach((f, idx) => {
-                    const relativePath = `/uploads/${f.filename}`;
+                    const relativePath = getRelativeUrl(f) || `/uploads/product-images/${f.filename}`;
                     if (idx === 0) mainImageUrl = relativePath;
                     else galleryUrls.push(relativePath);
                 });
             } else if (req.file) {
-                mainImageUrl = `/uploads/${req.file.filename}`;
+                mainImageUrl = getRelativeUrl(req.file) || `/uploads/product-images/${req.file.filename}`;
             }
 
             const isUniversal = (body.delivery_type === 'universal') ? 1 : 0;

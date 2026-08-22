@@ -16,10 +16,7 @@ const getOrCreateCart = async (connection, userId) => {
 exports.getCart = async (req, res) => {
     const userId = req.user.id;
     const { pincode, cartItemIds } = req.query;
-
-    if (!pincode) {
-        return res.status(400).json({ status: false, message: 'A pincode is required to validate the cart.' });
-    }
+    const activePincode = (pincode && pincode !== 'ALL' && pincode !== 'null') ? pincode : '';
 
     try {
         const cartId = await getOrCreateCart(db, userId);
@@ -28,23 +25,28 @@ exports.getCart = async (req, res) => {
         const bvSetting = settingsRows.find(s => s.setting_key === 'bv_generation_pct_of_profit');
         const bvGenerationPct = bvSetting ? parseFloat(bvSetting.setting_value) : 80.0;
 
-        // Base Query
         let query = `
             SELECT 
                 ci.id as cart_item_id, ci.quantity, sp.id as offer_id, p.id as product_id, p.name,
                 p.main_image_url, b.name as brand_name, sp.selling_price, sp.mrp,
                 sp.minimum_order_quantity, sp.purchase_price, h.gst_percentage,
+                s.display_name as seller_name,
                 GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100)) as bv_earned,
-                (EXISTS (SELECT 1 FROM seller_product_pincodes spp WHERE spp.seller_product_id = ci.seller_product_id AND spp.pincode = ?)) AS is_available
+                (
+                    ? = '' 
+                    OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = ci.seller_product_id)
+                    OR EXISTS (SELECT 1 FROM seller_product_pincodes spp WHERE spp.seller_product_id = ci.seller_product_id AND spp.pincode = ?)
+                ) AS is_available
             FROM cart_items ci
             JOIN seller_products sp ON ci.seller_product_id = sp.id
             JOIN products p ON sp.product_id = p.id
+            JOIN sellers s ON sp.seller_id = s.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE ci.cart_id = ?
         `;
         
-        const params = [bvGenerationPct, pincode, cartId];
+        const params = [bvGenerationPct, activePincode, activePincode, cartId];
 
         // Handle filtering by selected items if cartItemIds is provided
         if (cartItemIds) {
@@ -62,16 +64,11 @@ exports.getCart = async (req, res) => {
         }
 
         const [items] = await db.query(query, params);
-        
-        const processedItems = items.map(item => ({
-            ...item,
-            is_available: Boolean(item.is_available)
-        }));
+        res.status(200).json({ status: true, data: items });
 
-        res.status(200).json({ status: true, data: processedItems });
     } catch (error) {
-        console.error("Error getting cart:", error);
-        res.status(500).json({ status: false, message: 'Failed to retrieve cart.' });
+        console.error("Error fetching cart:", error);
+        res.status(500).json({ status: false, message: 'Failed to fetch cart.' });
     }
 };
 
@@ -186,22 +183,36 @@ exports.validateCartForCheckout = async (req, res) => {
         }
 
         const offerIds = items.map(item => item.offer_id);
-        const [pincodeRows] = await db.query(
-            `SELECT seller_product_id, pincode FROM seller_product_pincodes WHERE seller_product_id IN (?)`,
-            [offerIds]
+        const [rows] = await db.query(
+            `SELECT 
+                sp.id as offer_id,
+                p.is_universal_pincode,
+                (SELECT COUNT(*) FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id) as restriction_count,
+                EXISTS(SELECT 1 FROM seller_product_pincodes spp WHERE spp.seller_product_id = sp.id AND spp.pincode = ?) as is_matched
+            FROM seller_products sp
+            JOIN products p ON sp.product_id = p.id
+            WHERE sp.id IN (?)`,
+            [pincode, offerIds]
         );
-        
-        const availabilityMap = pincodeRows.reduce((acc, row) => {
-            if (!acc[row.seller_product_id]) { acc[row.seller_product_id] = new Set(); }
-            acc[row.seller_product_id].add(row.pincode.toString());
+
+        const infoMap = rows.reduce((acc, row) => {
+            acc[row.offer_id] = row;
             return acc;
         }, {});
 
         const validatedItems = items.map(item => {
-            const availablePincodes = availabilityMap[item.offer_id] || new Set();
+            const info = infoMap[item.offer_id];
+            let isAvailable = true;
+            if (info) {
+                if (info.is_universal_pincode === 1 || info.restriction_count === 0) {
+                    isAvailable = true;
+                } else {
+                    isAvailable = info.is_matched === 1;
+                }
+            }
             return {
                 ...item, 
-                is_available: availablePincodes.has(pincode.toString()) 
+                is_available: isAvailable 
             };
         });
 

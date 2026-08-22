@@ -1290,8 +1290,10 @@ exports.searchProducts = async (req, res) => {
       whereClauses.push("p.brand_id = ?");
       queryParams.push(brandId);
     }
-    if (pincode) {
-      whereClauses.push("spp.id IS NOT NULL");
+    const isPincodeProvided = pincode && pincode !== 'ALL' && pincode !== 'null' && pincode !== 'undefined';
+    if (isPincodeProvided) {
+      whereClauses.push("(p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode IS NULL)");
+      queryParams.push(pincode);
     }
 
     const whereString = `WHERE ${whereClauses.join(" AND ")}`;
@@ -1315,12 +1317,10 @@ exports.searchProducts = async (req, res) => {
     const baseSelectAndJoins = `
             FROM seller_products sp
             JOIN products p ON sp.product_id = p.id
+            LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-            ${pincode ? `JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id AND spp.pincode = ?` : ""}
         `;
-
-    if (pincode) queryParams.unshift(pincode);
 
     // Actual Data SQL
     const dataQuery = `
@@ -1422,21 +1422,30 @@ exports.getProductForUser = async (req, res) => {
   const { pincode } = req.query; // Pincode is optional here
 
   try {
+    const activePincode = (pincode && pincode !== 'null' && pincode !== 'undefined') ? pincode : '';
     const query = `
             SELECT 
-                p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
+                p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls, p.is_universal_pincode,
                 b.name as brand_name,
                 sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
-                ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * 80 / 100 as bv_earned,
+                s.display_name as seller_name,
+                GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * 80 / 100) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                     FROM product_attributes pa
                     JOIN attribute_values av ON pa.attribute_value_id = av.id
                     JOIN attributes attr ON av.attribute_id = attr.id
                     WHERE pa.product_id = p.id
-                ) as attributes
+                ) as attributes,
+                (
+                    ? = '' 
+                    OR p.is_universal_pincode = 1
+                    OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id)
+                    OR EXISTS (SELECT 1 FROM seller_product_pincodes spp WHERE spp.seller_product_id = sp.id AND spp.pincode = ?)
+                ) AS is_serviceable
             FROM products p
             JOIN seller_products sp ON p.id = sp.product_id
+            JOIN sellers s ON sp.seller_id = s.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE p.id = ? AND sp.is_active = TRUE
@@ -1445,7 +1454,7 @@ exports.getProductForUser = async (req, res) => {
             LIMIT 1;
         `;
 
-    const [productRows] = await db.query(query, [id]);
+    const [productRows] = await db.query(query, [activePincode, activePincode, id]);
 
     if (productRows.length === 0) {
       return res
@@ -1457,6 +1466,7 @@ exports.getProductForUser = async (req, res) => {
     }
 
     const product = productRows[0];
+    product.is_serviceable = Boolean(product.is_serviceable);
     // Parse JSON string fields into arrays for the frontend
     product.gallery_image_urls = product.gallery_image_urls
       ? JSON.parse(product.gallery_image_urls)
@@ -1578,9 +1588,10 @@ exports.getProductsByCategory = async (req, res) => {
     const limitNum = parseInt(limit, 10);
     const pageNum = parseInt(page, 10);
     const offset = (pageNum - 1) * limitNum;
+    const isPincodeProvided = pincode && pincode !== 'ALL' && pincode !== 'null' && pincode !== 'undefined';
 
-    if (!categoryId || !pincode) {
-      return res.status(400).json({ status: false, message: "Category ID and Pincode are required." });
+    if (!categoryId) {
+      return res.status(400).json({ status: false, message: "Category ID is required." });
     }
 
     const [settingsRows] = await db.query(
@@ -1588,22 +1599,17 @@ exports.getProductsByCategory = async (req, res) => {
     );
     const bvGenerationPct = settingsRows[0] ? parseFloat(settingsRows[0].setting_value) : 80.0;
 
-    const query = `
+    let query = '';
+    let countQuery = '';
+    let queryParams = [];
+    let countParams = [];
+
+    if (isPincodeProvided) {
+      query = `
             SELECT 
-                p.id, -- Fixed: Changed back to 'id' to stop the mobile app crash
-                p.name, 
-                p.slug, 
-                p.description,
-                p.main_image_url,
-                p.gallery_image_urls,
-                p.popularity,
-                b.name as brand_name,
-                sp.id as offer_id,
-                sp.selling_price, 
-                sp.mrp, 
-                sp.minimum_order_quantity,
+                p.id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
+                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
                 ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
-                -- Dynamic Attributes Subquery
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                     FROM product_attributes pa
@@ -1611,46 +1617,60 @@ exports.getProductsByCategory = async (req, res) => {
                     JOIN attributes attr ON av.attribute_id = attr.id
                     WHERE pa.product_id = p.id
                 ) as attributes
-            FROM 
-                products AS p
-            JOIN 
-                seller_products AS sp ON p.id = sp.product_id
-            JOIN 
-                seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
-            LEFT JOIN 
-                brands AS b ON p.brand_id = b.id
-            LEFT JOIN 
-                hsn_codes AS h ON p.hsn_code_id = h.id
-            WHERE 
-                p.category_id = ? 
-                AND spp.pincode = ?
-                AND p.is_active = 1
-                AND p.is_deleted = 0
-                AND sp.is_active = 1
-                AND sp.selling_price > 0
-            GROUP BY sp.id
-            ORDER BY p.popularity DESC
-            LIMIT ?
-            OFFSET ?;
-        `;
+            FROM products AS p
+            JOIN seller_products AS sp ON p.id = sp.product_id
+            LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
+            LEFT JOIN brands AS b ON p.brand_id = b.id
+            LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
+            WHERE p.category_id = ? 
+                AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode IS NULL)
+                AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+            GROUP BY sp.id ORDER BY p.popularity DESC LIMIT ? OFFSET ?;
+      `;
+      queryParams = [bvGenerationPct, categoryId, pincode, limitNum, offset];
 
-    const [products] = await db.query(query, [bvGenerationPct, categoryId, pincode, limitNum, offset]);
+      countQuery = `
+        SELECT COUNT(DISTINCT sp.id) as total FROM products AS p
+        JOIN seller_products AS sp ON p.id = sp.product_id
+        LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
+        WHERE p.category_id = ? AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode IS NULL)
+          AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+      `;
+      countParams = [categoryId, pincode];
+    } else {
+      query = `
+            SELECT 
+                p.id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
+                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
+                ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
+                (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                    FROM product_attributes pa
+                    JOIN attribute_values av ON pa.attribute_value_id = av.id
+                    JOIN attributes attr ON av.attribute_id = attr.id
+                    WHERE pa.product_id = p.id
+                ) as attributes
+            FROM products AS p
+            JOIN seller_products AS sp ON p.id = sp.product_id
+            LEFT JOIN brands AS b ON p.brand_id = b.id
+            LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
+            WHERE p.category_id = ? 
+                AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+            GROUP BY sp.id ORDER BY p.popularity DESC LIMIT ? OFFSET ?;
+      `;
+      queryParams = [bvGenerationPct, categoryId, limitNum, offset];
 
-    // Count query for pagination
-    const countQuery = `
-      SELECT COUNT(DISTINCT sp.id) as total
-      FROM products AS p
-      JOIN seller_products AS sp ON p.id = sp.product_id
-      JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
-      WHERE p.category_id = ? 
-        AND spp.pincode = ?
-        AND p.is_active = 1
-        AND p.is_deleted = 0
-        AND sp.is_active = 1
-        AND sp.selling_price > 0
-    `;
-    const [countRows] = await db.query(countQuery, [categoryId, pincode]);
-    const totalRecords = countRows[0].total;
+      countQuery = `
+        SELECT COUNT(DISTINCT sp.id) as total FROM products AS p
+        JOIN seller_products AS sp ON p.id = sp.product_id
+        WHERE p.category_id = ? AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+      `;
+      countParams = [categoryId];
+    }
+
+    const [products] = await db.query(query, queryParams);
+    const [countRows] = await db.query(countQuery, countParams);
+    const totalRecords = countRows[0] ? countRows[0].total : 0;
 
     const formattedProducts = products.map(p => ({
       ...p,
@@ -1669,18 +1689,12 @@ exports.getProductsByCategory = async (req, res) => {
       }
     });
 
-
   } catch (error) {
     console.error("Error in getProductsByCategory:", error);
     res.status(500).json({ status: false, message: "Internal server error." });
   }
 };
 
-/**
- * @desc   Fetch products by sub-category ID, available at a specific pincode.
- * @route  GET /api/products/by-subcategory/:subcategoryId
- * @access Public
- */
 exports.getProductsBySubcategory = async (req, res) => {
   try {
     const { subcategoryId } = req.params;
@@ -1688,9 +1702,10 @@ exports.getProductsBySubcategory = async (req, res) => {
     const limitNum = parseInt(limit, 10);
     const pageNum = parseInt(page, 10);
     const offset = (pageNum - 1) * limitNum;
+    const isPincodeProvided = pincode && pincode !== 'ALL' && pincode !== 'null' && pincode !== 'undefined';
 
-    if (!subcategoryId || !pincode) {
-      return res.status(400).json({ status: false, message: "Subcategory ID and Pincode are required." });
+    if (!subcategoryId) {
+      return res.status(400).json({ status: false, message: "Subcategory ID is required." });
     }
 
     const [settingsRows] = await db.query(
@@ -1698,20 +1713,16 @@ exports.getProductsBySubcategory = async (req, res) => {
     );
     const bvGenerationPct = settingsRows[0] ? parseFloat(settingsRows[0].setting_value) : 80.0;
 
-    const query = `
+    let query = '';
+    let countQuery = '';
+    let queryParams = [];
+    let countParams = [];
+
+    if (isPincodeProvided) {
+      query = `
             SELECT 
-                p.id, 
-                p.name, 
-                p.slug, 
-                p.description,
-                p.main_image_url,
-                p.gallery_image_urls,
-                p.popularity,
-                b.name as brand_name,
-                sp.id as offer_id,
-                sp.selling_price, 
-                sp.mrp, 
-                sp.minimum_order_quantity,
+                p.id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
+                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
                 ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -1720,45 +1731,60 @@ exports.getProductsBySubcategory = async (req, res) => {
                     JOIN attributes attr ON av.attribute_id = attr.id
                     WHERE pa.product_id = p.id
                 ) as attributes
-            FROM 
-                products AS p
-            JOIN 
-                seller_products AS sp ON p.id = sp.product_id
-            JOIN 
-                seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
-            LEFT JOIN 
-                brands AS b ON p.brand_id = b.id
-            LEFT JOIN 
-                hsn_codes AS h ON p.hsn_code_id = h.id
-            WHERE 
-                p.subcategory_id = ? 
-                AND spp.pincode = ?
-                AND p.is_active = 1
-                AND p.is_deleted = 0
-                AND sp.is_active = 1
-                AND sp.selling_price > 0
-            GROUP BY sp.id
-            ORDER BY p.popularity DESC
-            LIMIT ?
-            OFFSET ?;
-        `;
-    const [products] = await db.query(query, [bvGenerationPct, subcategoryId, pincode, limitNum, offset]);
+            FROM products AS p
+            JOIN seller_products AS sp ON p.id = sp.product_id
+            LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
+            LEFT JOIN brands AS b ON p.brand_id = b.id
+            LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
+            WHERE p.subcategory_id = ? 
+                AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode IS NULL)
+                AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+            GROUP BY sp.id ORDER BY p.popularity DESC LIMIT ? OFFSET ?;
+      `;
+      queryParams = [bvGenerationPct, subcategoryId, pincode, limitNum, offset];
 
-    // Added: Count query for pagination
-    const countQuery = `
-      SELECT COUNT(DISTINCT sp.id) as total
-      FROM products AS p
-      JOIN seller_products AS sp ON p.id = sp.product_id
-      JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
-      WHERE p.subcategory_id = ? 
-        AND spp.pincode = ?
-        AND p.is_active = 1
-        AND p.is_deleted = 0
-        AND sp.is_active = 1
-        AND sp.selling_price > 0
-    `;
-    const [countRows] = await db.query(countQuery, [subcategoryId, pincode]);
-    const totalRecords = countRows[0].total;
+      countQuery = `
+        SELECT COUNT(DISTINCT sp.id) as total FROM products AS p
+        JOIN seller_products AS sp ON p.id = sp.product_id
+        LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
+        WHERE p.subcategory_id = ? AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode IS NULL)
+          AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+      `;
+      countParams = [subcategoryId, pincode];
+    } else {
+      query = `
+            SELECT 
+                p.id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
+                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
+                ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
+                (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                    FROM product_attributes pa
+                    JOIN attribute_values av ON pa.attribute_value_id = av.id
+                    JOIN attributes attr ON av.attribute_id = attr.id
+                    WHERE pa.product_id = p.id
+                ) as attributes
+            FROM products AS p
+            JOIN seller_products AS sp ON p.id = sp.product_id
+            LEFT JOIN brands AS b ON p.brand_id = b.id
+            LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
+            WHERE p.subcategory_id = ? 
+                AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+            GROUP BY sp.id ORDER BY p.popularity DESC LIMIT ? OFFSET ?;
+      `;
+      queryParams = [bvGenerationPct, subcategoryId, limitNum, offset];
+
+      countQuery = `
+        SELECT COUNT(DISTINCT sp.id) as total FROM products AS p
+        JOIN seller_products AS sp ON p.id = sp.product_id
+        WHERE p.subcategory_id = ? AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+      `;
+      countParams = [subcategoryId];
+    }
+
+    const [products] = await db.query(query, queryParams);
+    const [countRows] = await db.query(countQuery, countParams);
+    const totalRecords = countRows[0] ? countRows[0].total : 0;
 
     const formattedProducts = products.map(p => ({
       ...p,
