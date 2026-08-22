@@ -899,7 +899,11 @@ exports.getHomeScreenData = async (req, res) => {
                             JOIN attribute_values av ON pa.attribute_value_id = av.id
                             JOIN attributes attr ON av.attribute_id = attr.id
                             WHERE pa.product_id = p.id
-                        ) as attributes
+                        ) as attributes,
+                        (
+                            SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url)), ']')
+                            FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
+                        ) as variants
                     FROM seller_products sp
                     LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
                     JOIN products p ON sp.product_id = p.id
@@ -921,7 +925,11 @@ exports.getHomeScreenData = async (req, res) => {
                             JOIN attribute_values av ON pa.attribute_value_id = av.id
                             JOIN attributes attr ON av.attribute_id = attr.id
                             WHERE pa.product_id = p.id
-                        ) as attributes
+                        ) as attributes,
+                        (
+                            SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url)), ']')
+                            FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
+                        ) as variants
                     FROM seller_products sp
                     JOIN products p ON sp.product_id = p.id
                     LEFT JOIN brands b ON p.brand_id = b.id
@@ -939,7 +947,8 @@ exports.getHomeScreenData = async (req, res) => {
             const productsParsed = rawProducts.map(p => ({
                 ...p,
                 gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : [],
-                attributes: p.attributes ? JSON.parse(p.attributes) : []
+                attributes: p.attributes ? JSON.parse(p.attributes) : [],
+                variants: p.variants ? JSON.parse(p.variants) : []
             }));
             return {
                 id: category.id, title: `Best in ${category.name}`,

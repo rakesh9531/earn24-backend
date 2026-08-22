@@ -295,6 +295,31 @@ exports.addMerchantProduct = async (req, res) => {
             }
         }
 
+        // 7. Save Variants if provided
+        if (!Array.isArray(variants)) variants = [];
+        if (variants.length > 0) {
+            try {
+                const variantValues = variants.map(v => [
+                    newOfferId,
+                    productId,
+                    v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant',
+                    v.color || null,
+                    v.size || null,
+                    v.sku || `${sku}-${v.color || ''}-${v.size || ''}`,
+                    parseFloat(v.price || sellingPrice),
+                    parseFloat(v.mrp || mrp),
+                    parseInt(v.quantity || v.stock_quantity || 10, 10),
+                    v.variant_image_url || mainImageUrl
+                ]);
+                await connection.query(
+                    'INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url) VALUES ?',
+                    [variantValues]
+                );
+            } catch (varErr) {
+                console.warn("Could not save product variants:", varErr.message);
+            }
+        }
+
         await connection.commit();
         res.status(201).json({
             status: true,
@@ -328,7 +353,22 @@ exports.getMerchantProducts = async (req, res) => {
                     JOIN attribute_values av ON pa.attribute_value_id = av.id
                     JOIN attributes attr ON av.attribute_id = attr.id
                     WHERE pa.product_id = p.id
-                ) as attributes
+                ) as attributes,
+                (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT(
+                        'id', spv.id,
+                        'title', spv.title,
+                        'color', spv.color,
+                        'size', spv.size,
+                        'sku', spv.sku,
+                        'price', spv.price,
+                        'mrp', spv.mrp,
+                        'stock_quantity', spv.stock_quantity,
+                        'variant_image_url', spv.variant_image_url
+                    )), ']')
+                    FROM seller_product_variants spv
+                    WHERE spv.seller_product_id = sp.id
+                ) as variants
             FROM seller_products sp
             JOIN sellers s ON sp.seller_id = s.id
             JOIN products p ON sp.product_id = p.id
@@ -338,7 +378,8 @@ exports.getMerchantProducts = async (req, res) => {
         const [rows] = await db.query(query, [merchantId]);
         const processedData = rows.map(row => ({
             ...row,
-            attributes: row.attributes ? JSON.parse(row.attributes) : []
+            attributes: row.attributes ? JSON.parse(row.attributes) : [],
+            variants: row.variants ? JSON.parse(row.variants) : []
         }));
         res.status(200).json({ status: true, data: processedData });
     } catch (error) {
