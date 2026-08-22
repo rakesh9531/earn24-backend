@@ -122,8 +122,8 @@ async function ensureTablesExist() {
                 price DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
                 mrp DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
                 stock_quantity INT NOT NULL DEFAULT 0,
-                variant_image_url VARCHAR(500) NULL,
-                variant_image_urls JSON NULL,
+                variant_image_url LONGTEXT NULL,
+                variant_image_urls LONGTEXT NULL,
                 is_active TINYINT(1) DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -131,7 +131,9 @@ async function ensureTablesExist() {
                 INDEX idx_prod_id (product_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `);
-        console.log("✅ Auto-verified seller_product_variants table existence.");
+        await db.query(`ALTER TABLE seller_product_variants MODIFY COLUMN variant_image_url LONGTEXT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE seller_product_variants ADD COLUMN variant_image_urls LONGTEXT NULL;`).catch(() => {});
+        console.log("✅ Auto-verified seller_product_variants table existence & LONGTEXT columns.");
     } catch (err) {
         console.warn("Table auto-creation warning:", err.message);
     }

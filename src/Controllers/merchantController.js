@@ -2,6 +2,34 @@ const db = require('../../db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const moment = require('moment-timezone');
+const fs = require('fs');
+const path = require('path');
+
+function saveBase64Image(base64Str) {
+    if (!base64Str || typeof base64Str !== 'string') return null;
+    if (!base64Str.startsWith('data:image/')) return base64Str;
+
+    try {
+        const matches = base64Str.match(/^data:image\/([a-zA-Z0-9]+);base64,(.+)$/);
+        if (!matches || matches.length !== 3) return base64Str;
+
+        const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+        const dataBuffer = Buffer.from(matches[2], 'base64');
+        const filename = `variant_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+        const uploadDir = path.join(__dirname, '../../uploads/product-images');
+
+        if (!fs.existsSync(uploadDir)) {
+            fs.mkdirSync(uploadDir, { recursive: true });
+        }
+
+        const filePath = path.join(uploadDir, filename);
+        fs.writeFileSync(filePath, dataBuffer);
+        return `/uploads/product-images/${filename}`;
+    } catch (e) {
+        console.warn("Error saving base64 image:", e.message);
+        return base64Str;
+    }
+}
 
 /**
  * Handles the registration of a new Merchant.
@@ -263,14 +291,16 @@ exports.addMerchantProduct = async (req, res) => {
             try { variants = JSON.parse(variants); } catch (e) { variants = []; }
         }
 
-        // 4. Insert into `seller_products` or `merchant_products`
+        const minimumOrderQuantity = parseInt(body.minimum_order_quantity || body.moq || 1, 10);
+
+        // 4. Insert into `seller_products` (is_active = 0 by default for Admin Moderation/Approval)
         const offerQuery = `
             INSERT INTO seller_products 
-              (seller_id, product_id, sku, mrp, merchant_price, admin_margin_percent, selling_price, purchase_price, quantity, low_stock_threshold) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (seller_id, product_id, sku, mrp, merchant_price, admin_margin_percent, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity, is_active) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         `;
         const [result] = await connection.query(offerQuery, [
-            sellerId, productId, sku, mrp, merchantPrice, adminMarginPercent, sellingPrice, merchantPrice, quantity, body.low_stock_alert || 5
+            sellerId, productId, sku, mrp, merchantPrice, adminMarginPercent, sellingPrice, merchantPrice, quantity, body.low_stock_alert || 5, minimumOrderQuantity
         ]);
         const newOfferId = result.insertId;
 
@@ -299,20 +329,30 @@ exports.addMerchantProduct = async (req, res) => {
         if (!Array.isArray(variants)) variants = [];
         if (variants.length > 0) {
             try {
-                const variantValues = variants.map(v => [
-                    newOfferId,
-                    productId,
-                    v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant',
-                    v.color || null,
-                    v.size || null,
-                    v.sku || `${sku}-${v.color || ''}-${v.size || ''}`,
-                    parseFloat(v.price || sellingPrice),
-                    parseFloat(v.mrp || mrp),
-                    parseInt(v.quantity || v.stock_quantity || 10, 10),
-                    v.variant_image_url || mainImageUrl
-                ]);
+                const variantValues = variants.map(v => {
+                    let vImg = saveBase64Image(v.variant_image_url) || mainImageUrl;
+                    let vImgs = [];
+                    if (Array.isArray(v.variant_image_urls)) {
+                        vImgs = v.variant_image_urls.map(img => saveBase64Image(img)).filter(Boolean);
+                    }
+                    if (vImgs.length === 0 && vImg) vImgs.push(vImg);
+
+                    return [
+                        newOfferId,
+                        productId,
+                        v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant',
+                        v.color || null,
+                        v.size || null,
+                        v.sku || `${sku}-${v.color || ''}-${v.size || ''}`,
+                        parseFloat(v.price || sellingPrice),
+                        parseFloat(v.mrp || mrp),
+                        parseInt(v.quantity || v.stock_quantity || 10, 10),
+                        vImg,
+                        JSON.stringify(vImgs)
+                    ];
+                });
                 await connection.query(
-                    'INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url) VALUES ?',
+                    'INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url, variant_image_urls) VALUES ?',
                     [variantValues]
                 );
             } catch (varErr) {
@@ -364,7 +404,8 @@ exports.getMerchantProducts = async (req, res) => {
                         'price', spv.price,
                         'mrp', spv.mrp,
                         'stock_quantity', spv.stock_quantity,
-                        'variant_image_url', spv.variant_image_url
+                        'variant_image_url', spv.variant_image_url,
+                        'variant_image_urls', spv.variant_image_urls
                     )), ']')
                     FROM seller_product_variants spv
                     WHERE spv.seller_product_id = sp.id
@@ -379,7 +420,10 @@ exports.getMerchantProducts = async (req, res) => {
         const processedData = rows.map(row => ({
             ...row,
             attributes: row.attributes ? JSON.parse(row.attributes) : [],
-            variants: row.variants ? JSON.parse(row.variants) : []
+            variants: row.variants ? JSON.parse(row.variants).map(v => ({
+                ...v,
+                variant_image_urls: typeof v.variant_image_urls === 'string' ? JSON.parse(v.variant_image_urls) : (v.variant_image_urls || [])
+            })) : []
         }));
         res.status(200).json({ status: true, data: processedData });
     } catch (error) {
@@ -411,5 +455,101 @@ exports.getMerchantOrders = async (req, res) => {
     } catch (error) {
         console.error("Error fetching merchant orders:", error);
         res.status(500).json({ status: false, message: 'An error occurred.' });
+    }
+};
+
+/**
+ * Handles updating an existing merchant product offer.
+ */
+exports.updateMerchantProduct = async (req, res) => {
+    let connection;
+    try {
+        const merchantId = req.merchantId || req.user?.merchant_id || req.user?.id;
+        const offerId = req.params.id;
+        const body = req.body;
+
+        connection = await db.getConnection();
+        await connection.beginTransaction();
+
+        // 1. Verify offer belongs to merchant (or admin)
+        const [existing] = await connection.query(
+            'SELECT sp.id, sp.product_id FROM seller_products sp JOIN sellers s ON sp.seller_id = s.id WHERE sp.id = ?',
+            [offerId]
+        );
+        if (existing.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ status: false, message: 'Product offer not found.' });
+        }
+
+        const productId = existing[0].product_id;
+
+        // 2. Parse values
+        const merchantPrice = parseFloat(body.price || body.merchant_price || 0);
+        const sellingPrice = merchantPrice;
+        const mrp = parseFloat(body.mrp || sellingPrice);
+        const quantity = parseInt(body.stock_quantity || body.quantity || 0, 10);
+        const minimumOrderQuantity = parseInt(body.minimum_order_quantity || body.moq || 1, 10);
+        const lowStockThreshold = parseInt(body.low_stock_alert || body.low_stock_threshold || 5, 10);
+        const sku = body.sku || '';
+
+        // Update seller_products record
+        await connection.query(
+            `UPDATE seller_products 
+             SET merchant_price = ?, selling_price = ?, mrp = ?, quantity = ?, minimum_order_quantity = ?, low_stock_threshold = ?, sku = ? 
+             WHERE id = ?`,
+            [merchantPrice, sellingPrice, mrp, quantity, minimumOrderQuantity, lowStockThreshold, sku, offerId]
+        );
+
+        // Update master product if details provided
+        if (body.name || body.description) {
+            await connection.query(
+                `UPDATE products SET name = COALESCE(?, name), description = COALESCE(?, description) WHERE id = ?`,
+                [body.name, body.description, productId]
+            );
+        }
+
+        // Update variants if provided
+        let variants = body.variants;
+        if (typeof variants === 'string') {
+            try { variants = JSON.parse(variants); } catch (e) { variants = []; }
+        }
+        if (Array.isArray(variants) && variants.length > 0) {
+            await connection.query('DELETE FROM seller_product_variants WHERE seller_product_id = ?', [offerId]);
+            const variantValues = variants.map(v => {
+                let vImg = saveBase64Image(v.variant_image_url) || null;
+                let vImgs = [];
+                if (Array.isArray(v.variant_image_urls)) {
+                    vImgs = v.variant_image_urls.map(img => saveBase64Image(img)).filter(Boolean);
+                }
+                if (vImgs.length === 0 && vImg) vImgs.push(vImg);
+
+                return [
+                    offerId,
+                    productId,
+                    v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant',
+                    v.color || null,
+                    v.size || null,
+                    v.sku || `${sku}-${v.color || ''}-${v.size || ''}`,
+                    parseFloat(v.price || sellingPrice),
+                    parseFloat(v.mrp || mrp),
+                    parseInt(v.quantity || v.stock_quantity || 10, 10),
+                    vImg,
+                    JSON.stringify(vImgs)
+                ];
+            });
+            await connection.query(
+                'INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url, variant_image_urls) VALUES ?',
+                [variantValues]
+            );
+        }
+
+        await connection.commit();
+        res.status(200).json({ status: true, message: 'Merchant product offer updated successfully.' });
+    } catch (err) {
+        if (connection) await connection.rollback();
+        console.error('Error updating merchant product:', err);
+        res.status(500).json({ status: false, message: err.message || 'Internal server error' });
+    } finally {
+        if (connection) connection.release();
     }
 };
