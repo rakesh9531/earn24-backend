@@ -38,6 +38,7 @@ const permissions = {
         'subcategories:read',
         'brands:read',
         'hsn:read',
+        'attributes:read',
         'products:read'
     ],
 
@@ -51,6 +52,7 @@ const permissions = {
         'subcategories:read',
         'brands:read',
         'hsn:read',
+        'attributes:read',
         'products:read'
     ]
 };
