@@ -1001,9 +1001,10 @@ exports.getRelatedProducts = async (req, res) => {
     if (!productId) return res.status(400).json({ status: false, message: "Product ID is required." });
 
     try {
-        const [productRows] = await db.query('SELECT category_id FROM products WHERE id = ?', [productId]);
+        let [productRows] = await db.query('SELECT category_id, id FROM products WHERE id = ? OR id = (SELECT product_id FROM seller_products WHERE id = ? LIMIT 1)', [productId, productId]);
         if (productRows.length === 0) return res.status(404).json({ status: false, message: "Original product not found." });
         const categoryId = productRows[0].category_id;
+        const masterProductId = productRows[0].id;
 
         const baseSelect = `
             p.id as product_id, p.name, p.main_image_url, p.description, p.gallery_image_urls,
@@ -1032,7 +1033,7 @@ exports.getRelatedProducts = async (req, res) => {
                     (SELECT 2 as priority, ${baseSelect} FROM seller_products sp JOIN sellers s ON sp.seller_id = s.id LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant' JOIN products p ON sp.product_id = p.id LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id LEFT JOIN brands b ON p.brand_id = b.id LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id WHERE (spp.pincode = ? OR spp.pincode IS NULL) AND p.id != ? AND sp.is_active = TRUE AND p.id NOT IN (SELECT p_inner.id FROM seller_products sp_inner JOIN products p_inner ON sp_inner.product_id = p_inner.id LEFT JOIN seller_product_pincodes spp_inner ON sp_inner.id = spp_inner.seller_product_id WHERE p_inner.category_id = ? AND (spp_inner.pincode = ? OR spp_inner.pincode IS NULL)) GROUP BY sp.id)
                 ) as combined_results ORDER BY priority ASC, RAND() LIMIT ?
             `;
-            const [rows] = await db.query(strictPincodeQuery, [categoryId, pincode, productId, pincode, productId, categoryId, pincode, G_LIMIT]);
+            const [rows] = await db.query(strictPincodeQuery, [categoryId, pincode, masterProductId, pincode, masterProductId, categoryId, pincode, G_LIMIT]);
             relatedRows = rows;
         } else {
             const allProductsQuery = `
@@ -1045,19 +1046,34 @@ exports.getRelatedProducts = async (req, res) => {
                 WHERE p.category_id = ? AND p.id != ? AND sp.is_active = TRUE 
                 GROUP BY sp.id ORDER BY RAND() LIMIT ?
             `;
-            const [rows] = await db.query(allProductsQuery, [categoryId, productId, G_LIMIT]);
+            const [rows] = await db.query(allProductsQuery, [categoryId, masterProductId, G_LIMIT]);
             relatedRows = rows;
         }
 
-        const processedProducts = relatedRows.map(row => ({
+        // Fallback: If no products in same category, load active products from any category so "You Might Also Like" section is never empty
+        if (relatedRows.length === 0) {
+            const fallbackQuery = `
+                SELECT ${baseSelect} FROM seller_products sp 
+                JOIN sellers s ON sp.seller_id = s.id 
+                LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
+                JOIN products p ON sp.product_id = p.id 
+                LEFT JOIN brands b ON p.brand_id = b.id 
+                LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
+                WHERE p.id != ? AND sp.is_active = TRUE 
+                GROUP BY sp.id ORDER BY RAND() LIMIT ?
+            `;
+            const [fallbackRows] = await db.query(fallbackQuery, [masterProductId, G_LIMIT]);
+            relatedRows = fallbackRows;
+        }
+
+        const processedData = relatedRows.map(row => ({
             ...row,
-            priority: undefined,
-            gallery_image_urls: row.gallery_image_urls ? JSON.parse(row.gallery_image_urls) : [],
             attributes: row.attributes ? JSON.parse(row.attributes) : [],
+            gallery_image_urls: row.gallery_image_urls ? (typeof row.gallery_image_urls === 'string' ? JSON.parse(row.gallery_image_urls) : row.gallery_image_urls) : [],
             variants: row.variants ? (typeof row.variants === 'string' ? JSON.parse(row.variants) : row.variants) : []
         }));
 
-        res.status(200).json({ status: true, data: processedProducts });
+        res.status(200).json({ status: true, data: processedData });
 
     } catch (error) {
         console.error("Error fetching related products:", error);
