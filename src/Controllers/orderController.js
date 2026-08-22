@@ -43,7 +43,7 @@ exports.createOrder = async (req, res) => {
             SELECT 
                 ci.id as cart_item_id, ci.quantity, ci.seller_product_variant_id,
                 sp.id as seller_product_id, p.id as product_id, p.name as product_name,
-                sp.selling_price, sp.purchase_price, h.gst_percentage, u.sponsor_id, sp.quantity as stock_available,
+                sp.selling_price, sp.purchase_price, sp.admin_margin_percent, h.gst_percentage, u.sponsor_id, sp.quantity as stock_available,
                 spv.id as variant_id, spv.title as variant_title, spv.color as variant_color,
                 spv.size as variant_size, spv.sku as variant_sku, spv.price as variant_price,
                 spv.variant_image_url as variant_image_url
@@ -77,6 +77,15 @@ exports.createOrder = async (req, res) => {
             throw new Error('Cash on Delivery (COD) is currently disabled by the administrator.');
         }
 
+        const computeItemBv = (item, price) => {
+            if (parseFloat(item.admin_margin_percent || 0) > 0) {
+                return Math.max(0, (price * (parseFloat(item.admin_margin_percent) / 100)) * (bvGenerationPct / 100));
+            }
+            const basePrice = price / (1 + ((item.gst_percentage || 0) / 100));
+            const netProfit = basePrice - (item.purchase_price || 0);
+            return Math.max(0, (netProfit > 0) ? netProfit * (bvGenerationPct / 100) : 0);
+        };
+
         // 4. Calculate Totals (Subtotal & BV)
         let calculatedTotalBv = 0;
         let finalSubtotal = 0;
@@ -84,9 +93,7 @@ exports.createOrder = async (req, res) => {
             const effectivePrice = item.variant_price ? parseFloat(item.variant_price) : parseFloat(item.selling_price);
             if (item.quantity > item.stock_available) throw new Error(`Insufficient stock for ${item.product_name}`);
 
-            const basePrice = effectivePrice / (1 + ((item.gst_percentage || 0) / 100));
-            const netProfit = basePrice - item.purchase_price;
-            const bvEarnedPerUnit = (netProfit > 0) ? netProfit * (bvGenerationPct / 100) : 0;
+            const bvEarnedPerUnit = computeItemBv(item, effectivePrice);
 
             calculatedTotalBv += bvEarnedPerUnit * item.quantity;
             finalSubtotal += (effectivePrice * item.quantity);
@@ -128,9 +135,7 @@ exports.createOrder = async (req, res) => {
             if (item.variant_image_url) snapshot['Variant Image'] = item.variant_image_url;
 
             // B. Calculate Profit on this specific line
-            const basePrice = effectivePrice / (1 + ((item.gst_percentage || 0) / 100));
-            const netProfitOnUnit = (basePrice - item.purchase_price);
-            const bvEarnedPerUnit = (netProfitOnUnit > 0) ? netProfitOnUnit * (bvGenerationPct / 100) : 0;
+            const bvEarnedPerUnit = computeItemBv(item, effectivePrice);
 
             // C. Insert Order Item (Including Snapshot)
             const orderItemSql = `
