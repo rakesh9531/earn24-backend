@@ -678,7 +678,7 @@ exports.findProductsByPincode = async (req, res) => {
                 SELECT
                     p.id as product_id, p.name, p.main_image_url, b.name as brand_name,
                     sp.id as offer_id, sp.selling_price, sp.mrp, sp.quantity,
-                    s.display_name as seller_name,
+                    COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
                     (
                         SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                         FROM product_attributes pa
@@ -689,6 +689,7 @@ exports.findProductsByPincode = async (req, res) => {
                 FROM seller_products sp
                 JOIN products p ON sp.product_id = p.id
                 JOIN sellers s ON sp.seller_id = s.id
+                LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
                 LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
                 LEFT JOIN brands b ON p.brand_id = b.id
                 WHERE 
@@ -703,7 +704,7 @@ exports.findProductsByPincode = async (req, res) => {
                 SELECT
                     p.id as product_id, p.name, p.main_image_url, b.name as brand_name,
                     sp.id as offer_id, sp.selling_price, sp.mrp, sp.quantity,
-                    s.display_name as seller_name,
+                    COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
                     (
                         SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                         FROM product_attributes pa
@@ -714,6 +715,7 @@ exports.findProductsByPincode = async (req, res) => {
                 FROM seller_products sp
                 JOIN products p ON sp.product_id = p.id
                 JOIN sellers s ON sp.seller_id = s.id
+                LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
                 LEFT JOIN brands b ON p.brand_id = b.id
                 WHERE 
                     (p.name LIKE ? OR b.name LIKE ?)
@@ -754,6 +756,7 @@ exports.getAllSellerOffers = async (req, res) => {
                 s.display_name AS seller_name, s.sellerable_type, s.sellerable_id,
                 m.business_name AS merchant_business_name, m.owner_name AS merchant_owner_name, m.phone_number AS merchant_phone,
                 h.gst_percentage,
+                GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * 0.80, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * 0.80)) as bv_earned,
                 (SELECT GROUP_CONCAT(pincode) FROM seller_product_pincodes WHERE seller_product_id = sp.id) AS pincodes,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']')
@@ -761,7 +764,11 @@ exports.getAllSellerOffers = async (req, res) => {
                     JOIN attribute_values av ON pa.attribute_value_id = av.id
                     JOIN attributes attr ON av.attribute_id = attr.id
                     WHERE pa.product_id = p.id
-                ) AS attributes
+                ) AS attributes,
+                (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                    FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
+                ) AS variants
             FROM seller_products sp
             JOIN products p ON sp.product_id = p.id
             JOIN sellers s ON sp.seller_id = s.id
@@ -779,6 +786,7 @@ exports.getAllSellerOffers = async (req, res) => {
             ...offer,
             pincodes: offer.pincodes ? offer.pincodes.split(',') : [],
             attributes: offer.attributes ? JSON.parse(offer.attributes) : [],
+            variants: offer.variants ? (typeof offer.variants === 'string' ? JSON.parse(offer.variants) : offer.variants) : [],
             gst_percentage: parseFloat(offer.gst_percentage) || 0
         }));
 
@@ -892,7 +900,8 @@ exports.getHomeScreenData = async (req, res) => {
                         p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
                         sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
                         sp.purchase_price, sp.minimum_order_quantity,
-                        GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100)) as bv_earned,
+                        COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                        GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned,
                         (
                             SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                             FROM product_attributes pa
@@ -905,20 +914,23 @@ exports.getHomeScreenData = async (req, res) => {
                             FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
                         ) as variants
                     FROM seller_products sp
+                    JOIN sellers s ON sp.seller_id = s.id
+                    LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
                     LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
                     JOIN products p ON sp.product_id = p.id
                     LEFT JOIN brands b ON p.brand_id = b.id
                     LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
                     WHERE (p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode IS NULL OR spp.pincode = '') AND p.category_id = ? AND sp.is_active = TRUE
                     GROUP BY sp.id ORDER BY p.popularity DESC LIMIT 10
-                `, [bvGenerationPct, pincode, category.id]);
+                `, [bvGenerationPct, bvGenerationPct, pincode, category.id]);
             } else {
                 return db.query(`
                     SELECT 
                         p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
                         sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
                         sp.purchase_price, sp.minimum_order_quantity,
-                        GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100)) as bv_earned,
+                        COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                        GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned,
                         (
                             SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                             FROM product_attributes pa
@@ -931,12 +943,14 @@ exports.getHomeScreenData = async (req, res) => {
                             FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
                         ) as variants
                     FROM seller_products sp
+                    JOIN sellers s ON sp.seller_id = s.id
+                    LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
                     JOIN products p ON sp.product_id = p.id
                     LEFT JOIN brands b ON p.brand_id = b.id
                     LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
                     WHERE p.category_id = ? AND sp.is_active = TRUE
                     GROUP BY sp.id ORDER BY p.popularity DESC LIMIT 10
-                `, [bvGenerationPct, category.id]);
+                `, [bvGenerationPct, bvGenerationPct, category.id]);
             }
         });
 
@@ -980,23 +994,28 @@ exports.getRelatedProducts = async (req, res) => {
         const baseSelect = `
             p.id as product_id, p.name, p.main_image_url, p.description, p.gallery_image_urls,
             b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
-            GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * 80 / 100) as bv_earned,
+            COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+            GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * 0.80, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * 0.80)) as bv_earned,
             (
                 SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                 FROM product_attributes pa
                 JOIN attribute_values av ON pa.attribute_value_id = av.id
                 JOIN attributes attr ON av.attribute_id = attr.id
                 WHERE pa.product_id = p.id
-            ) as attributes
+            ) as attributes,
+            (
+                SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
+            ) as variants
         `;
 
         let relatedRows = [];
         if (isPincodeProvided) {
             const strictPincodeQuery = `
                 SELECT * FROM (
-                    (SELECT 1 as priority, ${baseSelect} FROM seller_products sp JOIN products p ON sp.product_id = p.id LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id LEFT JOIN brands b ON p.brand_id = b.id LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id WHERE p.category_id = ? AND (spp.pincode = ? OR spp.pincode IS NULL) AND p.id != ? AND sp.is_active = TRUE GROUP BY sp.id)
+                    (SELECT 1 as priority, ${baseSelect} FROM seller_products sp JOIN sellers s ON sp.seller_id = s.id LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant' JOIN products p ON sp.product_id = p.id LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id LEFT JOIN brands b ON p.brand_id = b.id LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id WHERE p.category_id = ? AND (spp.pincode = ? OR spp.pincode IS NULL) AND p.id != ? AND sp.is_active = TRUE GROUP BY sp.id)
                     UNION ALL
-                    (SELECT 2 as priority, ${baseSelect} FROM seller_products sp JOIN products p ON sp.product_id = p.id LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id LEFT JOIN brands b ON p.brand_id = b.id LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id WHERE (spp.pincode = ? OR spp.pincode IS NULL) AND p.id != ? AND sp.is_active = TRUE AND p.id NOT IN (SELECT p_inner.id FROM seller_products sp_inner JOIN products p_inner ON sp_inner.product_id = p_inner.id LEFT JOIN seller_product_pincodes spp_inner ON sp_inner.id = spp_inner.seller_product_id WHERE p_inner.category_id = ? AND (spp_inner.pincode = ? OR spp_inner.pincode IS NULL)) GROUP BY sp.id)
+                    (SELECT 2 as priority, ${baseSelect} FROM seller_products sp JOIN sellers s ON sp.seller_id = s.id LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant' JOIN products p ON sp.product_id = p.id LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id LEFT JOIN brands b ON p.brand_id = b.id LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id WHERE (spp.pincode = ? OR spp.pincode IS NULL) AND p.id != ? AND sp.is_active = TRUE AND p.id NOT IN (SELECT p_inner.id FROM seller_products sp_inner JOIN products p_inner ON sp_inner.product_id = p_inner.id LEFT JOIN seller_product_pincodes spp_inner ON sp_inner.id = spp_inner.seller_product_id WHERE p_inner.category_id = ? AND (spp_inner.pincode = ? OR spp_inner.pincode IS NULL)) GROUP BY sp.id)
                 ) as combined_results ORDER BY priority ASC, RAND() LIMIT ?
             `;
             const [rows] = await db.query(strictPincodeQuery, [categoryId, pincode, productId, pincode, productId, categoryId, pincode, G_LIMIT]);
@@ -1004,6 +1023,8 @@ exports.getRelatedProducts = async (req, res) => {
         } else {
             const allProductsQuery = `
                 SELECT ${baseSelect} FROM seller_products sp 
+                JOIN sellers s ON sp.seller_id = s.id 
+                LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
                 JOIN products p ON sp.product_id = p.id 
                 LEFT JOIN brands b ON p.brand_id = b.id 
                 LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
@@ -1018,7 +1039,8 @@ exports.getRelatedProducts = async (req, res) => {
             ...row,
             priority: undefined,
             gallery_image_urls: row.gallery_image_urls ? JSON.parse(row.gallery_image_urls) : [],
-            attributes: row.attributes ? JSON.parse(row.attributes) : []
+            attributes: row.attributes ? JSON.parse(row.attributes) : [],
+            variants: row.variants ? (typeof row.variants === 'string' ? JSON.parse(row.variants) : row.variants) : []
         }));
 
         res.status(200).json({ status: true, data: processedProducts });

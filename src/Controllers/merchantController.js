@@ -387,6 +387,7 @@ exports.getMerchantProducts = async (req, res) => {
     try {
         const query = `
             SELECT sp.*, p.name as product_name, p.main_image_url, p.is_universal_pincode,
+                GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * 0.80, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * 0.80)) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                     FROM product_attributes pa
