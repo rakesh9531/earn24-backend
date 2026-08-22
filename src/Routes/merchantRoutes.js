@@ -17,6 +17,7 @@ router.post('/login',    merchant.loginMerchant);
 router.get('/profile',         auth, merchant.getMerchantProfile);
 router.post('/products',       auth, productUploadMiddleware, merchant.addMerchantProduct);
 router.post('/products/add',   auth, productUploadMiddleware, merchant.addMerchantProduct);
+router.put('/products/:id',    auth, productUploadMiddleware, merchant.updateMerchantProduct);
 router.get('/products',        auth, merchant.getMerchantProducts);
 router.get('/orders',          auth, merchant.getMerchantOrders);
 
