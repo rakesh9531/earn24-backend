@@ -1336,8 +1336,8 @@ exports.searchProducts = async (req, res) => {
                 sp.mrp, 
                 sp.minimum_order_quantity,
                 p.popularity, -- ✅ ADDED THIS to fix the ORDER BY error
-                -- ✅ BV CALCULATION FROM HOME SCREEN
-                ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (${bvGenerationPct} / 100) as bv_earned,
+                -- ✅ BV CALCULATION FROM HOME SCREEN (ENFORCE NON-NEGATIVE)
+                GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (${bvGenerationPct} / 100)) as bv_earned,
                 -- ✅ ATTRIBUTES SUBQUERY FROM HOME SCREEN
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -1609,7 +1609,7 @@ exports.getProductsByCategory = async (req, res) => {
             SELECT 
                 p.id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
                 b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
-                ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
+                GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100)) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                     FROM product_attributes pa
@@ -1642,7 +1642,7 @@ exports.getProductsByCategory = async (req, res) => {
             SELECT 
                 p.id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
                 b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
-                ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
+                GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100)) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                     FROM product_attributes pa
@@ -1723,7 +1723,7 @@ exports.getProductsBySubcategory = async (req, res) => {
             SELECT 
                 p.id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
                 b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
-                ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
+                GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100)) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                     FROM product_attributes pa
@@ -1756,7 +1756,7 @@ exports.getProductsBySubcategory = async (req, res) => {
             SELECT 
                 p.id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
                 b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
-                ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
+                GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100)) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                     FROM product_attributes pa

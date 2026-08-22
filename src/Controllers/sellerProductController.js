@@ -892,7 +892,7 @@ exports.getHomeScreenData = async (req, res) => {
                         p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
                         sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
                         sp.purchase_price, sp.minimum_order_quantity,
-                        ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
+                        GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100)) as bv_earned,
                         (
                             SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                             FROM product_attributes pa
@@ -914,7 +914,7 @@ exports.getHomeScreenData = async (req, res) => {
                         p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
                         sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
                         sp.purchase_price, sp.minimum_order_quantity,
-                        ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * (? / 100) as bv_earned,
+                        GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100)) as bv_earned,
                         (
                             SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                             FROM product_attributes pa
@@ -971,7 +971,7 @@ exports.getRelatedProducts = async (req, res) => {
         const baseSelect = `
             p.id as product_id, p.name, p.main_image_url, p.description, p.gallery_image_urls,
             b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
-            ((sp.selling_price / (1 + (h.gst_percentage / 100))) - sp.purchase_price) * 80 / 100 as bv_earned,
+            GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * 80 / 100) as bv_earned,
             (
                 SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                 FROM product_attributes pa
