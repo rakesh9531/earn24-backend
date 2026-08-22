@@ -3,7 +3,9 @@
 const ROLES = {
     ADMIN: 'admin',
     MANAGER: 'manager',
-    STAFF: 'staff'
+    STAFF: 'staff',
+    MERCHANT: 'Merchant',
+    RETAILER: 'Retailer'
 };
 
 const permissions = {
@@ -21,15 +23,24 @@ const permissions = {
         'orders:updateStatus',
         'reports:read',
         'deliveryAgent:read',
+        'categories:read',
+        'subcategories:read',
+        'brands:read',
+        'hsn:read',
+        'attributes:read'
     ],
     [ROLES.STAFF]: [
         'orders:read',
         'orders:updateStatus',
         'inventory:read',
-        'products:read'
+        'products:read',
+        'categories:read',
+        'subcategories:read',
+        'brands:read',
+        'hsn:read',
+        'attributes:read'
     ],
-
-     [ROLES.MERCHANT]: [
+    'Merchant': [
         'inventory:read:own', 
         'inventory:create:own',
         'inventory:update:own',
@@ -41,9 +52,31 @@ const permissions = {
         'attributes:read',
         'products:read'
     ],
-
-
-     [ROLES.RETAILER]: [
+    'merchant': [
+        'inventory:read:own', 
+        'inventory:create:own',
+        'inventory:update:own',
+        'orders:read:own',
+        'categories:read',
+        'subcategories:read',
+        'brands:read',
+        'hsn:read',
+        'attributes:read',
+        'products:read'
+    ],
+    'Retailer': [
+        'inventory:read:own', 
+        'inventory:create:own',
+        'inventory:update:own',
+        'orders:read:own',
+        'categories:read',
+        'subcategories:read',
+        'brands:read',
+        'hsn:read',
+        'attributes:read',
+        'products:read'
+    ],
+    'retailer': [
         'inventory:read:own', 
         'inventory:create:own',
         'inventory:update:own',

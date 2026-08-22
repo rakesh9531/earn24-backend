@@ -38,7 +38,8 @@ const can = (requiredPermission) => {
             return next();
         }
 
-        const userPermissions = permissions[userRole];
+        const roleKey = Object.keys(permissions).find(k => k.toLowerCase() === userRole.toLowerCase()) || userRole;
+        const userPermissions = permissions[roleKey] || permissions[userRole];
         if (!userPermissions) {
             return res.status(403).json({ status: false, message: `Permission Denied: Role '${userRole}' has no defined permissions.` });
         }
