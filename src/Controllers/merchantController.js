@@ -224,14 +224,16 @@ exports.addMerchantProduct = async (req, res) => {
             }
 
             const isUniversal = (body.delivery_type === 'universal') ? 1 : 0;
+            const slug = (name || 'product').toString().toLowerCase().trim().replace(/[\s\W-]+/g, '-').replace(/^-+|-+$/g, '') + '-' + Date.now();
 
             const masterSql = `
                 INSERT INTO products 
-                  (name, description, category_id, subcategory_id, brand_id, hsn_code_id, main_image_url, gallery_image_urls, is_universal_pincode, created_at, updated_at) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                  (name, slug, description, category_id, subcategory_id, brand_id, hsn_code_id, main_image_url, gallery_image_urls, is_universal_pincode, created_at, updated_at) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
             `;
             const [mRes] = await connection.query(masterSql, [
                 name,
+                slug,
                 description,
                 categoryId ? parseInt(categoryId, 10) : null,
                 subcategoryId ? parseInt(subcategoryId, 10) : null,

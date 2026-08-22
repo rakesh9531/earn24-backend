@@ -10,6 +10,7 @@ CREATE TABLE users (
   is_online BOOLEAN DEFAULT 0,
   is_deleted BOOLEAN DEFAULT 0,
   user_pic VARCHAR(255),
+  is_default_chain TINYINT(1) DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
@@ -60,11 +61,13 @@ CREATE TABLE user_withdraw_requests (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
   amount DECIMAL(12,2) NOT NULL,
-  status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
-  method VARCHAR(50), -- e.g., 'UPI', 'Bank'
-  account_info TEXT, -- JSON or string for account details
-  requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  processed_at DATETIME
+  status ENUM('PENDING', 'APPROVED', 'REJECTED') DEFAULT 'PENDING',
+  bank_details_snapshot JSON NOT NULL COMMENT 'Snapshot of approved bank info at the time of request',
+  utr_number VARCHAR(100) NULL COMMENT 'Bank transaction ID entered by Admin on approval',
+  admin_remarks TEXT NULL COMMENT 'Rejection reason or approval notes',
+  requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  processed_at TIMESTAMP NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
 ALTER TABLE `users` CHANGE `default_sponsor` `default_sponsor` BOOLEAN NULL DEFAULT NULL;
@@ -248,8 +251,11 @@ CREATE TABLE `user_business_volume` (
     `bv_earned` DECIMAL(10, 2) NOT NULL COMMENT 'The final BV points earned from this transaction.',
     `transaction_date` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     `notes` VARCHAR(255) COMMENT 'e.g., "From purchase of Salt by user #123"',
+    `bv_type` ENUM('SELF', 'DOWNLINE') NOT NULL DEFAULT 'SELF',
+    `source_user_id` INT DEFAULT NULL,
     FOREIGN KEY (`user_id`) REFERENCES `users`(`id`),
-    FOREIGN KEY (`product_id`) REFERENCES `products`(`id`)
+    FOREIGN KEY (`product_id`) REFERENCES `products`(`id`),
+    FOREIGN KEY (`source_user_id`) REFERENCES `users`(`id`) ON DELETE SET NULL
 ) COMMENT='Records every BV transaction for each user.';
 
 
@@ -487,3 +493,613 @@ CREATE TABLE IF NOT EXISTS `commission_ledger` (
     FOREIGN KEY (`source_user_id`) REFERENCES `users`(`id`),
     FOREIGN KEY (`source_order_id`) REFERENCES `orders`(`id`)
 );
+
+
+
+
+
+-- Payment gateway --
+
+CREATE TABLE payment_gateway_settings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    gateway_name VARCHAR(50) NOT NULL, -- e.g., 'razorpay', 'phonepe'
+    is_active BOOLEAN DEFAULT 0,
+    encrypted_config TEXT NOT NULL,    -- Stores API keys encrypted
+    encryption_iv VARCHAR(255) NOT NULL, -- Needed to decrypt
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Optional: Table to track payment attempts if you don't have one
+CREATE TABLE payment_transactions (
+    transaction_id VARCHAR(100) PRIMARY KEY,
+    user_id INT,
+    amount DECIMAL(10,2),
+    gateway VARCHAR(50),
+    status VARCHAR(20) DEFAULT 'PENDING', -- PENDING, SUCCESS, FAILED
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--OTP --
+
+
+-- 1. Table to track OTP limits and blocking
+CREATE TABLE otp_records (
+    mobile_number VARCHAR(15) PRIMARY KEY,
+    otp_code VARCHAR(6),
+    attempts_count INT DEFAULT 0, -- Tracks daily attempts
+    is_blocked BOOLEAN DEFAULT 0,
+    blocked_until TIMESTAMP NULL,
+    last_sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. Temporary table to hold user data until they verify OTP
+CREATE TABLE temp_registrations (
+    mobile_number VARCHAR(15) PRIMARY KEY,
+    user_data JSON NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NULL 
+);
+
+
+
+---  Retailers logic start
+
+CREATE TABLE retailers (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  shop_name VARCHAR(255) NOT NULL,
+  owner_name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL,
+  phone_number VARCHAR(20) NOT NULL,
+  password VARCHAR(255) NOT NULL,
+  shop_address TEXT,
+  pincode VARCHAR(10) NOT NULL,
+  gst_number VARCHAR(50),
+  pan_number VARCHAR(50),
+  -- 'admin_approval_status' handles the onboarding flow
+  admin_approval_status ENUM('PENDING', 'APPROVED', 'REJECTED') DEFAULT 'APPROVED', 
+  -- 'is_active' handles the Login permission (Block/Unblock)
+  is_active TINYINT DEFAULT 1, 
+  is_deleted TINYINT DEFAULT 0,
+  created_at DATETIME,
+  updated_at DATETIME,
+  
+  -- Performance Indexes
+  UNIQUE KEY unique_email (email),
+  UNIQUE KEY unique_phone (phone_number),
+  INDEX idx_search (shop_name, owner_name, phone_number)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+
+----------
+
+
+CREATE TABLE retailer_inventory (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  retailer_id INT NOT NULL,
+  product_id INT NOT NULL, -- Links to your main 'products' table
+  
+  stock_quantity INT DEFAULT 0,
+  selling_price DECIMAL(10, 2) NOT NULL, -- Retailer might sell at different price than MRP
+  is_active TINYINT DEFAULT 1,
+  
+  created_at DATETIME,
+  updated_at DATETIME,
+
+  FOREIGN KEY (retailer_id) REFERENCES retailers(id) ON DELETE CASCADE,
+  -- Assuming your master product table is named 'products'
+  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE, 
+  
+  -- Ensure a retailer cannot add the same product twice
+  UNIQUE KEY unique_retailer_product (retailer_id, product_id) 
+);
+
+
+
+CREATE TABLE retailer_orders (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  retailer_id INT NOT NULL,
+  user_id INT NULL, 
+  customer_name VARCHAR(100),
+  customer_mobile VARCHAR(20),
+  
+  total_amount DECIMAL(10, 2) NOT NULL,
+  payment_mode ENUM('CASH', 'ONLINE', 'UPI') DEFAULT 'CASH',
+  payment_status ENUM('PAID', 'PENDING') DEFAULT 'PAID',
+  
+  created_at DATETIME,
+  FOREIGN KEY (retailer_id) REFERENCES retailers(id) ON DELETE CASCADE
+);
+
+CREATE TABLE retailer_order_items (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  order_id INT NOT NULL,
+  product_id INT NOT NULL,
+  quantity INT NOT NULL,
+  price DECIMAL(10, 2) NOT NULL, -- Price at moment of sale
+  total DECIMAL(10, 2) NOT NULL,
+  
+  FOREIGN KEY (order_id) REFERENCES retailer_orders(id) ON DELETE CASCADE
+);
+
+
+
+ALTER TABLE retailer_order_items 
+ADD COLUMN bv_earned DECIMAL(10, 2) DEFAULT 0,
+ADD COLUMN total_bv DECIMAL(10, 2) DEFAULT 0;
+
+
+-- 1. Add 'total_bv' to the main Orders table (Fixes your current error)
+ALTER TABLE retailer_orders 
+ADD COLUMN total_bv DECIMAL(10,2) DEFAULT 0 AFTER payment_status;
+
+-- 2. Add BV columns to the Items table (Prevents the next error)
+ALTER TABLE retailer_order_items 
+ADD COLUMN bv_earned DECIMAL(10,2) DEFAULT 0,
+ADD COLUMN total_bv DECIMAL(10,2) DEFAULT 0;
+
+
+ALTER TABLE retailer_order_items 
+ADD COLUMN returned_quantity INT DEFAULT 0;
+
+
+
+ALTER TABLE orders MODIFY COLUMN order_status VARCHAR(50) DEFAULT 'PENDING';
+ALTER TABLE orders MODIFY COLUMN payment_status VARCHAR(50) DEFAULT 'PENDING';
+
+
+
+ALTER TABLE payment_transactions ADD COLUMN order_id INT NULL;
+
+
+
+
+
+
+-------------------------------------------------------------------------------
+
+
+
+
+ALTER TABLE orders 
+ADD COLUMN delivery_otp VARCHAR(6) NULL AFTER order_status,
+ADD COLUMN delivery_payment_mode VARCHAR(20) NULL AFTER delivery_otp,
+ADD COLUMN delivery_amount_collected DECIMAL(10,2) DEFAULT 0.00 AFTER delivery_payment_mode,
+ADD COLUMN delivered_at TIMESTAMP NULL AFTER delivery_amount_collected;
+
+
+------------------------------------------------------------------------------------
+
+
+CREATE TABLE shipping_addresses (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    address_line_1 VARCHAR(255) NOT NULL,
+    address_line_2 VARCHAR(255) NULL,
+    landmark VARCHAR(100) NULL,
+    city VARCHAR(100) NOT NULL,
+    state VARCHAR(100) NOT NULL,
+    pincode VARCHAR(10) NOT NULL,
+    address_type ENUM('HOME', 'WORK', 'OTHER') DEFAULT 'HOME',
+    is_default TINYINT(1) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+
+
+
+
+
+----------------   Add Attribute--------------------
+
+
+ALTER TABLE order_items 
+ADD COLUMN attributes_snapshot JSON NULL AFTER product_name;
+
+
+
+
+
+-------------------------------------------------------------
+
+
+-- 1. First, let's add the basic delivery handshake columns that were missing
+ALTER TABLE orders 
+ADD COLUMN delivery_otp VARCHAR(6) NULL AFTER order_status,
+ADD COLUMN delivery_payment_mode VARCHAR(20) NULL AFTER delivery_otp,
+ADD COLUMN delivery_amount_collected DECIMAL(10,2) DEFAULT 0.00 AFTER delivery_payment_mode,
+ADD COLUMN delivered_at TIMESTAMP NULL AFTER delivery_amount_collected;
+
+-- 2. Now, add the Cash Settlement columns for the Admin verification
+ALTER TABLE orders 
+ADD COLUMN is_cash_settled TINYINT(1) DEFAULT 0 AFTER delivered_at,
+ADD COLUMN cash_settled_at TIMESTAMP NULL AFTER is_cash_settled,
+ADD COLUMN settled_by_admin_id INT NULL AFTER cash_settled_at;
+
+-- 3. (Optional but Recommended) Link the admin ID to the users table
+ALTER TABLE orders
+ADD CONSTRAINT fk_settled_by_admin
+FOREIGN KEY (settled_by_admin_id) REFERENCES users(id);
+
+
+
+CREATE TABLE admin_settlement_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    admin_id INT NOT NULL,
+    agent_id INT NOT NULL,
+    order_id INT NOT NULL,
+    amount_received DECIMAL(10,2) NOT NULL,
+    remarks TEXT,
+    settled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+
+-------------------------------------------------------------------------------------
+
+
+CREATE TABLE app_pages (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    page_key VARCHAR(50) UNIQUE NOT NULL, 
+    title VARCHAR(100) NOT NULL,
+    content LONGTEXT NOT NULL,            
+    target_app ENUM('USER_APP', 'AGENT_APP', 'BOTH') DEFAULT 'BOTH',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Insert starting data
+INSERT INTO app_pages (page_key, title, content, target_app) VALUES 
+('privacy_policy', 'Privacy Policy', '<h1>Privacy Policy</h1><p>Standard policy...</p>', 'BOTH'),
+('terms_conditions', 'Terms & Conditions', '<h1>Terms</h1><p>Standard terms...</p>', 'BOTH'),
+('about_us', 'About Earn24', '<h1>About Us</h1><p>Company info...</p>', 'USER_APP'),
+('agent_manual', 'Agent Guidelines', '<h1>Guidelines</h1><p>How to deliver...</p>', 'AGENT_APP'),
+('contact_us', 'Contact Support', '<h3>Email: support@earn24.in</h3>', 'BOTH');
+
+
+-------------------------------------------
+
+
+-- npm install ngx-quill quill --save --legacy-peer-deps  admin panel install
+
+
+
+-------        npm install ngx-quill@16.2.1 quill@1.3.7 --save --legacy-peer-deps
+
+
+-------   npm install @types/quill@1.3.10 --save-dev --legacy-peer-deps
+
+
+
+
+
+-------------   npm install chart.js
+
+
+----------------------------------------------------------------------------------------------------------------------
+
+
+
+CREATE TABLE IF NOT EXISTS web_landing_content (
+    id INT PRIMARY KEY DEFAULT 1,
+    app_name VARCHAR(255) NOT NULL,
+    page_title VARCHAR(255) NOT NULL,
+    page_description TEXT NOT NULL,
+    download_link VARCHAR(255),
+    main_image_url VARCHAR(255),
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS web_landing_gallery (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    image_url VARCHAR(255) NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Crucial: The controller uses UPDATE...WHERE id=1, so we must have a row 1
+INSERT IGNORE INTO web_landing_content (id, app_name, page_title, page_description, download_link) 
+VALUES (1, 'My App', 'Welcome', 'Description...', 'https://google.com');
+
+
+
+
+
+
+
+-------------------MLM START LOGIC(ANTY)--------------------------------------
+
+
+-- 1. App Settings Update/Insert
+INSERT INTO `app_settings` (`setting_key`, `setting_value`, `description`) VALUES 
+('profit_dist_cashback_pct', '29.0', 'Instant Cash Back to Buyer (All)'),
+('profit_dist_performance_bonus_pct', '4.5', 'Performance Bonus Fund for all'),
+('profit_dist_royalty_pct', '2.0', 'Royalty Fund for Diamond and above'),
+('profit_dist_binary_income_pct', '15.0', 'Binary Income Fund for Distributors'),
+('profit_dist_gift_reward_pct', '4.0', 'Gift / Reward Fund for all'),
+('profit_dist_leadership_pct', '2.0', 'Leadership Fund for Leaders and above'),
+('profit_dist_travel_pct', '2.0', 'Travel Fund for Team Leaders and above'),
+('profit_dist_bike_pct', '2.0', 'Bike Fund for Assistant Supervisors and above'),
+('profit_dist_car_pct', '2.0', 'Car Fund for Supervisors and above'),
+('profit_dist_house_pct', '2.0', 'House Fund for Assistant Managers and above'),
+('profit_dist_insurance_pct', '5.0', 'Insurance Fund for Managers and above'),
+('profit_dist_bonus_relief_pct', '2.0', 'Bonus / Relief Fund for Sr. Managers and Directors'),
+('profit_dist_company_tour_pct', '10.0', 'Company Tour Fund for Supervisors and above'),
+('profit_dist_company_programme_pct', '10.0', 'Company Programme / Seminar Fund for all'),
+('profit_dist_misc_expenses_pct', '0.5', 'Company Miscellaneous Expenses Fund'),
+('profit_dist_retailer_merchandise_pct', '7.5', 'Retailer Merchandise Fund for anyone')
+ON DUPLICATE KEY UPDATE 
+`setting_value` = VALUES(`setting_value`), 
+`description` = VALUES(`description`);
+
+-- 2. Monthly Pools Update (Only add if they don't exist)
+-- Note: MySQL simple version doesn't support ADD COLUMN IF NOT EXISTS directly.
+-- In columns ko check kar lijiye agar aapke table mein nahi hain toh ye run karen:
+
+ALTER TABLE `monthly_company_pools` 
+ADD COLUMN IF NOT EXISTS `binary_income_fund` DECIMAL(15,2) DEFAULT 0.00,
+ADD COLUMN IF NOT EXISTS `gift_reward_fund` DECIMAL(15,2) DEFAULT 0.00,
+ADD COLUMN IF NOT EXISTS `leadership_fund` DECIMAL(15,2) DEFAULT 0.00,
+ADD COLUMN IF NOT EXISTS `travel_fund` DECIMAL(15,2) DEFAULT 0.00,
+ADD COLUMN IF NOT EXISTS `bike_fund` DECIMAL(15,2) DEFAULT 0.00,
+ADD COLUMN IF NOT EXISTS `car_fund` DECIMAL(15,2) DEFAULT 0.00,
+ADD COLUMN IF NOT EXISTS `house_fund` DECIMAL(15,2) DEFAULT 0.00,
+ADD COLUMN IF NOT EXISTS `insurance_fund` DECIMAL(15,2) DEFAULT 0.00,
+ADD COLUMN IF NOT EXISTS `bonus_relief_fund` DECIMAL(15,2) DEFAULT 0.00,
+ADD COLUMN IF NOT EXISTS `company_tour_fund` DECIMAL(15,2) DEFAULT 0.00,
+ADD COLUMN IF NOT EXISTS `company_programme_fund` DECIMAL(15,2) DEFAULT 0.00,
+ADD COLUMN IF NOT EXISTS `company_misc_expenses_fund` DECIMAL(15,2) DEFAULT 0.00,
+ADD COLUMN IF NOT EXISTS `retailer_fund` DECIMAL(15,2) DEFAULT 0.00;
+
+-------------------------------------
+
+ALTER TABLE sellers ADD COLUMN gstin VARCHAR(15) NULL, ADD COLUMN address TEXT NULL;
+-- Ab Admin (id=1) ke aage ye details bhar dein DBeaver mein.
+
+-- Admin (id=1) ke liye dummy data update karein
+UPDATE sellers 
+SET gstin = '07AAAAA0000A1Z5', 
+    address = 'Earn24 Corporate Hub, Block-B, 4th Floor, Connaught Place, New Delhi - 110001' 
+WHERE id = 1;
+
+-- Agar koi aur sellers hain, unke liye ek general update (optional):
+UPDATE sellers 
+SET gstin = '27ABCDE1234F1Z1', 
+    address = 'Seller Distribution Center, Industrial Area, Noida, UP' 
+WHERE id > 1 AND gstin IS NULL;
+
+-------------------------------------------------------------------
+
+
+/* Orders table mein rejection details track karne ke liye */
+ALTER TABLE orders 
+ADD COLUMN rejection_reason TEXT NULL, 
+ADD COLUMN last_rejected_by_agent_id INT NULL;
+
+
+CREATE TABLE IF NOT EXISTS `user_favorites` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `user_id` INT NOT NULL,
+  `product_id` INT NOT NULL,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `uq_user_product_fav` (`user_id`, `product_id`),
+  FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE,
+  FOREIGN KEY (`product_id`) REFERENCES `products`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+
+
+
+----------------------------------------------------------------
+
+-- Foreign Key checks ko temporarily disable karein (errors se bachne ke liye)
+SET FOREIGN_KEY_CHECKS = 0;
+
+-- 1. Truncate/Clear all transaction, ledger and orders tables
+TRUNCATE TABLE user_binary_bv_entries;
+TRUNCATE TABLE binary_matching_payouts;
+TRUNCATE TABLE commission_ledger;
+TRUNCATE TABLE user_business_volume;
+TRUNCATE TABLE profit_distribution_ledger;
+TRUNCATE TABLE order_items;
+TRUNCATE TABLE user_wallet_transactions;
+TRUNCATE TABLE user_favorites;
+TRUNCATE TABLE user_addresses;
+DELETE FROM orders;
+
+-- 2. Wallets clear karke sirf Admin aur Mohd ka fresh wallet create karein
+TRUNCATE TABLE user_wallets;
+INSERT INTO user_wallets (user_id, balance) VALUES (1, 0.00), (12, 0.00);
+
+-- 3. Users ka data clean karein (Mohd ID 12 aur Admin ID 1 ko chhodkar baki sab delete karein)
+DELETE FROM users WHERE id NOT IN (1, 12);
+
+-- 4. Mohd (ID 12) ke binary parameters aur accumulated BV ko fresh 0 par reset karein
+UPDATE users 
+SET binary_placement_id = NULL, 
+    binary_position = NULL, 
+    left_leg_bv = 0.00, 
+    right_leg_bv = 0.00, 
+    total_matched_bv = 0.00, 
+    binary_level_matched = 0 
+WHERE id = 12;
+
+-- Foreign Key checks ko wapas enable karein
+SET FOREIGN_KEY_CHECKS = 1;
+
+
+
+-------------------------------------------
+
+
+
+-- Foreign Key checks ko temporarily disable karein
+SET FOREIGN_KEY_CHECKS = 0;
+
+-- 1. Sabhi transactions, ledgers, wallets aur orders tables ko empty karein
+TRUNCATE TABLE user_binary_bv_entries;
+TRUNCATE TABLE binary_matching_payouts;
+TRUNCATE TABLE commission_ledger;
+TRUNCATE TABLE user_business_volume;
+TRUNCATE TABLE profit_distribution_ledger;
+TRUNCATE TABLE order_items;
+TRUNCATE TABLE user_wallet_transactions;
+TRUNCATE TABLE user_favorites;
+TRUNCATE TABLE user_addresses;
+TRUNCATE TABLE user_wallets;
+DELETE FROM orders;
+
+-- 2. Users table ko completely empty karein
+TRUNCATE TABLE users;
+
+-- Foreign Key checks ko wapas enable karein
+SET FOREIGN_KEY_CHECKS = 1;
+
+
+---------------------------------------------------------
+
+-- Foreign Key checks ko temporarily disable karein
+SET FOREIGN_KEY_CHECKS = 0;
+
+-- 1. Sabhi transactions, ledgers, wallets aur orders tables ko empty karein
+TRUNCATE TABLE user_binary_bv_entries;
+TRUNCATE TABLE binary_matching_payouts;
+TRUNCATE TABLE commission_ledger;
+TRUNCATE TABLE user_business_volume;
+TRUNCATE TABLE profit_distribution_ledger;
+TRUNCATE TABLE order_items;
+TRUNCATE TABLE user_wallet_transactions;
+TRUNCATE TABLE user_favorites;
+TRUNCATE TABLE user_addresses;
+TRUNCATE TABLE user_wallets;
+DELETE FROM orders;
+
+-- 2. Users table ko completely empty karein
+TRUNCATE TABLE users;
+
+-- Foreign Key checks ko wapas enable karein
+SET FOREIGN_KEY_CHECKS = 1;
+
+
+
+
+------------------------------------
+
+
+-- 1. Add is_default_chain column to track default-routed registrations
+ALTER TABLE users ADD COLUMN is_default_chain TINYINT(1) DEFAULT 0;
+
+-- 2. Initialize the first root user as the start of the default chain
+UPDATE users SET is_default_chain = 1 WHERE id = (SELECT id FROM (SELECT id FROM users ORDER BY id ASC LIMIT 1) as tmp);
+
+-- 3. Add leg_user_id column to track direct frontline legs for BV entries
+ALTER TABLE user_binary_bv_entries ADD COLUMN leg_user_id INT NULL AFTER source_user_id;
+
+-- 4. Create indexes to optimize multi-leg matching lookup performance
+ALTER TABLE user_binary_bv_entries ADD INDEX idx_user_leg_depth (user_id, leg_user_id, depth);
+
+-- 5. Add last_rank_promoted_at column to track user rank promotion timestamps
+ALTER TABLE users ADD COLUMN last_rank_promoted_at TIMESTAMP NULL DEFAULT NULL COMMENT 'Date when user was promoted to current rank' AFTER `rank`;
+UPDATE users SET last_rank_promoted_at = created_at WHERE last_rank_promoted_at IS NULL;
+
+-- 6. Add fund distribution columns to track payment counts and qualifying sponsor JSON metadata
+ALTER TABLE users ADD COLUMN bike_fund_months_paid INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN car_fund_months_paid INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN house_fund_months_paid INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN qualifying_sponsor_ids JSON NULL;
+
+-- 7. Create reward_claims table to manage fund distribution requests
+CREATE TABLE IF NOT EXISTS reward_claims (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    reward_type ENUM('BIKE_FUND', 'CAR_FUND', 'DOMESTIC_TOUR', 'INSURANCE_HEALTH', 'INSURANCE_TERM', 'INTERNATIONAL_TOUR', 'RELIEF_FUND', 'HOUSE_FUND', 'LEADERSHIP_FUND', 'TRAVEL_FUND') NOT NULL,
+    claim_month INT NOT NULL, -- YYYYMM format
+    status ENUM('PENDING', 'APPROVED', 'REJECTED') DEFAULT 'PENDING',
+    user_details JSON NULL,
+    admin_notes TEXT NULL,
+    attachment_path VARCHAR(255) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+ALTER TABLE reward_claims ADD INDEX idx_user_status (user_id, status);
+
+
+
+--------------------KYC--------------------------------
+
+
+-- =====================================================
+-- KYC Document Upload Columns Migration
+-- Run on: earn24 production/staging database
+-- Table: user_kyc
+-- =====================================================
+
+-- Step 1: Check if columns already exist (optional safety check)
+SELECT COLUMN_NAME 
+FROM INFORMATION_SCHEMA.COLUMNS 
+WHERE TABLE_NAME = 'user_kyc' 
+AND TABLE_SCHEMA = DATABASE()
+AND COLUMN_NAME IN ('pan_card_doc', 'aadhaar_card_doc', 'bank_passbook_doc');
+
+-- Step 2: Add document path columns (run only if above query returns 0 rows)
+ALTER TABLE `user_kyc`
+  ADD COLUMN `pan_card_doc` VARCHAR(500) NULL 
+    COMMENT 'Server path to uploaded PAN Card image' 
+    AFTER `bank_name`,
+    
+  ADD COLUMN `aadhaar_card_doc` VARCHAR(500) NULL 
+    COMMENT 'Server path to uploaded Aadhaar Card image' 
+    AFTER `pan_card_doc`,
+    
+  ADD COLUMN `bank_passbook_doc` VARCHAR(500) NULL 
+    COMMENT 'Server path to uploaded Bank Passbook/Cheque image' 
+    AFTER `aadhaar_card_doc`;
+
+-- Step 3: Verify columns added successfully
+SHOW COLUMNS FROM `user_kyc` LIKE '%doc%';
+
+
+-- =====================================================
+-- Multi-Vendor, Universal Pincode & Order Returns Schema Migration
+-- =====================================================
+
+-- 1. Universal Pincode flag on products table
+ALTER TABLE `products` ADD COLUMN `is_universal_pincode` TINYINT(1) DEFAULT 0 COMMENT '1 = Pan-India Universal product, 0 = Pincode restricted';
+
+-- 2. Merchant pricing & Admin margin on seller_products table
+ALTER TABLE `seller_products` 
+  ADD COLUMN `merchant_price` DECIMAL(15,2) NULL COMMENT 'Original price set by merchant',
+  ADD COLUMN `admin_margin_percent` DECIMAL(5,2) DEFAULT 10.00 COMMENT 'Admin margin percentage added to user price';
+
+-- 3. Serviceable pincodes list on delivery_agents table
+ALTER TABLE `delivery_agents` ADD COLUMN `serviceable_pincodes` TEXT NULL COMMENT 'Comma separated list of operating pincodes';
+
+-- 4. Merchant Document Uploads
+ALTER TABLE `merchants`
+  ADD COLUMN `pan_card_doc` VARCHAR(500) NULL COMMENT 'Uploaded PAN Document Path',
+  ADD COLUMN `gst_cert_doc` VARCHAR(500) NULL COMMENT 'Uploaded GST Certificate Path',
+  ADD COLUMN `bank_passbook_doc` VARCHAR(500) NULL COMMENT 'Uploaded Passbook/Cheque Path';
+
+-- 5. Create order_returns table for Return & Replacement workflow
+CREATE TABLE IF NOT EXISTS `order_returns` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `order_id` INT NOT NULL,
+  `order_item_id` INT NOT NULL,
+  `user_id` INT NOT NULL,
+  `merchant_id` INT NOT NULL,
+  `return_type` ENUM('RETURN', 'REPLACEMENT') NOT NULL DEFAULT 'RETURN',
+  `reason` TEXT NOT NULL,
+  `images_json` JSON NULL,
+  `status` ENUM('PENDING', 'APPROVED', 'REJECTED', 'PICKUP_INITIATED', 'RECEIVED_BY_MERCHANT', 'COMPLETED') DEFAULT 'PENDING',
+  `courier_tracking_id` VARCHAR(100) NULL,
+  `refund_amount` DECIMAL(15,2) DEFAULT 0.00,
+  `admin_notes` TEXT NULL,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (`order_id`) REFERENCES `orders`(`id`) ON DELETE CASCADE,
+  FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+

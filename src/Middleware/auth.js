@@ -33,8 +33,8 @@ const can = (requiredPermission) => {
             return res.status(403).json({ status: false, message: 'Permission Denied: User role not found in token.' });
         }
 
-        // ✅ Always allow admin
-        if (userRole === 'admin') {
+        // ✅ Always allow admin (case-insensitive)
+        if (userRole && userRole.toLowerCase() === 'admin') {
             return next();
         }
 

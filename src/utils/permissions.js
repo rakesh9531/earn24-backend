@@ -33,17 +33,25 @@ const permissions = {
         'inventory:read:own', 
         'inventory:create:own',
         'inventory:update:own',
-        'orders:read:own'
+        'orders:read:own',
+        'categories:read',
+        'subcategories:read',
+        'brands:read',
+        'hsn:read',
+        'products:read'
     ],
 
 
      [ROLES.RETAILER]: [
-        // For now, we will give them the same permissions as a Merchant.
-        // You can easily customize this list later if their roles diverge.
         'inventory:read:own', 
         'inventory:create:own',
         'inventory:update:own',
-        'orders:read:own'
+        'orders:read:own',
+        'categories:read',
+        'subcategories:read',
+        'brands:read',
+        'hsn:read',
+        'products:read'
     ]
 };
 
