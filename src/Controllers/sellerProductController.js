@@ -1035,12 +1035,26 @@ exports.getHomeScreenData = async (req, res) => {
 
         const categorizedProducts = categoryTree.map((category, index) => {
             const rawProducts = productResults[index][0];
-            const productsParsed = rawProducts.map(p => ({
-                ...p,
-                gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : [],
-                attributes: p.attributes ? JSON.parse(p.attributes) : [],
-                variants: p.variants ? JSON.parse(p.variants) : []
-            }));
+            const productsParsed = rawProducts.map(p => {
+                let parsedGallery = [];
+                if (p.gallery_image_urls) {
+                    try { parsedGallery = typeof p.gallery_image_urls === 'string' ? JSON.parse(p.gallery_image_urls) : p.gallery_image_urls; } catch (e) { parsedGallery = []; }
+                }
+                let parsedAttr = [];
+                if (p.attributes) {
+                    try { parsedAttr = typeof p.attributes === 'string' ? JSON.parse(p.attributes) : p.attributes; } catch (e) { parsedAttr = []; }
+                }
+                let parsedVars = [];
+                if (p.variants) {
+                    try { parsedVars = typeof p.variants === 'string' ? JSON.parse(p.variants) : p.variants; } catch (e) { parsedVars = []; }
+                }
+                return {
+                    ...p,
+                    gallery_image_urls: Array.isArray(parsedGallery) ? parsedGallery : [],
+                    attributes: Array.isArray(parsedAttr) ? parsedAttr : [],
+                    variants: Array.isArray(parsedVars) ? parsedVars : []
+                };
+            });
             return {
                 id: category.id, title: `Best in ${category.name}`,
                 parent_category_id: category.id, products: productsParsed
@@ -1129,12 +1143,26 @@ exports.getRelatedProducts = async (req, res) => {
             relatedRows = fallbackRows;
         }
 
-        const processedData = relatedRows.map(row => ({
-            ...row,
-            attributes: row.attributes ? JSON.parse(row.attributes) : [],
-            gallery_image_urls: row.gallery_image_urls ? (typeof row.gallery_image_urls === 'string' ? JSON.parse(row.gallery_image_urls) : row.gallery_image_urls) : [],
-            variants: row.variants ? (typeof row.variants === 'string' ? JSON.parse(row.variants) : row.variants) : []
-        }));
+        const processedData = relatedRows.map(row => {
+            let parsedAttr = [];
+            if (row.attributes) {
+                try { parsedAttr = typeof row.attributes === 'string' ? JSON.parse(row.attributes) : row.attributes; } catch (e) { parsedAttr = []; }
+            }
+            let parsedGallery = [];
+            if (row.gallery_image_urls) {
+                try { parsedGallery = typeof row.gallery_image_urls === 'string' ? JSON.parse(row.gallery_image_urls) : row.gallery_image_urls; } catch (e) { parsedGallery = []; }
+            }
+            let parsedVars = [];
+            if (row.variants) {
+                try { parsedVars = typeof row.variants === 'string' ? JSON.parse(row.variants) : row.variants; } catch (e) { parsedVars = []; }
+            }
+            return {
+                ...row,
+                attributes: Array.isArray(parsedAttr) ? parsedAttr : [],
+                gallery_image_urls: Array.isArray(parsedGallery) ? parsedGallery : [],
+                variants: Array.isArray(parsedVars) ? parsedVars : []
+            };
+        });
 
         res.status(200).json({ status: true, data: processedData });
 
