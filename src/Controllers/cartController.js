@@ -107,12 +107,21 @@ exports.addItemToCart = async (req, res) => {
             // Column already exists
         }
 
+        let actualSellerProductId = sellerProductId;
+        const [spCheck] = await connection.query("SELECT id FROM seller_products WHERE id = ?", [sellerProductId]);
+        if (spCheck.length === 0) {
+            const [spByProduct] = await connection.query("SELECT id FROM seller_products WHERE product_id = ? AND is_active = TRUE LIMIT 1", [sellerProductId]);
+            if (spByProduct.length > 0) {
+                actualSellerProductId = spByProduct[0].id;
+            }
+        }
+
         const query = `
             INSERT INTO cart_items (cart_id, seller_product_id, seller_product_variant_id, quantity)
             VALUES (?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity)
         `;
-        await connection.query(query, [cartId, sellerProductId, variantId || null, quantity]);
+        await connection.query(query, [cartId, actualSellerProductId, variantId || null, quantity]);
         await connection.commit();
         
         res.status(200).json({ status: true, message: 'Item added to cart.' });
