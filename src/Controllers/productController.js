@@ -1365,6 +1365,7 @@ exports.searchProducts = async (req, res) => {
     // --- 5. Process the Result (Parse JSON strings) ---
     const processedProducts = productsRaw.map((p) => ({
       ...p,
+      id: p.offer_id || p.product_id,
       bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
       gallery_image_urls: p.gallery_image_urls
         ? (typeof p.gallery_image_urls === 'string' ? JSON.parse(p.gallery_image_urls) : p.gallery_image_urls)
