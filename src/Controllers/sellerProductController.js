@@ -1121,6 +1121,7 @@ exports.getRelatedProducts = async (req, res) => {
                 LEFT JOIN brands b ON p.brand_id = b.id 
                 LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
                 WHERE p.category_id = ? AND p.id != ? AND sp.is_active = TRUE 
+                  AND NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id)
                 GROUP BY sp.id ORDER BY RAND() LIMIT ?
             `;
             const [rows] = await db.query(allProductsQuery, [categoryId, masterProductId, G_LIMIT]);
@@ -1137,6 +1138,7 @@ exports.getRelatedProducts = async (req, res) => {
                 LEFT JOIN brands b ON p.brand_id = b.id 
                 LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
                 WHERE p.id != ? AND sp.is_active = TRUE 
+                  AND NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id)
                 GROUP BY sp.id ORDER BY RAND() LIMIT ?
             `;
             const [fallbackRows] = await db.query(fallbackQuery, [masterProductId, G_LIMIT]);

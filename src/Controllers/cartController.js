@@ -116,12 +116,33 @@ exports.addItemToCart = async (req, res) => {
             }
         }
 
-        const query = `
-            INSERT INTO cart_items (cart_id, seller_product_id, seller_product_variant_id, quantity)
-            VALUES (?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity)
-        `;
-        await connection.query(query, [cartId, actualSellerProductId, variantId || null, quantity]);
+        let existingRows = [];
+        if (variantId) {
+            const [rows] = await connection.query(
+                "SELECT id, quantity FROM cart_items WHERE cart_id = ? AND seller_product_id = ? AND seller_product_variant_id = ?",
+                [cartId, actualSellerProductId, variantId]
+            );
+            existingRows = rows;
+        } else {
+            const [rows] = await connection.query(
+                "SELECT id, quantity FROM cart_items WHERE cart_id = ? AND seller_product_id = ? AND (seller_product_variant_id IS NULL OR seller_product_variant_id = 0)",
+                [cartId, actualSellerProductId]
+            );
+            existingRows = rows;
+        }
+
+        if (existingRows && existingRows.length > 0) {
+            await connection.query(
+                "UPDATE cart_items SET quantity = quantity + ? WHERE id = ?",
+                [quantity, existingRows[0].id]
+            );
+        } else {
+            await connection.query(
+                "INSERT INTO cart_items (cart_id, seller_product_id, seller_product_variant_id, quantity) VALUES (?, ?, ?, ?)",
+                [cartId, actualSellerProductId, variantId || null, quantity]
+            );
+        }
+
         await connection.commit();
         
         res.status(200).json({ status: true, message: 'Item added to cart.' });
