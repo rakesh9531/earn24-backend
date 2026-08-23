@@ -896,8 +896,64 @@ exports.getHomeScreenData = async (req, res) => {
 
     try {
         const [banners] = await db.query(`SELECT id, image_url, link_to, title FROM banners WHERE is_active = TRUE ORDER BY display_order ASC`);
-        const [parentCategories] = await db.query(`SELECT id, name, image_url FROM product_categories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY id ASC`);
-        const [subCategories] = await db.query(`SELECT id, category_id, name, image_url FROM product_subcategories WHERE is_active = TRUE AND is_deleted = FALSE ORDER BY name ASC`);
+        let parentCategories = [];
+        let subCategories = [];
+
+        if (isPincodeProvided) {
+            const [parents] = await db.query(`
+                SELECT DISTINCT pc.id, pc.name, pc.image_url 
+                FROM product_categories pc 
+                JOIN products p ON p.category_id = pc.id 
+                JOIN seller_products sp ON sp.product_id = p.id 
+                LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id 
+                WHERE pc.is_active = TRUE AND pc.is_deleted = FALSE 
+                  AND p.is_active = TRUE AND p.is_deleted = FALSE 
+                  AND sp.is_active = TRUE AND sp.selling_price > 0 
+                  AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
+                ORDER BY pc.id ASC
+            `, [pincode]);
+            parentCategories = parents;
+
+            const [subs] = await db.query(`
+                SELECT DISTINCT psc.id, psc.category_id, psc.name, psc.image_url 
+                FROM product_subcategories psc 
+                JOIN products p ON p.subcategory_id = psc.id 
+                JOIN seller_products sp ON sp.product_id = p.id 
+                LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id 
+                WHERE psc.is_active = TRUE AND psc.is_deleted = FALSE 
+                  AND p.is_active = TRUE AND p.is_deleted = FALSE 
+                  AND sp.is_active = TRUE AND sp.selling_price > 0 
+                  AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
+                ORDER BY psc.name ASC
+            `, [pincode]);
+            subCategories = subs;
+        } else {
+            const [parents] = await db.query(`
+                SELECT DISTINCT pc.id, pc.name, pc.image_url 
+                FROM product_categories pc 
+                JOIN products p ON p.category_id = pc.id 
+                JOIN seller_products sp ON sp.product_id = p.id 
+                WHERE pc.is_active = TRUE AND pc.is_deleted = FALSE 
+                  AND p.is_active = TRUE AND p.is_deleted = FALSE 
+                  AND sp.is_active = TRUE AND sp.selling_price > 0 
+                  AND (p.is_universal_pincode = 1 OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
+                ORDER BY pc.id ASC
+            `);
+            parentCategories = parents;
+
+            const [subs] = await db.query(`
+                SELECT DISTINCT psc.id, psc.category_id, psc.name, psc.image_url 
+                FROM product_subcategories psc 
+                JOIN products p ON p.subcategory_id = psc.id 
+                JOIN seller_products sp ON sp.product_id = p.id 
+                WHERE psc.is_active = TRUE AND psc.is_deleted = FALSE 
+                  AND p.is_active = TRUE AND p.is_deleted = FALSE 
+                  AND sp.is_active = TRUE AND sp.selling_price > 0 
+                  AND (p.is_universal_pincode = 1 OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
+                ORDER BY psc.name ASC
+            `);
+            subCategories = subs;
+        }
         
         const categoryTree = parentCategories.map(parent => ({
             id: parent.id, name: parent.name, image_url: parent.image_url,
