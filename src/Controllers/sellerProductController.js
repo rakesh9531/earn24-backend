@@ -934,7 +934,11 @@ exports.getHomeScreenData = async (req, res) => {
                     JOIN products p ON sp.product_id = p.id
                     LEFT JOIN brands b ON p.brand_id = b.id
                     LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
-                    WHERE (p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode IS NULL OR spp.pincode = '') AND p.category_id = ? AND sp.is_active = TRUE
+                    WHERE (
+                        p.is_universal_pincode = 1 
+                        OR spp.pincode = ? 
+                        OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id)
+                    ) AND p.category_id = ? AND sp.is_active = TRUE
                     GROUP BY sp.id ORDER BY p.popularity DESC LIMIT 10
                 `, [bvGenerationPct, bvGenerationPct, pincode, category.id]);
             } else {
@@ -962,7 +966,10 @@ exports.getHomeScreenData = async (req, res) => {
                     JOIN products p ON sp.product_id = p.id
                     LEFT JOIN brands b ON p.brand_id = b.id
                     LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
-                    WHERE p.category_id = ? AND sp.is_active = TRUE
+                    WHERE (
+                        p.is_universal_pincode = 1 
+                        OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id)
+                    ) AND p.category_id = ? AND sp.is_active = TRUE
                     GROUP BY sp.id ORDER BY p.popularity DESC LIMIT 10
                 `, [bvGenerationPct, bvGenerationPct, category.id]);
             }

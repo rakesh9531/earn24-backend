@@ -1292,8 +1292,10 @@ exports.searchProducts = async (req, res) => {
     }
     const isPincodeProvided = pincode && pincode !== 'ALL' && pincode !== 'null' && pincode !== 'undefined';
     if (isPincodeProvided) {
-      whereClauses.push("(p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode IS NULL)");
+      whereClauses.push("(p.is_universal_pincode = 1 OR spp.pincode = ? OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))");
       queryParams.push(pincode);
+    } else {
+      whereClauses.push("(p.is_universal_pincode = 1 OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))");
     }
 
     const whereString = `WHERE ${whereClauses.join(" AND ")}`;
@@ -1629,7 +1631,7 @@ exports.getProductsByCategory = async (req, res) => {
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.category_id = ? 
-                AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode IS NULL)
+                AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
                 AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
             GROUP BY sp.id ORDER BY p.popularity DESC LIMIT ? OFFSET ?;
       `;
@@ -1639,7 +1641,7 @@ exports.getProductsByCategory = async (req, res) => {
         SELECT COUNT(DISTINCT sp.id) as total FROM products AS p
         JOIN seller_products AS sp ON p.id = sp.product_id
         LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
-        WHERE p.category_id = ? AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode IS NULL)
+        WHERE p.category_id = ? AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
           AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
       `;
       countParams = [categoryId, pincode];
@@ -1661,6 +1663,7 @@ exports.getProductsByCategory = async (req, res) => {
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.category_id = ? 
+                AND (p.is_universal_pincode = 1 OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
                 AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
             GROUP BY sp.id ORDER BY p.popularity DESC LIMIT ? OFFSET ?;
       `;
@@ -1669,7 +1672,9 @@ exports.getProductsByCategory = async (req, res) => {
       countQuery = `
         SELECT COUNT(DISTINCT sp.id) as total FROM products AS p
         JOIN seller_products AS sp ON p.id = sp.product_id
-        WHERE p.category_id = ? AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+        WHERE p.category_id = ? 
+          AND (p.is_universal_pincode = 1 OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
+          AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
       `;
       countParams = [categoryId];
     }
