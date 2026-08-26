@@ -107,6 +107,18 @@ exports.addItemToCart = async (req, res) => {
             // Column already exists
         }
 
+        // Drop any legacy UNIQUE index on (cart_id, seller_product_id) that prevents multi-variant rows
+        try {
+            const [indexes] = await connection.query("SHOW INDEX FROM cart_items WHERE Key_name != 'PRIMARY' AND Non_unique = 0");
+            for (const idx of indexes) {
+                if (idx.Key_name !== 'PRIMARY') {
+                    try {
+                        await connection.query(`ALTER TABLE cart_items DROP INDEX \`${idx.Key_name}\``);
+                    } catch (err) {}
+                }
+            }
+        } catch (err) {}
+
         let actualSellerProductId = sellerProductId;
         const [spCheck] = await connection.query("SELECT id FROM seller_products WHERE id = ?", [sellerProductId]);
         if (spCheck.length === 0) {
