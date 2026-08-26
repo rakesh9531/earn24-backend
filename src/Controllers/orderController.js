@@ -302,9 +302,12 @@ exports.getOrderDetails = async (req, res) => {
         const [addressRows] = await db.query(addressQuery, [orderRows[0].shipping_address_id]);
 
         const itemsQuery = `
-            SELECT oi.*, p.main_image_url, IFNULL(p.return_window_days, 7) as return_window_days, IFNULL(p.is_returnable, 1) as is_returnable
+            SELECT oi.*, p.main_image_url, 
+                   IFNULL(sp.return_window_days, 7) as return_window_days, 
+                   IFNULL(sp.is_returnable, 1) as is_returnable
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
+            LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
             WHERE oi.order_id = ?
         `;
         const [itemRows] = await db.query(itemsQuery, [orderId]);
