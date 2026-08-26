@@ -1,5 +1,30 @@
 const db = require('../../db');
 
+// --- AUTOMATIC SCHEMA MIGRATION: REMOVE RESTRICTIVE UNIQUE INDEX ON CART ITEMS ---
+(async () => {
+    try {
+        await db.query("ALTER TABLE cart_items DROP INDEX cart_product_unique");
+        console.log("✅ Successfully dropped legacy cart_product_unique constraint!");
+    } catch (e) {}
+    try {
+        await db.query("ALTER TABLE cart_items DROP INDEX unique_cart_product");
+    } catch (e) {}
+    try {
+        await db.query("ALTER TABLE cart_items DROP INDEX cart_id_seller_product_id");
+    } catch (e) {}
+    try {
+        const [indexes] = await db.query("SHOW INDEX FROM cart_items WHERE Key_name != 'PRIMARY' AND Non_unique = 0");
+        for (const idx of indexes) {
+            if (idx.Key_name !== 'PRIMARY') {
+                try {
+                    await db.query(`ALTER TABLE cart_items DROP INDEX \`${idx.Key_name}\``);
+                    console.log(`✅ Dropped non-unique index ${idx.Key_name} from cart_items`);
+                } catch (err) {}
+            }
+        }
+    } catch (e) {}
+})();
+
 // Helper function to get or create a cart for a user
 const getOrCreateCart = async (connection, userId) => {
     let [cart] = await connection.query('SELECT id FROM carts WHERE user_id = ?', [userId]);
@@ -99,25 +124,6 @@ exports.addItemToCart = async (req, res) => {
     try {
         await connection.beginTransaction();
         const cartId = await getOrCreateCart(connection, userId);
-
-        // Ensure seller_product_variant_id column exists
-        try {
-            await connection.query("ALTER TABLE cart_items ADD COLUMN seller_product_variant_id INT NULL AFTER seller_product_id");
-        } catch (e) {
-            // Column already exists
-        }
-
-        // Drop any legacy UNIQUE index on (cart_id, seller_product_id) that prevents multi-variant rows
-        try {
-            const [indexes] = await connection.query("SHOW INDEX FROM cart_items WHERE Key_name != 'PRIMARY' AND Non_unique = 0");
-            for (const idx of indexes) {
-                if (idx.Key_name !== 'PRIMARY') {
-                    try {
-                        await connection.query(`ALTER TABLE cart_items DROP INDEX \`${idx.Key_name}\``);
-                    } catch (err) {}
-                }
-            }
-        } catch (err) {}
 
         let actualSellerProductId = sellerProductId;
         const [spCheck] = await connection.query("SELECT id FROM seller_products WHERE id = ?", [sellerProductId]);
