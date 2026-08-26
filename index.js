@@ -133,7 +133,9 @@ async function ensureTablesExist() {
         `);
         await db.query(`ALTER TABLE seller_product_variants MODIFY COLUMN variant_image_url LONGTEXT NULL;`).catch(() => {});
         await db.query(`ALTER TABLE seller_product_variants ADD COLUMN variant_image_urls LONGTEXT NULL;`).catch(() => {});
-        console.log("✅ Auto-verified seller_product_variants table existence & LONGTEXT columns.");
+        await db.query(`ALTER TABLE delivery_agents ADD COLUMN is_online TINYINT DEFAULT 1;`).catch(() => {});
+        await db.query(`ALTER TABLE delivery_agents ADD COLUMN is_active TINYINT DEFAULT 1;`).catch(() => {});
+        console.log("✅ Auto-verified seller_product_variants table & delivery_agents is_online columns.");
     } catch (err) {
         console.warn("Table auto-creation warning:", err.message);
     }
