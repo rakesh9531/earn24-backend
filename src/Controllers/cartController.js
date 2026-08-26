@@ -155,46 +155,10 @@ exports.addItemToCart = async (req, res) => {
                 [quantity, existingRows[0].id]
             );
         } else {
-            try {
-                await connection.query(
-                    "INSERT INTO cart_items (cart_id, seller_product_id, seller_product_variant_id, quantity) VALUES (?, ?, ?, ?)",
-                    [cartId, actualSellerProductId, variantId || null, quantity]
-                );
-            } catch (insertError) {
-                // SELF-HEALING AUTOMATIC DB REPAIR FOR LEGACY UNIQUE CONSTRAINTS (e.g. cart_product_unique)
-                if (insertError.code === 'ER_DUP_ENTRY' || insertError.errno === 1062) {
-                    console.log("⚠️ Self-Healing: ER_DUP_ENTRY detected! Auto-repairing cart_items table indexes...");
-                    
-                    let keyName = 'cart_product_unique';
-                    if (insertError.sqlMessage) {
-                        const match = insertError.sqlMessage.match(/key ['`"](?:.*?\.)?(.*?)['`"]/i);
-                        if (match && match[1]) {
-                            keyName = match[1];
-                        }
-                    }
-
-                    try {
-                        await db.query(`ALTER TABLE cart_items DROP INDEX \`${keyName}\``);
-                        console.log(`✅ Self-Healing: Successfully dropped restrictive index ${keyName}`);
-                    } catch (dropErr) {}
-
-                    try {
-                        await db.query("ALTER TABLE cart_items DROP INDEX cart_product_unique");
-                    } catch (dropErr) {}
-
-                    try {
-                        await db.query("ALTER TABLE cart_items DROP INDEX unique_cart_product");
-                    } catch (dropErr) {}
-
-                    // Retry insert after dropping restrictive index
-                    await connection.query(
-                        "INSERT INTO cart_items (cart_id, seller_product_id, seller_product_variant_id, quantity) VALUES (?, ?, ?, ?)",
-                        [cartId, actualSellerProductId, variantId || null, quantity]
-                    );
-                } else {
-                    throw insertError;
-                }
-            }
+            await connection.query(
+                "INSERT INTO cart_items (cart_id, seller_product_id, seller_product_variant_id, quantity) VALUES (?, ?, ?, ?)",
+                [cartId, actualSellerProductId, variantId || null, quantity]
+            );
         }
 
         await connection.commit();
