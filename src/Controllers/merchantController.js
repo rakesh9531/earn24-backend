@@ -453,7 +453,18 @@ exports.getMerchantOrders = async (req, res) => {
             ORDER BY o.created_at DESC
         `;
         const [rows] = await db.query(query, [merchantId]);
-        res.status(200).json({ status: true, data: rows });
+        const processedRows = rows.map(r => {
+            let snap = {};
+            if (r.attributes_snapshot) {
+                try { snap = typeof r.attributes_snapshot === 'string' ? JSON.parse(r.attributes_snapshot) : r.attributes_snapshot; } catch (e) {}
+            }
+            return {
+                ...r,
+                image_url: snap['Variant Image'] || null,
+                attributes: snap
+            };
+        });
+        res.status(200).json({ status: true, data: processedRows });
     } catch (error) {
         console.error("Error fetching merchant orders:", error);
         res.status(500).json({ status: false, message: 'An error occurred.' });
