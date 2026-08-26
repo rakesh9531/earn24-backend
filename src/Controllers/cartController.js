@@ -184,17 +184,34 @@ exports.updateCartItem = async (req, res) => {
     }
 
     try {
+        const [itemRows] = await db.query(
+            `SELECT ci.quantity, sp.minimum_order_quantity 
+             FROM cart_items ci 
+             JOIN carts c ON ci.cart_id = c.id 
+             JOIN seller_products sp ON ci.seller_product_id = sp.id 
+             WHERE ci.id = ? AND c.user_id = ?`,
+            [itemId, userId]
+        );
+
+        if (itemRows.length === 0) {
+            return res.status(404).json({ status: false, message: 'Cart item not found.' });
+        }
+
+        const minOrderQty = itemRows[0].minimum_order_quantity || 1;
+        if (quantity < minOrderQty) {
+            return res.status(400).json({ 
+                status: false, 
+                message: `Minimum order quantity for this item is ${minOrderQty}.` 
+            });
+        }
+
         const query = `
             UPDATE cart_items ci
             JOIN carts c ON ci.cart_id = c.id
             SET ci.quantity = ?
             WHERE ci.id = ? AND c.user_id = ?
         `;
-        const [result] = await db.query(query, [quantity, itemId, userId]);
-
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ status: false, message: 'Cart item not found.' });
-        }
+        await db.query(query, [quantity, itemId, userId]);
 
         res.status(200).json({ status: true, message: 'Cart updated successfully.' });
     } catch (error) {
