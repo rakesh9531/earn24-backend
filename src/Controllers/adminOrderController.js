@@ -131,12 +131,22 @@ exports.getAdminOrderDetails = async (req, res) => {
         `;
         const [itemRows] = await db.query(itemsQuery, [orderId]);
 
-        // 3. Process the items to parse the JSON attributes snapshot
-        const processedItems = itemRows.map(item => ({
-            ...item,
-            // Convert the JSON string from DB into a real Javascript Object/Array
-            attributes: item.attributes_snapshot ? (typeof item.attributes_snapshot === 'string' ? JSON.parse(item.attributes_snapshot) : item.attributes_snapshot) : {}
-        }));
+        // 3. Process the items to parse the JSON attributes snapshot & prioritize variant image
+        const processedItems = itemRows.map(item => {
+            let attributes = {};
+            if (item.attributes_snapshot) {
+                try {
+                    attributes = typeof item.attributes_snapshot === 'string' ? JSON.parse(item.attributes_snapshot) : item.attributes_snapshot;
+                } catch (e) {}
+            }
+            const variantImg = attributes['Variant Image'] || item.main_image_url;
+            return {
+                ...item,
+                main_image_url: variantImg,
+                image_url: variantImg,
+                attributes: attributes
+            };
+        });
 
         // 4. Combine results into a single clean object
         const orderDetails = {
