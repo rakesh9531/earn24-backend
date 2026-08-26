@@ -302,17 +302,28 @@ exports.getOrderDetails = async (req, res) => {
         const [addressRows] = await db.query(addressQuery, [orderRows[0].shipping_address_id]);
 
         const itemsQuery = `
-            SELECT oi.*, p.main_image_url 
+            SELECT oi.*, p.main_image_url, IFNULL(p.return_window_days, 7) as return_window_days, IFNULL(p.is_returnable, 1) as is_returnable
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
             WHERE oi.order_id = ?
         `;
         const [itemRows] = await db.query(itemsQuery, [orderId]);
 
+        const [returnRows] = await db.query(
+            `SELECT id, status, request_type, reason, created_at FROM order_returns WHERE order_id = ? ORDER BY id DESC LIMIT 1`,
+            [orderId]
+        ).catch(() => [[]]);
+
+        const returnWindowDays = itemRows.length > 0 ? Math.max(...itemRows.map(i => parseInt(i.return_window_days || 7))) : 7;
+        const isReturnable = itemRows.length > 0 ? itemRows.some(i => i.is_returnable !== 0) : true;
+
         const orderData = new Order({
             ...orderRows[0],
+            return_window_days: returnWindowDays,
+            is_returnable: isReturnable ? 1 : 0,
             shipping_address: addressRows[0] ? new Address(addressRows[0]) : null,
-            items: itemRows.map(item => new OrderItem(item))
+            items: itemRows.map(item => new OrderItem(item)),
+            return_request: returnRows && returnRows[0] ? returnRows[0] : null
         });
 
         res.status(200).json({ status: true, data: orderData });
