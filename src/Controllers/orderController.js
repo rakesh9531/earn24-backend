@@ -151,19 +151,29 @@ exports.createOrder = async (req, res) => {
                 bvEarnedPerUnit, bvEarnedPerUnit * item.quantity
             ]);
 
-            // D. Deduct Stock
+            // D. Deduct Stock (Variant-aware)
             if (item.variant_id) {
-                await connection.query(
+                const [varUpdate] = await connection.query(
                     'UPDATE seller_product_variants SET stock_quantity = stock_quantity - ? WHERE id = ? AND stock_quantity >= ?',
                     [item.quantity, item.variant_id, item.quantity]
                 );
+                if (varUpdate.affectedRows === 0) {
+                    throw new Error(`Out of stock for variant ${item.variant_title || item.product_name}`);
+                }
+                // Safely sync master seller_product stock
+                await connection.query(
+                    'UPDATE seller_products SET quantity = GREATEST(0, quantity - ?) WHERE id = ?',
+                    [item.quantity, item.seller_product_id]
+                );
+            } else {
+                const [updateResult] = await connection.query(
+                    'UPDATE seller_products SET quantity = quantity - ? WHERE id = ? AND quantity >= ?',
+                    [item.quantity, item.seller_product_id, item.quantity]
+                );
+                if (updateResult.affectedRows === 0) {
+                    throw new Error(`Out of stock for product ${item.product_name}`);
+                }
             }
-            const [updateResult] = await connection.query(
-                'UPDATE seller_products SET quantity = quantity - ? WHERE id = ? AND quantity >= ?',
-                [item.quantity, item.seller_product_id, item.quantity]
-            );
-
-            if (updateResult.affectedRows === 0) throw new Error(`Stock mismatch for product ${item.product_name}`);
 
             // E. Notify if low stock
             await notificationService.checkStockAndNotify(item.seller_product_id, connection);
