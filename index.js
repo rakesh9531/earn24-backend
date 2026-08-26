@@ -433,6 +433,31 @@ async function testDatabaseConnection() {
     `);
     console.log("Migration: Historical profit ledger records successfully synced to user_wallet_transactions.");
 
+    // Auto-migration: Drop legacy cart_product_unique index on cart_items table so multiple variants can exist in cart
+    try {
+      await connection.query("ALTER TABLE cart_items DROP INDEX cart_product_unique");
+      console.log("✅ Migration: Successfully dropped legacy cart_product_unique constraint from cart_items.");
+    } catch (e) {
+      // Index already dropped
+    }
+    try {
+      await connection.query("ALTER TABLE cart_items DROP INDEX unique_cart_product");
+    } catch (e) {}
+    try {
+      await connection.query("ALTER TABLE cart_items DROP INDEX cart_id_seller_product_id");
+    } catch (e) {}
+    try {
+      const [cartIndexes] = await connection.query("SHOW INDEX FROM cart_items WHERE Key_name != 'PRIMARY' AND Non_unique = 0");
+      for (const idx of cartIndexes) {
+        if (idx.Key_name !== 'PRIMARY') {
+          try {
+            await connection.query(`ALTER TABLE cart_items DROP INDEX \`${idx.Key_name}\``);
+            console.log(`✅ Migration: Dropped restrictive unique index ${idx.Key_name} from cart_items.`);
+          } catch (err) {}
+        }
+      }
+    } catch (e) {}
+
     connection.release();
   } catch (error) {
     console.error('Unable to connect to the database:', error);
