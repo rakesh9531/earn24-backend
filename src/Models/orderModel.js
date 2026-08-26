@@ -27,9 +27,11 @@ class Order {
 
     created_at,
     updated_at,
-    // These will be populated from JOINs
     shipping_address,
-    items 
+    items,
+    return_request,
+    return_window_days,
+    is_returnable
   }) {
     const timeZone = 'Asia/Kolkata';
 
