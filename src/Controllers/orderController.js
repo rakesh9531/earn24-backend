@@ -237,14 +237,24 @@ exports.getOrderHistory = async (req, res) => {
 
         const ordersWithImages = await Promise.all(orderRows.map(async (order) => {
             const [items] = await db.query(`
-                SELECT p.main_image_url 
+                SELECT oi.product_name, oi.attributes_snapshot, p.main_image_url 
                 FROM order_items oi
                 JOIN products p ON oi.product_id = p.id
                 WHERE oi.order_id = ? LIMIT 1
             `, [order.id]);
+            let displayImg = items[0]?.main_image_url || null;
+            if (items[0]?.attributes_snapshot) {
+                try {
+                    const snap = typeof items[0].attributes_snapshot === 'string' ? JSON.parse(items[0].attributes_snapshot) : items[0].attributes_snapshot;
+                    if (snap && snap['Variant Image']) {
+                        displayImg = snap['Variant Image'];
+                    }
+                } catch (e) {}
+            }
             return {
                 ...order,
-                display_image_url: items[0]?.main_image_url || null
+                display_image_url: displayImg,
+                first_item_name: items[0]?.product_name || null
             };
         }));
 
