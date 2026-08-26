@@ -441,30 +441,80 @@ exports.getMerchantOrders = async (req, res) => {
     const merchantId = req.user.id;
     try {
         const query = `
-            SELECT DISTINCT o.id as order_id, o.order_number, o.order_status, o.total_amount, o.created_at,
-                   oi.product_name, oi.quantity, oi.price_per_unit, oi.attributes_snapshot, u.full_name as customer_name, IFNULL(u.mobile_number, '') as customer_phone
-
+            SELECT o.id as order_id, o.order_number, o.order_status, o.subtotal, o.delivery_fee, o.total_amount, o.created_at,
+                   oi.id as item_id, oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price, oi.attributes_snapshot, p.main_image_url,
+                   u.full_name as customer_name, IFNULL(u.mobile_number, '') as customer_phone,
+                   ua.address_line_1, ua.address_line_2, ua.city, ua.state, ua.pincode, ua.landmark
             FROM orders o
             JOIN order_items oi ON o.id = oi.order_id
             JOIN seller_products sp ON oi.seller_product_id = sp.id
             JOIN sellers s ON sp.seller_id = s.id
             JOIN users u ON o.user_id = u.id
+            LEFT JOIN products p ON oi.product_id = p.id
+            LEFT JOIN user_addresses ua ON o.shipping_address_id = ua.id
             WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant'
-            ORDER BY o.created_at DESC
+            ORDER BY o.created_at DESC, oi.id ASC
         `;
         const [rows] = await db.query(query, [merchantId]);
-        const processedRows = rows.map(r => {
+        
+        // Group rows into unique order objects
+        const ordersMap = new Map();
+        for (const r of rows) {
+            if (!ordersMap.has(r.order_id)) {
+                ordersMap.set(r.order_id, {
+                    order_id: r.order_id,
+                    order_number: r.order_number,
+                    order_status: r.order_status,
+                    subtotal: parseFloat(r.subtotal || 0),
+                    delivery_fee: parseFloat(r.delivery_fee || 0),
+                    total_amount: parseFloat(r.total_amount || 0),
+                    created_at: r.created_at,
+                    customer_name: r.customer_name,
+                    customer_phone: r.customer_phone,
+                    shipping_address: {
+                        address_line_1: r.address_line_1,
+                        address_line_2: r.address_line_2,
+                        city: r.city,
+                        state: r.state,
+                        pincode: r.pincode,
+                        landmark: r.landmark
+                    },
+                    total_quantity: 0,
+                    items: []
+                });
+            }
+            const ord = ordersMap.get(r.order_id);
             let snap = {};
             if (r.attributes_snapshot) {
                 try { snap = typeof r.attributes_snapshot === 'string' ? JSON.parse(r.attributes_snapshot) : r.attributes_snapshot; } catch (e) {}
             }
-            return {
-                ...r,
-                image_url: snap['Variant Image'] || null,
+            const variantImg = snap['Variant Image'] || r.main_image_url;
+            ord.total_quantity += (r.quantity || 1);
+            ord.items.push({
+                item_id: r.item_id,
+                product_name: r.product_name,
+                quantity: r.quantity,
+                price_per_unit: r.price_per_unit,
+                total_price: r.total_price,
+                image_url: variantImg,
+                main_image_url: variantImg,
                 attributes: snap
+            });
+        }
+
+        const groupedOrders = Array.from(ordersMap.values()).map(ord => {
+            const firstItemName = ord.items[0]?.product_name || 'Item';
+            const extraCount = ord.items.length - 1;
+            const summary = extraCount > 0 ? `${firstItemName} (+${extraCount} more)` : firstItemName;
+            return {
+                ...ord,
+                product_name: summary,
+                items_summary: summary,
+                items_count: ord.items.length
             };
         });
-        res.status(200).json({ status: true, data: processedRows });
+
+        res.status(200).json({ status: true, data: groupedOrders });
     } catch (error) {
         console.error("Error fetching merchant orders:", error);
         res.status(500).json({ status: false, message: 'An error occurred.' });
