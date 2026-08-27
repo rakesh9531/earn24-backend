@@ -40,6 +40,12 @@ exports.createOrder = async (req, res) => {
         const cartId = cartRows[0].id;
 
         // 2. Fetch specific items with full details (Filter by cartItemIds if provided)
+        const validCartItemIds = (cartItemIds && Array.isArray(cartItemIds))
+            ? cartItemIds.map(id => Number(id)).filter(id => !isNaN(id) && id > 0)
+            : null;
+
+        const hasItemFilter = validCartItemIds && validCartItemIds.length > 0;
+
         const itemQuery = `
             SELECT 
                 ci.id as cart_item_id, ci.quantity, ci.seller_product_variant_id,
@@ -54,9 +60,9 @@ exports.createOrder = async (req, res) => {
             LEFT JOIN seller_product_variants spv ON ci.seller_product_variant_id = spv.id
             JOIN users u ON u.id = ?
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-            WHERE ci.cart_id = ? ${cartItemIds ? 'AND ci.id IN (?)' : ''} FOR UPDATE;
+            WHERE ci.cart_id = ? ${hasItemFilter ? 'AND ci.id IN (?)' : ''} FOR UPDATE;
         `;
-        const queryParams = cartItemIds ? [userId, cartId, cartItemIds] : [userId, cartId];
+        const queryParams = hasItemFilter ? [userId, cartId, validCartItemIds] : [userId, cartId];
         const [items] = await connection.query(itemQuery, queryParams);
 
         if (items.length === 0) throw new Error('Your cart is empty or selected items not found.');
@@ -766,6 +772,10 @@ exports.initiatePayUPayment = async (req, res) => {
         const cartId = cartRows[0].id;
 
         // 3. Fetch cart items
+        const validCartItemIds = (cartItemIds && Array.isArray(cartItemIds))
+            ? cartItemIds.map(id => Number(id)).filter(id => !isNaN(id) && id > 0)
+            : null;
+
         let itemQuery = `
             SELECT 
                 ci.id as cart_item_id, ci.quantity, ci.seller_product_variant_id,
@@ -781,9 +791,9 @@ exports.initiatePayUPayment = async (req, res) => {
         `;
         const queryParams = [cartId];
 
-        if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
+        if (validCartItemIds && validCartItemIds.length > 0) {
             itemQuery += ` AND ci.id IN (?)`;
-            queryParams.push(cartItemIds);
+            queryParams.push(validCartItemIds);
         }
 
         const [cartItems] = await connection.query(itemQuery, queryParams);
