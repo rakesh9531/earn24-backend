@@ -846,7 +846,7 @@ exports.initiatePayUPayment = async (req, res) => {
         const [orderResult] = await connection.query(
             `INSERT INTO orders (
                 user_id, shipping_address_id, order_number, total_amount, 
-                payment_method, payment_status, status, created_at, updated_at
+                payment_method, payment_status, order_status, created_at, updated_at
             ) VALUES (?, ?, ?, ?, 'PAYU', 'PENDING', 'PENDING', NOW(), NOW())`,
             [userId, shippingAddressId, orderNumber, totalAmount]
         );
@@ -957,7 +957,7 @@ exports.verifyPayUPayment = async (req, res) => {
             if (targetOrderId) {
                 // Update Order to PAID & PLACED
                 await db.query(
-                    `UPDATE orders SET payment_status = 'COMPLETED', status = 'PLACED', updated_at = NOW() WHERE id = ?`,
+                    `UPDATE orders SET payment_status = 'COMPLETED', order_status = 'PLACED', updated_at = NOW() WHERE id = ?`,
                     [targetOrderId]
                 );
 
@@ -983,7 +983,7 @@ exports.verifyPayUPayment = async (req, res) => {
         } else {
             // Update Order to FAILED
             if (targetOrderId) {
-                await db.query(`UPDATE orders SET payment_status = 'FAILED', status = 'CANCELLED' WHERE id = ?`, [targetOrderId]);
+                await db.query(`UPDATE orders SET payment_status = 'FAILED', order_status = 'CANCELLED' WHERE id = ?`, [targetOrderId]);
             }
             return res.status(400).json({ status: false, message: 'Payment verification failed or payment cancelled.' });
         }
