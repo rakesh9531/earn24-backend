@@ -534,6 +534,164 @@ exports.cancelUserOrder = async (req, res) => {
     }
 };
 
+/**
+ * Cancels a single specific item within an order
+ */
+exports.cancelOrderItem = async (req, res) => {
+    const userId = req.user.id;
+    const { orderId, itemId } = req.params;
+    const { reason = 'Cancelled by user' } = req.body;
+
+    let connection;
+    try {
+        connection = await db.getConnection();
+        await connection.beginTransaction();
+
+        // 1. Verify Order Ownership & Status
+        const [orders] = await connection.query(
+            "SELECT * FROM orders WHERE id = ? AND user_id = ? FOR UPDATE",
+            [orderId, userId]
+        );
+        if (orders.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ status: false, message: "Order not found." });
+        }
+
+        const order = orders[0];
+        const allowedStatuses = ['PENDING', 'PENDING_PAYMENT', 'CONFIRMED', 'PROCESSING'];
+        if (!allowedStatuses.includes(order.order_status)) {
+            await connection.rollback();
+            return res.status(400).json({
+                status: false,
+                message: `Items cannot be cancelled when order is in '${order.order_status}' status.`
+            });
+        }
+
+        // 2. Verify Order Item
+        const [items] = await connection.query(
+            "SELECT * FROM order_items WHERE id = ? AND order_id = ? FOR UPDATE",
+            [itemId, orderId]
+        );
+        if (items.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ status: false, message: "Order item not found." });
+        }
+
+        const item = items[0];
+        if (item.item_status === 'CANCELLED') {
+            await connection.rollback();
+            return res.status(400).json({ status: false, message: "This item has already been cancelled." });
+        }
+
+        // 3. Mark Item as Cancelled
+        await connection.query(
+            `UPDATE order_items 
+             SET item_status = 'CANCELLED', cancelled_at = NOW(), cancellation_reason = ? 
+             WHERE id = ?`,
+            [reason, itemId]
+        );
+
+        // 4. Restore Stock
+        let variantId = null;
+        if (item.attributes_snapshot) {
+            try {
+                const snapshot = typeof item.attributes_snapshot === 'string' 
+                    ? JSON.parse(item.attributes_snapshot) 
+                    : item.attributes_snapshot;
+                variantId = snapshot.variant_id || snapshot.variantId || null;
+            } catch (e) {}
+        }
+
+        if (variantId) {
+            await connection.query(
+                "UPDATE seller_product_variants SET stock_quantity = stock_quantity + ? WHERE id = ?",
+                [item.quantity, variantId]
+            );
+        }
+        await connection.query(
+            "UPDATE seller_products SET quantity = quantity + ? WHERE id = ?",
+            [item.quantity, item.seller_product_id]
+        );
+
+        // 5. Refund Amount to Wallet if Paid
+        let refundProcessed = false;
+        const refundAmount = parseFloat(item.total_price || 0);
+
+        if ((order.payment_status === 'PAID' || ['WALLET', 'ONLINE', 'RAZORPAY'].includes(order.payment_method)) && refundAmount > 0) {
+            const [wallets] = await connection.query(
+                "SELECT balance FROM user_wallets WHERE user_id = ? FOR UPDATE",
+                [userId]
+            );
+            if (wallets.length === 0) {
+                await connection.query("INSERT INTO user_wallets (user_id, balance) VALUES (?, ?)", [userId, refundAmount]);
+            } else {
+                await connection.query(
+                    "UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?",
+                    [refundAmount, userId]
+                );
+            }
+
+            await connection.query(
+                `INSERT INTO user_wallet_transactions 
+                 (user_id, txn_type, amount, source, reference_id, remarks) 
+                 VALUES (?, 'credit', ?, 'refund', ?, ?)`,
+                [userId, refundAmount, order.order_number, `Refund for cancelled item '${item.product_name}' in Order #${order.order_number}`]
+            );
+            refundProcessed = true;
+        }
+
+        // 6. Recalculate remaining active items for this order
+        const [activeRows] = await connection.query(
+            "SELECT COUNT(*) as active_count, SUM(total_price) as new_subtotal FROM order_items WHERE order_id = ? AND (item_status IS NULL OR item_status = 'ACTIVE')",
+            [orderId]
+        );
+
+        const activeCount = activeRows[0].active_count || 0;
+        const newSubtotal = parseFloat(activeRows[0].new_subtotal || 0);
+
+        if (activeCount === 0) {
+            // All items cancelled -> update order status to CANCELLED
+            await connection.query(
+                `UPDATE orders 
+                 SET order_status = 'CANCELLED', 
+                     payment_status = ?, 
+                     cancellation_reason = 'All items cancelled', 
+                     cancelled_by = 'USER', 
+                     cancelled_at = NOW() 
+                 WHERE id = ?`,
+                [refundProcessed ? 'REFUNDED' : 'FAILED', orderId]
+            );
+        } else {
+            // Update subtotal & total amount
+            const newTotalAmount = newSubtotal + parseFloat(order.delivery_fee || 0);
+            await connection.query(
+                "UPDATE orders SET subtotal = ?, total_amount = ? WHERE id = ?",
+                [newSubtotal, newTotalAmount, orderId]
+            );
+        }
+
+        await connection.commit();
+        res.status(200).json({
+            status: true,
+            message: "Item cancelled successfully.",
+            data: {
+                itemId,
+                orderId,
+                refundProcessed,
+                refundAmount,
+                remainingActiveItems: activeCount
+            }
+        });
+
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error("Item Cancellation Error:", error);
+        res.status(500).json({ status: false, message: "Failed to cancel item: " + error.message });
+    } finally {
+        if (connection) connection.release();
+    }
+};
+
 exports.requestReturnOrReplacement = async (req, res) => {
     const userId = req.user.id;
     const { orderId } = req.params;
