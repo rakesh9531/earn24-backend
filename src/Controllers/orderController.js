@@ -956,8 +956,8 @@ exports.initiatePayUPayment = async (req, res) => {
         const email = user.email || 'customer@earn24.in';
         const phone = user.mobile_number || '9999999999';
 
-        // Format: key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5||||||SALT
-        const hashString = `${payuKey}|${txnid}|${totalAmount.toFixed(2)}|${productInfo}|${firstname}|${email}|${orderId}|||||||||${payuSalt}`;
+        // Format: key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5|udf6|udf7|udf8|udf9|udf10|SALT (11 pipes after email)
+        const hashString = `${payuKey}|${txnid}|${totalAmount.toFixed(2)}|${productInfo}|${firstname}|${email}|${orderId}||||||||||${payuSalt}`;
         const hash = crypto.createHash('sha512').update(hashString).digest('hex');
 
         res.status(200).json({
