@@ -46,6 +46,8 @@ router.patch('/:id/payment-method', auth, orderController.updatePaymentMethod);
 router.get('/:orderId/invoice', auth, orderController.downloadInvoice);
 router.post('/:id/cancel', auth, orderController.cancelUserOrder);
 router.post('/:orderId/items/:itemId/cancel', auth, orderController.cancelOrderItem);
-router.post('/:orderId/request-return', auth, orderController.requestReturnOrReplacement);
+// PayU Live Payment Routes
+router.post('/payu/initiate', auth, orderController.initiatePayUPayment);
+router.all('/payu/verify', orderController.verifyPayUPayment);
 
 module.exports = router;

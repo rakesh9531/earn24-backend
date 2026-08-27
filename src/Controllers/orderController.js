@@ -1,4 +1,5 @@
 const db = require('../../db');
+const crypto = require('crypto');
 const Order = require('../Models/orderModel');
 const OrderItem = require('../Models/orderItemModel.js');
 const Address = require('../Models/userAddressModel.js');
@@ -735,6 +736,229 @@ exports.requestReturnOrReplacement = async (req, res) => {
     } catch (error) {
         console.error("Error in requestReturnOrReplacement:", error);
         res.status(500).json({ status: false, message: 'Failed to submit return request.' });
+    }
+};
+
+/**
+ * Initiate PayU Live Online Payment
+ * Creates pending order & returns PayU SHA-512 Payment Signature Hash
+ */
+exports.initiatePayUPayment = async (req, res) => {
+    const userId = req.user.id;
+    const { shippingAddressId, cartItemIds } = req.body;
+
+    if (!shippingAddressId) {
+        return res.status(400).json({ status: false, message: 'Shipping address is required.' });
+    }
+
+    const connection = await db.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        // 1. Get user details
+        const [userRows] = await connection.query('SELECT name, email, phone FROM users WHERE id = ?', [userId]);
+        if (userRows.length === 0) throw new Error('User not found.');
+        const user = userRows[0];
+
+        // 2. Get user's cart
+        const [cartRows] = await connection.query('SELECT id FROM carts WHERE user_id = ?', [userId]);
+        if (cartRows.length === 0) throw new Error('Cart not found.');
+        const cartId = cartRows[0].id;
+
+        // 3. Fetch cart items
+        let itemQuery = `
+            SELECT 
+                ci.id as cart_item_id, ci.quantity, ci.seller_product_variant_id,
+                sp.id as seller_product_id, p.id as product_id, p.name as product_name,
+                sp.selling_price, sp.purchase_price, sp.admin_margin_percent, h.gst_percentage, sp.quantity as stock_available,
+                spv.id as variant_id, spv.title as variant_title, spv.price as variant_price
+            FROM cart_items ci
+            JOIN seller_products sp ON ci.seller_product_id = sp.id
+            JOIN products p ON sp.product_id = p.id
+            LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
+            LEFT JOIN seller_product_variants spv ON ci.seller_product_variant_id = spv.id
+            WHERE ci.cart_id = ?
+        `;
+        const queryParams = [cartId];
+
+        if (cartItemIds && Array.isArray(cartItemIds) && cartItemIds.length > 0) {
+            itemQuery += ` AND ci.id IN (?)`;
+            queryParams.push(cartItemIds);
+        }
+
+        const [cartItems] = await connection.query(itemQuery, queryParams);
+        if (cartItems.length === 0) throw new Error('No items selected for payment.');
+
+        let subtotal = 0;
+        let totalGstAmount = 0;
+
+        for (const item of cartItems) {
+            const itemPrice = parseFloat(item.variant_id ? item.variant_price : item.selling_price);
+            subtotal += itemPrice * item.quantity;
+
+            const gstPercent = parseFloat(item.gst_percentage || 0);
+            if (gstPercent > 0) {
+                totalGstAmount += ((itemPrice * item.quantity) * gstPercent) / 100;
+            }
+        }
+
+        const totalAmount = Math.round((subtotal + totalGstAmount) * 100) / 100;
+        const date = new Date();
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const randomPart = Math.random().toString(36).substr(2, 6).toUpperCase();
+        const orderNumber = `ORD-${year}${month}${day}-${randomPart}`;
+        const txnid = `TXN_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+
+        // 4. Create Pending Order record in DB
+        const [orderResult] = await connection.query(
+            `INSERT INTO orders (
+                user_id, shipping_address_id, order_number, total_amount, 
+                payment_method, payment_status, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'PAYU', 'PENDING', 'PENDING', NOW(), NOW())`,
+            [userId, shippingAddressId, orderNumber, totalAmount]
+        );
+
+        const orderId = orderResult.insertId;
+
+        // 5. Insert Order Items
+        for (const item of cartItems) {
+            const itemPrice = parseFloat(item.variant_id ? item.variant_price : item.selling_price);
+            await connection.query(
+                `INSERT INTO order_items (
+                    order_id, product_id, seller_product_id, seller_product_variant_id,
+                    product_name, variant_title, price, quantity, total_price
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    orderId, item.product_id, item.seller_product_id, item.variant_id || null,
+                    item.product_name, item.variant_title || null, itemPrice, item.quantity, itemPrice * item.quantity
+                ]
+            );
+        }
+
+        await connection.commit();
+
+        // 6. Get PayU Credentials (Dynamic DB + Env Fallback)
+        const getPayUCredentials = async () => {
+            try {
+                const [rows] = await db.query(
+                    `SELECT encrypted_config, encryption_iv FROM payment_gateway_settings WHERE gateway_name = 'payu' AND is_active = 1 LIMIT 1`
+                );
+                if (rows.length > 0) {
+                    const { decryptObject } = require('../utils/encryption.helper');
+                    const config = decryptObject({
+                        encryptedData: rows[0].encrypted_config,
+                        iv: rows[0].encryption_iv,
+                    });
+                    if (config && (config.merchantKey || config.key) && (config.merchantSalt || config.salt)) {
+                        return {
+                            payuKey: config.merchantKey || config.key,
+                            payuSalt: config.merchantSalt || config.salt,
+                            payuBaseUrl: config.isSandBox ? 'https://test.payu.in/_payment' : 'https://secure.payu.in/_payment'
+                        };
+                    }
+                }
+            } catch (e) {
+                console.warn('DB PayU Config Read Warning:', e.message);
+            }
+            return {
+                payuKey: process.env.PAYU_MERCHANT_KEY || 'm2uwkj',
+                payuSalt: process.env.PAYU_MERCHANT_SALT || 'PyBf3kWiI6MdwYhrR3geD108F7fcpPI4',
+                payuBaseUrl: process.env.PAYU_BASE_URL || 'https://secure.payu.in/_payment'
+            };
+        };
+
+        const { payuKey, payuSalt, payuBaseUrl } = await getPayUCredentials();
+
+        const productInfo = `Earn24 Order ${orderNumber}`;
+        const firstname = (user.name || 'Customer').split(' ')[0];
+        const email = user.email || 'customer@earn24.in';
+        const phone = user.phone || '9999999999';
+
+        // Format: key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5||||||SALT
+        const hashString = `${payuKey}|${txnid}|${totalAmount.toFixed(2)}|${productInfo}|${firstname}|${email}|${orderId}|||||||||${payuSalt}`;
+        const hash = crypto.createHash('sha512').update(hashString).digest('hex');
+
+        res.status(200).json({
+            status: true,
+            message: 'PayU payment session initialized.',
+            data: {
+                payuUrl: payuBaseUrl,
+                key: payuKey,
+                txnid: txnid,
+                amount: totalAmount.toFixed(2),
+                productinfo: productInfo,
+                firstname: firstname,
+                email: email,
+                phone: phone,
+                hash: hash,
+                orderId: orderId,
+                orderNumber: orderNumber,
+                udf1: orderId.toString(),
+                surl: `${process.env.BASE_URL || 'https://newapi.earn24.in'}/api/orders/payu/verify`,
+                furl: `${process.env.BASE_URL || 'https://newapi.earn24.in'}/api/orders/payu/verify`
+            }
+        });
+
+    } catch (error) {
+        await connection.rollback();
+        console.error("Error initiating PayU payment:", error);
+        res.status(500).json({ status: false, message: error.message || 'Failed to initialize PayU payment.' });
+    } finally {
+        connection.release();
+    }
+};
+
+/**
+ * Verify PayU Response & Complete Order
+ */
+exports.verifyPayUPayment = async (req, res) => {
+    const body = req.body || {};
+    const query = req.query || {};
+    const data = { ...query, ...body };
+
+    const { key, txnid, amount, productinfo, firstname, email, status, hash } = data;
+    const targetOrderId = data.orderId || data.udf1;
+
+    try {
+        if (status === 'success' || data.status === 'success') {
+            if (targetOrderId) {
+                // Update Order to PAID & PLACED
+                await db.query(
+                    `UPDATE orders SET payment_status = 'COMPLETED', status = 'PLACED', updated_at = NOW() WHERE id = ?`,
+                    [targetOrderId]
+                );
+
+                // Fetch order info to notify socket rooms
+                const [orderRows] = await db.query(`SELECT user_id, order_number FROM orders WHERE id = ?`, [targetOrderId]);
+                if (orderRows.length > 0) {
+                    const userId = orderRows[0].user_id;
+                    // Clear User Cart
+                    const [cartRows] = await db.query('SELECT id FROM carts WHERE user_id = ?', [userId]);
+                    if (cartRows.length > 0) {
+                        await db.query('DELETE FROM cart_items WHERE cart_id = ?', [cartRows[0].id]);
+                    }
+
+                    // Notify Socket Admin & Merchant
+                    const io = req.app.get('io');
+                    if (io) {
+                        io.to('admins').emit('new_order', { orderId: targetOrderId, orderNumber: orderRows[0].order_number });
+                    }
+                }
+            }
+
+            return res.status(200).json({ status: true, message: 'Payment verified and order placed successfully.' });
+        } else {
+            // Update Order to FAILED
+            if (targetOrderId) {
+                await db.query(`UPDATE orders SET payment_status = 'FAILED', status = 'CANCELLED' WHERE id = ?`, [targetOrderId]);
+            }
+            return res.status(400).json({ status: false, message: 'Payment verification failed or payment cancelled.' });
+        }
+    } catch (error) {
+        console.error("Error verifying PayU payment:", error);
+        res.status(500).json({ status: false, message: 'Internal server error verifying payment.' });
     }
 };
 
