@@ -39,14 +39,17 @@ exports.createOrder = async (req, res) => {
         if (cartRows.length === 0) throw new Error('Cart not found.');
         const cartId = cartRows[0].id;
 
-        // 2. Fetch specific items with full details (Filter by cartItemIds if provided)
-        const validCartItemIds = (cartItemIds && Array.isArray(cartItemIds))
-            ? cartItemIds.map(id => Number(id)).filter(id => !isNaN(id) && id > 0)
-            : null;
+        // 2. Fetch specific items with full details (Filter by cartItemIds if provided with automatic fallback)
+        let validCartItemIds = null;
+        if (cartItemIds) {
+            if (Array.isArray(cartItemIds)) {
+                validCartItemIds = cartItemIds.map(id => Number(id)).filter(id => !isNaN(id) && id > 0);
+            } else if (typeof cartItemIds === 'string') {
+                validCartItemIds = cartItemIds.split(',').map(id => Number(id.trim())).filter(id => !isNaN(id) && id > 0);
+            }
+        }
 
-        const hasItemFilter = validCartItemIds && validCartItemIds.length > 0;
-
-        const itemQuery = `
+        const baseItemQuery = `
             SELECT 
                 ci.id as cart_item_id, ci.quantity, ci.seller_product_variant_id,
                 sp.id as seller_product_id, p.id as product_id, p.name as product_name,
@@ -60,10 +63,19 @@ exports.createOrder = async (req, res) => {
             LEFT JOIN seller_product_variants spv ON ci.seller_product_variant_id = spv.id
             JOIN users u ON u.id = ?
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-            WHERE ci.cart_id = ? ${hasItemFilter ? 'AND ci.id IN (?)' : ''} FOR UPDATE;
+            WHERE ci.cart_id = ?
         `;
-        const queryParams = hasItemFilter ? [userId, cartId, validCartItemIds] : [userId, cartId];
-        const [items] = await connection.query(itemQuery, queryParams);
+
+        let items = [];
+        if (validCartItemIds && validCartItemIds.length > 0) {
+            const [filteredItems] = await connection.query(`${baseItemQuery} AND ci.id IN (?) FOR UPDATE;`, [userId, cartId, validCartItemIds]);
+            items = filteredItems;
+        }
+
+        if (items.length === 0) {
+            const [allCartItems] = await connection.query(`${baseItemQuery} FOR UPDATE;`, [userId, cartId]);
+            items = allCartItems;
+        }
 
         if (items.length === 0) throw new Error('Your cart is empty or selected items not found.');
 
@@ -771,12 +783,17 @@ exports.initiatePayUPayment = async (req, res) => {
         if (cartRows.length === 0) throw new Error('Cart not found.');
         const cartId = cartRows[0].id;
 
-        // 3. Fetch cart items
-        const validCartItemIds = (cartItemIds && Array.isArray(cartItemIds))
-            ? cartItemIds.map(id => Number(id)).filter(id => !isNaN(id) && id > 0)
-            : null;
+        // 3. Fetch cart items (Filter by cartItemIds if provided with automatic fallback)
+        let validCartItemIds = null;
+        if (cartItemIds) {
+            if (Array.isArray(cartItemIds)) {
+                validCartItemIds = cartItemIds.map(id => Number(id)).filter(id => !isNaN(id) && id > 0);
+            } else if (typeof cartItemIds === 'string') {
+                validCartItemIds = cartItemIds.split(',').map(id => Number(id.trim())).filter(id => !isNaN(id) && id > 0);
+            }
+        }
 
-        let itemQuery = `
+        const basePayUItemQuery = `
             SELECT 
                 ci.id as cart_item_id, ci.quantity, ci.seller_product_variant_id,
                 sp.id as seller_product_id, p.id as product_id, p.name as product_name,
@@ -789,14 +806,18 @@ exports.initiatePayUPayment = async (req, res) => {
             LEFT JOIN seller_product_variants spv ON ci.seller_product_variant_id = spv.id
             WHERE ci.cart_id = ?
         `;
-        const queryParams = [cartId];
 
+        let cartItems = [];
         if (validCartItemIds && validCartItemIds.length > 0) {
-            itemQuery += ` AND ci.id IN (?)`;
-            queryParams.push(validCartItemIds);
+            const [filtered] = await connection.query(`${basePayUItemQuery} AND ci.id IN (?)`, [cartId, validCartItemIds]);
+            cartItems = filtered;
         }
 
-        const [cartItems] = await connection.query(itemQuery, queryParams);
+        if (cartItems.length === 0) {
+            const [allInCart] = await connection.query(basePayUItemQuery, [cartId]);
+            cartItems = allInCart;
+        }
+
         if (cartItems.length === 0) throw new Error('No items selected for payment.');
 
         let subtotal = 0;
