@@ -820,20 +820,47 @@ exports.initiatePayUPayment = async (req, res) => {
 
         if (cartItems.length === 0) throw new Error('No items selected for payment.');
 
+        // Fetch Delivery & BV Settings
+        const [settingsRows] = await connection.query("SELECT setting_key, setting_value FROM app_settings");
+        const settings = settingsRows.reduce((acc, setting) => {
+            acc[setting.setting_key] = parseFloat(setting.setting_value);
+            return acc;
+        }, {});
+
+        const bvGenerationPct = settings.bv_generation_pct_of_profit || 80.0;
+        const bvThreshold = settings.delivery_fee_bv_threshold || 50.0;
+        const standardFee = settings.delivery_fee_standard || 40.0;
+        const specialFee = settings.delivery_fee_special || 0.0;
+
         let subtotal = 0;
         let totalGstAmount = 0;
+        let totalBvEarned = 0;
 
         for (const item of cartItems) {
             const itemPrice = parseFloat(item.variant_id ? item.variant_price : item.selling_price);
-            subtotal += itemPrice * item.quantity;
+            const itemQty = parseInt(item.quantity);
+            subtotal += itemPrice * itemQty;
 
             const gstPercent = parseFloat(item.gst_percentage || 0);
             if (gstPercent > 0) {
-                totalGstAmount += ((itemPrice * item.quantity) * gstPercent) / 100;
+                totalGstAmount += ((itemPrice * itemQty) * gstPercent) / 100;
+            }
+
+            const adminMargin = parseFloat(item.admin_margin_percent || 10.0);
+            const purchasePrice = parseFloat(item.purchase_price || 0);
+            let itemProfit = 0;
+            if (adminMargin > 0) {
+                itemProfit = (itemPrice * adminMargin) / 100;
+            } else {
+                itemProfit = (itemPrice / (1 + (gstPercent / 100))) - purchasePrice;
+            }
+            if (itemProfit > 0) {
+                totalBvEarned += (itemProfit * (bvGenerationPct / 100)) * itemQty;
             }
         }
 
-        const totalAmount = Math.round((subtotal + totalGstAmount) * 100) / 100;
+        const deliveryFee = totalBvEarned >= bvThreshold ? specialFee : standardFee;
+        const totalAmount = Math.round((subtotal + deliveryFee) * 100) / 100;
         const date = new Date();
         const year = date.getFullYear();
         const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -845,10 +872,10 @@ exports.initiatePayUPayment = async (req, res) => {
         // 4. Create Pending Order record in DB
         const [orderResult] = await connection.query(
             `INSERT INTO orders (
-                user_id, shipping_address_id, order_number, total_amount, 
-                payment_method, payment_status, order_status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, 'PAYU', 'PENDING', 'PENDING', NOW(), NOW())`,
-            [userId, shippingAddressId, orderNumber, totalAmount]
+                user_id, shipping_address_id, order_number, subtotal, delivery_fee, 
+                total_amount, total_bv_earned, payment_method, payment_status, order_status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PAYU', 'PENDING', 'PENDING', NOW(), NOW())`,
+            [userId, shippingAddressId, orderNumber, subtotal, deliveryFee, totalAmount, totalBvEarned]
         );
 
         const orderId = orderResult.insertId;
