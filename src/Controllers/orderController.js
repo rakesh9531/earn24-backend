@@ -960,6 +960,10 @@ exports.initiatePayUPayment = async (req, res) => {
         const hashString = `${payuKey}|${txnid}|${totalAmount.toFixed(2)}|${productInfo}|${firstname}|${email}|${orderId}||||||||||${payuSalt}`;
         const hash = crypto.createHash('sha512').update(hashString).digest('hex');
 
+        console.log(`[PayU Debug] Key: ${payuKey} | Salt: ${payuSalt.slice(0, 4)}...${payuSalt.slice(-4)} | Amount: ${totalAmount.toFixed(2)} | OrderID: ${orderId}`);
+        console.log(`[PayU Debug] HashString: ${hashString}`);
+        console.log(`[PayU Debug] Hash: ${hash}`);
+
         res.status(200).json({
             status: true,
             message: 'PayU payment session initialized.',
