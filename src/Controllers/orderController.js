@@ -880,19 +880,41 @@ exports.initiatePayUPayment = async (req, res) => {
 
         const orderId = orderResult.insertId;
 
-        // 5. Insert Order Items
+        // 5. Insert Order Items using exact production schema
         for (const item of cartItems) {
-            const itemPrice = parseFloat(item.variant_id ? item.variant_price : item.selling_price);
-            await connection.query(
-                `INSERT INTO order_items (
-                    order_id, product_id, seller_product_id, seller_product_variant_id,
-                    product_name, variant_title, price, quantity, total_price
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    orderId, item.product_id, item.seller_product_id, item.variant_id || null,
-                    item.product_name, item.variant_title || null, itemPrice, item.quantity, itemPrice * item.quantity
-                ]
-            );
+            const snapshot = {};
+            if (item.variant_title) snapshot['Selected Variant'] = item.variant_title;
+            if (item.variant_color) snapshot['Color'] = item.variant_color;
+            if (item.variant_size) snapshot['Size'] = item.variant_size;
+            if (item.variant_sku) snapshot['SKU'] = item.variant_sku;
+            if (item.variant_image_url) snapshot['Variant Image'] = item.variant_image_url;
+
+            const effectivePrice = parseFloat(item.variant_id ? item.variant_price : item.selling_price);
+            const effectiveName = item.variant_id ? `${item.product_name} (${item.variant_title})` : item.product_name;
+
+            const adminMargin = parseFloat(item.admin_margin_percent || 10.0);
+            const purchasePrice = parseFloat(item.purchase_price || 0);
+            const gstPercent = parseFloat(item.gst_percentage || 0);
+            let itemProfit = 0;
+            if (adminMargin > 0) {
+                itemProfit = (effectivePrice * adminMargin) / 100;
+            } else {
+                itemProfit = (effectivePrice / (1 + (gstPercent / 100))) - purchasePrice;
+            }
+            const bvEarnedPerUnit = itemProfit > 0 ? (itemProfit * (bvGenerationPct / 100)) : 0;
+
+            const orderItemSql = `
+                INSERT INTO order_items (
+                    order_id, product_id, seller_product_id, product_name, 
+                    attributes_snapshot, quantity, price_per_unit, purchase_price, gst_percentage, total_price, 
+                    bv_earned_per_unit, total_bv_earned
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+            await connection.query(orderItemSql, [
+                orderId, item.product_id, item.seller_product_id, effectiveName,
+                JSON.stringify(snapshot),
+                item.quantity, effectivePrice, purchasePrice, gstPercent, effectivePrice * item.quantity,
+                bvEarnedPerUnit, bvEarnedPerUnit * item.quantity
+            ]);
         }
 
         await connection.commit();
