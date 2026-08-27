@@ -756,7 +756,7 @@ exports.initiatePayUPayment = async (req, res) => {
         await connection.beginTransaction();
 
         // 1. Get user details
-        const [userRows] = await connection.query('SELECT name, email, phone FROM users WHERE id = ?', [userId]);
+        const [userRows] = await connection.query('SELECT full_name, email, mobile_number FROM users WHERE id = ?', [userId]);
         if (userRows.length === 0) throw new Error('User not found.');
         const user = userRows[0];
 
@@ -872,9 +872,9 @@ exports.initiatePayUPayment = async (req, res) => {
         const { payuKey, payuSalt, payuBaseUrl } = await getPayUCredentials();
 
         const productInfo = `Earn24 Order ${orderNumber}`;
-        const firstname = (user.name || 'Customer').split(' ')[0];
+        const firstname = (user.full_name || 'Customer').split(' ')[0];
         const email = user.email || 'customer@earn24.in';
-        const phone = user.phone || '9999999999';
+        const phone = user.mobile_number || '9999999999';
 
         // Format: key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5||||||SALT
         const hashString = `${payuKey}|${txnid}|${totalAmount.toFixed(2)}|${productInfo}|${firstname}|${email}|${orderId}|||||||||${payuSalt}`;
