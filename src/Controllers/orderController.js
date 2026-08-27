@@ -951,8 +951,8 @@ exports.initiatePayUPayment = async (req, res) => {
 
         const { payuKey, payuSalt, payuBaseUrl } = await getPayUCredentials();
 
-        const productInfo = `Earn24 Order ${orderNumber}`;
-        const firstname = (user.full_name || 'Customer').split(' ')[0];
+        const productInfo = `Order_${orderNumber}`;
+        const firstname = (user.full_name || 'Customer').split(' ')[0].replace(/[^a-zA-Z0-9]/g, '') || 'Customer';
         const email = user.email || 'customer@earn24.in';
         const phone = user.mobile_number || '9999999999';
 
