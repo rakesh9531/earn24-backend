@@ -631,7 +631,9 @@ exports.addSellerOffer = async (req, res) => {
         }
         const sellerId = sellerRows[0].id;
 
-        if (!productId || !mrp || !sellingPrice || !quantity || !Array.isArray(pincodes) || pincodes.length === 0 || low_stock_threshold === undefined || minimum_order_quantity === undefined) {
+        const isPanIndia = req.body.is_pan_india === true || req.body.is_pan_india === 1 || req.body.is_pan_india === 'true' || (Array.isArray(pincodes) && (pincodes.includes('ALL') || pincodes.includes('PAN_INDIA')));
+
+        if (!productId || !mrp || !sellingPrice || !quantity || (!isPanIndia && (!Array.isArray(pincodes) || pincodes.length === 0)) || low_stock_threshold === undefined || minimum_order_quantity === undefined) {
             return res.status(400).json({ status: false, message: "Product, price, quantity, pincodes, and low stock threshold are required." });
         }
 
@@ -640,13 +642,17 @@ exports.addSellerOffer = async (req, res) => {
         const offerQuery = `
             INSERT INTO seller_products 
               (seller_id, product_id, sku, mrp, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?,?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         const [result] = await connection.query(offerQuery, [sellerId, productId, sku, mrp, sellingPrice, purchasePrice, quantity, low_stock_threshold, minimum_order_quantity]);
         const newOfferId = result.insertId;
 
-        const pincodeValues = pincodes.map(pincode => [newOfferId, pincode.trim()]);
-        await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES ?', [pincodeValues]);
+        if (isPanIndia) {
+            await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES (?, ?)', [newOfferId, 'ALL']);
+        } else if (Array.isArray(pincodes) && pincodes.length > 0) {
+            const pincodeValues = pincodes.map(pincode => [newOfferId, pincode.trim()]);
+            await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES ?', [pincodeValues]);
+        }
 
         await connection.commit();
         res.status(201).json({ status: true, message: "Product offer added successfully.", offerId: newOfferId });
