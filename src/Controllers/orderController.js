@@ -864,24 +864,44 @@ exports.initiatePayUPayment = async (req, res) => {
 
         const deliveryFee = totalBvEarned >= bvThreshold ? specialFee : standardFee;
         const totalAmount = Math.round((subtotal + deliveryFee) * 100) / 100;
-        const date = new Date();
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
-        const randomPart = Math.random().toString(36).substr(2, 6).toUpperCase();
-        const orderNumber = `ORD-${year}${month}${day}-${randomPart}`;
-        const txnid = `TXN_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 
-        // 4. Create Pending Order record in DB
-        const [orderResult] = await connection.query(
-            `INSERT INTO orders (
-                user_id, shipping_address_id, order_number, subtotal, delivery_fee, 
-                total_amount, total_bv_earned, payment_method, payment_status, order_status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PAYU', 'PENDING', 'PENDING', NOW(), NOW())`,
-            [userId, shippingAddressId, orderNumber, subtotal, deliveryFee, totalAmount, totalBvEarned]
+        // 4. Check if user already has an unpaid PENDING draft order created in the last 15 mins to REUSE
+        const [existingPending] = await connection.query(
+            `SELECT id, order_number FROM orders WHERE user_id = ? AND payment_status = 'PENDING' AND order_status = 'PENDING' AND created_at > NOW() - INTERVAL 15 MINUTE ORDER BY id DESC LIMIT 1`,
+            [userId]
         );
 
-        const orderId = orderResult.insertId;
+        let orderId;
+        let orderNumber;
+
+        if (existingPending && existingPending.length > 0) {
+            orderId = existingPending[0].id;
+            orderNumber = existingPending[0].order_number;
+
+            await connection.query(
+                `UPDATE orders SET shipping_address_id = ?, subtotal = ?, delivery_fee = ?, total_amount = ?, total_bv_earned = ?, updated_at = NOW() WHERE id = ?`,
+                [shippingAddressId, subtotal, deliveryFee, totalAmount, totalBvEarned, orderId]
+            );
+            await connection.query(`DELETE FROM order_items WHERE order_id = ?`, [orderId]);
+        } else {
+            const date = new Date();
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const randomPart = Math.random().toString(36).substr(2, 6).toUpperCase();
+            orderNumber = `ORD-${year}${month}${day}-${randomPart}`;
+
+            const [orderResult] = await connection.query(
+                `INSERT INTO orders (
+                    user_id, shipping_address_id, order_number, subtotal, delivery_fee, 
+                    total_amount, total_bv_earned, payment_method, payment_status, order_status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PAYU', 'PENDING', 'PENDING', NOW(), NOW())`,
+                [userId, shippingAddressId, orderNumber, subtotal, deliveryFee, totalAmount, totalBvEarned]
+            );
+            orderId = orderResult.insertId;
+        }
+
+        const txnid = `TXN_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 
         // 5. Insert Order Items using exact production schema
         for (const item of cartItems) {
@@ -1007,22 +1027,29 @@ exports.verifyPayUPayment = async (req, res) => {
     const query = req.query || {};
     const data = { ...query, ...body };
 
-    const { key, txnid, amount, productinfo, firstname, email, status, hash } = data;
+    const { status } = data;
     const targetOrderId = data.orderId || data.udf1;
 
     try {
         if (status === 'success' || data.status === 'success') {
             if (targetOrderId) {
-                // Update Order to PAID & PLACED
+                // Update Order to PAID & CONFIRMED
                 await db.query(
-                    `UPDATE orders SET payment_status = 'COMPLETED', order_status = 'PLACED', updated_at = NOW() WHERE id = ?`,
+                    `UPDATE orders SET payment_status = 'PAID', order_status = 'CONFIRMED', updated_at = NOW() WHERE id = ?`,
                     [targetOrderId]
                 );
 
-                // Fetch order info to notify socket rooms
+                // Fetch order info to notify socket rooms & clean orphaned draft orders
                 const [orderRows] = await db.query(`SELECT user_id, order_number FROM orders WHERE id = ?`, [targetOrderId]);
                 if (orderRows.length > 0) {
                     const userId = orderRows[0].user_id;
+
+                    // Clean up orphaned unpaid pending orders for this user
+                    await db.query(
+                        `UPDATE orders SET order_status = 'CANCELLED', payment_status = 'FAILED' WHERE user_id = ? AND payment_status = 'PENDING' AND id != ?`,
+                        [userId, targetOrderId]
+                    );
+
                     // Clear User Cart
                     const [cartRows] = await db.query('SELECT id FROM carts WHERE user_id = ?', [userId]);
                     if (cartRows.length > 0) {
@@ -1039,13 +1066,14 @@ exports.verifyPayUPayment = async (req, res) => {
 
             return res.status(200).json({ status: true, message: 'Payment verified and order placed successfully.' });
         } else {
-            // Update Order to FAILED
+            // Update Order to FAILED & CANCELLED
             if (targetOrderId) {
-                await db.query(`UPDATE orders SET payment_status = 'FAILED', order_status = 'CANCELLED' WHERE id = ?`, [targetOrderId]);
+                await db.query(`UPDATE orders SET payment_status = 'FAILED', order_status = 'CANCELLED', updated_at = NOW() WHERE id = ?`, [targetOrderId]);
             }
             return res.status(400).json({ status: false, message: 'Payment verification failed or payment cancelled.' });
         }
     } catch (error) {
+        console.error("Error verifying PayU payment:", error);
         res.status(500).json({ status: false, message: 'Internal server error verifying payment.' });
     }
 };
