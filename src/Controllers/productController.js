@@ -1322,7 +1322,7 @@ exports.searchProducts = async (req, res) => {
             JOIN sellers s ON sp.seller_id = s.id
             LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
             JOIN products p ON sp.product_id = p.id
-            LEFT JOIN categories c ON p.category_id = c.id
+            LEFT JOIN product_categories c ON p.category_id = c.id
             LEFT JOIN product_subcategories sc ON p.subcategory_id = sc.id
             LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
             LEFT JOIN brands b ON p.brand_id = b.id
