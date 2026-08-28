@@ -1272,12 +1272,20 @@ exports.searchProducts = async (req, res) => {
     let queryParams = [];
 
     if (query) {
-      const searchTerms = query.split(" ").filter((term) => term && term.trim().length > 0);
+      const searchTerms = query.trim().split(/\s+/).filter(Boolean);
       const searchConditions = searchTerms
         .map((term) => {
-          const pat = `%${term.trim()}%`;
-          queryParams.push(pat, pat, pat, pat, pat);
-          return "(p.name LIKE ? OR p.description LIKE ? OR b.name LIKE ? OR c.name LIKE ? OR sc.name LIKE ?)";
+          const pat = `%${term}%`;
+          queryParams.push(pat, pat, pat, pat, pat, pat, pat, pat);
+          return `(
+            p.name LIKE ? 
+            OR p.description LIKE ? 
+            OR b.name LIKE ? 
+            OR c.name LIKE ? 
+            OR sc.name LIKE ?
+            OR sp.sku LIKE ?
+            OR EXISTS (SELECT 1 FROM seller_product_variants spv_s WHERE spv_s.seller_product_id = sp.id AND (spv_s.title LIKE ? OR spv_s.sku LIKE ?))
+          )`;
         })
         .join(" AND ");
       whereClauses.push(`(${searchConditions})`);
@@ -1291,12 +1299,11 @@ exports.searchProducts = async (req, res) => {
       whereClauses.push("p.brand_id = ?");
       queryParams.push(brandId);
     }
-    const isPincodeProvided = pincode && pincode !== 'ALL' && pincode !== 'null' && pincode !== 'undefined';
+
+    const isPincodeProvided = pincode && pincode !== 'ALL' && pincode !== 'null' && pincode !== 'undefined' && pincode !== '';
     if (isPincodeProvided) {
       whereClauses.push("(p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode = 'ALL' OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))");
       queryParams.push(pincode);
-    } else {
-      whereClauses.push("(p.is_universal_pincode = 1 OR spp.pincode = 'ALL' OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))");
     }
 
     const whereString = `WHERE ${whereClauses.join(" AND ")}`;
