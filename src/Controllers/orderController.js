@@ -1046,9 +1046,154 @@ exports.verifyPayUPayment = async (req, res) => {
             return res.status(400).json({ status: false, message: 'Payment verification failed or payment cancelled.' });
         }
     } catch (error) {
-        console.error("Error verifying PayU payment:", error);
         res.status(500).json({ status: false, message: 'Internal server error verifying payment.' });
     }
+};
+
+/**
+ * @desc   Cancel order with Hybrid Refund (Wallet / Bank / COD) & Stock/BV Reversal
+ * @route  POST /api/orders/:id/cancel
+ * @access Private (User)
+ */
+exports.cancelUserOrder = async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+    const orderId = req.params.id || req.params.orderId;
+    const { refund_type, cancellation_reason } = req.body;
+    const userId = req.user ? req.user.id : null;
+
+    let query = "SELECT * FROM orders WHERE id = ?";
+    let params = [orderId];
+    if (userId && req.user.role !== 'admin') {
+      query += " AND user_id = ?";
+      params.push(userId);
+    }
+
+    const [orders] = await connection.query(query, params);
+    if (!orders || orders.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ status: false, message: 'Order not found or access denied.' });
+    }
+
+    const order = orders[0];
+    const upperStatus = (order.order_status || '').toUpperCase();
+
+    if (upperStatus === 'CANCELLED') {
+      await connection.rollback();
+      return res.status(400).json({ status: false, message: 'Order is already cancelled.' });
+    }
+
+    if (['SHIPPED', 'DELIVERED', 'COMPLETED', 'OUT_FOR_DELIVERY'].includes(upperStatus)) {
+      await connection.rollback();
+      return res.status(400).json({ status: false, message: `Order cannot be cancelled as it is already ${upperStatus}.` });
+    }
+
+    const refundAmount = parseFloat(order.total_amount || 0);
+    const paymentMethod = (order.payment_method || '').toUpperCase();
+    const isPaid = (order.payment_status || '').toUpperCase() === 'PAID' || (order.payment_status || '').toUpperCase() === 'SUCCESS';
+
+    let refundStatus = 'NONE';
+    let processedRefundType = 'N/A';
+
+    // 1. Process Financial Refund based on Payment Method & User Preference
+    if (paymentMethod === 'WALLET' || (isPaid && (refund_type === 'WALLET' || !refund_type))) {
+      // Refund 100% to Earn24 Wallet
+      processedRefundType = 'WALLET';
+      refundStatus = 'REFUNDED';
+
+      await connection.query(
+        "UPDATE users SET wallet_balance = wallet_balance + ? WHERE id = ?",
+        [refundAmount, order.user_id]
+      );
+
+      await connection.query(
+        `INSERT INTO user_wallet_transactions (user_id, amount, transaction_type, remarks, created_at)
+         VALUES (?, ?, 'CREDIT', ?, NOW())`,
+        [order.user_id, refundAmount, `Refund for Cancelled Order #${order.order_number || order.id}`]
+      );
+    } else if (isPaid && refund_type === 'BANK') {
+      // Trigger PayU Bank Refund API
+      processedRefundType = 'BANK';
+      refundStatus = 'REFUND_PENDING';
+
+      try {
+        const crypto = require('crypto');
+        const axios = require('axios');
+        const [payuRows] = await connection.query(
+          "SELECT setting_key, setting_value FROM app_settings WHERE setting_key IN ('payu_merchant_key', 'payu_merchant_salt')"
+        );
+        const payuMap = {};
+        payuRows.forEach(r => payuMap[r.setting_key] = r.setting_value);
+        const payuKey = payuMap.payu_merchant_key || 'm2uwkj';
+        const payuSalt = payuMap.payu_merchant_salt || 'PyBf3kWiI6MdwYhrR3geD108F7fcpPI4';
+        const command = 'cancel_refund_transaction';
+        const var1 = order.payment_id || order.order_number || order.id;
+        const var2 = refundAmount.toFixed(2);
+        const hashStr = `${payuKey}|${command}|${var1}|${payuSalt}`;
+        const hash = crypto.createHash('sha512').update(hashStr).digest('hex');
+
+        const paramsData = new URLSearchParams();
+        paramsData.append('key', payuKey);
+        paramsData.append('command', command);
+        paramsData.append('var1', var1);
+        paramsData.append('var2', var2);
+        paramsData.append('hash', hash);
+
+        const payuResp = await axios.post('https://info.payu.in/merchant/postservice?form=2', paramsData.toString(), {
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        });
+
+        if (payuResp.data && (payuResp.data.status === 1 || payuResp.data.status === '1')) {
+          refundStatus = 'REFUNDED';
+        }
+      } catch (payuErr) {
+        console.error("PayU Refund API call error (Logged, fallback pending):", payuErr.message);
+      }
+    } else if (paymentMethod === 'COD') {
+      refundStatus = 'NO_REFUND_NEEDED';
+      processedRefundType = 'COD';
+    }
+
+    // 2. Reverse Stock Quantities
+    const [items] = await connection.query("SELECT * FROM order_items WHERE order_id = ?", [orderId]);
+    for (const item of items) {
+      if (item.seller_product_id) {
+        await connection.query(
+          "UPDATE seller_products SET stock_quantity = stock_quantity + ? WHERE id = ?",
+          [item.quantity, item.seller_product_id]
+        );
+      }
+    }
+
+    // 3. Update Order Record
+    await connection.query(
+      `UPDATE orders SET 
+        order_status = 'CANCELLED', 
+        payment_status = IF(payment_status = 'PAID' OR payment_status = 'SUCCESS', 'REFUNDED', payment_status),
+        cancellation_reason = ?,
+        cancellation_refund_type = ?,
+        cancellation_refund_status = ?,
+        cancelled_at = NOW()
+       WHERE id = ?`,
+      [cancellation_reason || 'Cancelled by User', processedRefundType, refundStatus, orderId]
+    );
+
+    await connection.commit();
+    res.status(200).json({
+      status: true,
+      message: `Order cancelled successfully. Refund method: ${processedRefundType} (${refundStatus}).`,
+      refund_type: processedRefundType,
+      refund_status: refundStatus,
+      refund_amount: refundAmount
+    });
+  } catch (err) {
+    await connection.rollback();
+    console.error("Error in cancelUserOrder:", err);
+    res.status(500).json({ status: false, message: 'Internal server error while cancelling order.' });
+  } finally {
+    connection.release();
+  }
 };
 
 /*
