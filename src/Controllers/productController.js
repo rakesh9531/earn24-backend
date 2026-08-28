@@ -1308,15 +1308,22 @@ exports.searchProducts = async (req, res) => {
 
     const whereString = `WHERE ${whereClauses.join(" AND ")}`;
 
-    // --- 3. Handle Sorting ---
+    // --- 3. Handle Sorting & Search Relevance ---
     let orderByClause = "ORDER BY p.popularity DESC";
-    switch (sortBy) {
-      case "price_asc":
-        orderByClause = "ORDER BY sp.selling_price ASC";
-        break;
-      case "price_desc":
-        orderByClause = "ORDER BY sp.selling_price DESC";
-        break;
+    if (query) {
+      const exactPattern = `${query.trim()}%`;
+      const containsPattern = `%${query.trim()}%`;
+      queryParams.push(exactPattern, containsPattern);
+      orderByClause = `ORDER BY (CASE WHEN p.name LIKE ? THEN 1 WHEN p.name LIKE ? THEN 2 ELSE 3 END), p.popularity DESC`;
+    } else {
+      switch (sortBy) {
+        case "price_asc":
+          orderByClause = "ORDER BY sp.selling_price ASC";
+          break;
+        case "price_desc":
+          orderByClause = "ORDER BY sp.selling_price DESC";
+          break;
+      }
     }
 
     const pageNum = parseInt(page, 10);
