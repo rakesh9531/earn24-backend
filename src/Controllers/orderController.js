@@ -100,8 +100,9 @@ exports.createOrder = async (req, res) => {
             if (parseFloat(item.admin_margin_percent || 0) > 0) {
                 return Math.max(0, (price * (parseFloat(item.admin_margin_percent) / 100)) * (bvGenerationPct / 100));
             }
-            const basePrice = price / (1 + ((item.gst_percentage || 0) / 100));
-            const netProfit = basePrice - (item.purchase_price || 0);
+            const grossProfit = price - (parseFloat(item.purchase_price) || 0);
+            const gstAmount = (price * (parseFloat(item.gst_percentage) || 0)) / 100;
+            const netProfit = grossProfit - gstAmount;
             return Math.max(0, (netProfit > 0) ? netProfit * (bvGenerationPct / 100) : 0);
         };
 
@@ -846,13 +847,15 @@ exports.initiatePayUPayment = async (req, res) => {
                 totalGstAmount += ((itemPrice * itemQty) * gstPercent) / 100;
             }
 
-            const adminMargin = parseFloat(item.admin_margin_percent || 10.0);
+            const adminMargin = parseFloat(item.admin_margin_percent || 0);
             const purchasePrice = parseFloat(item.purchase_price || 0);
             let itemProfit = 0;
             if (adminMargin > 0) {
                 itemProfit = (itemPrice * adminMargin) / 100;
             } else {
-                itemProfit = (itemPrice / (1 + (gstPercent / 100))) - purchasePrice;
+                const grossProfit = itemPrice - purchasePrice;
+                const gstAmt = (itemPrice * gstPercent) / 100;
+                itemProfit = grossProfit - gstAmt;
             }
             if (itemProfit > 0) {
                 totalBvEarned += (itemProfit * (bvGenerationPct / 100)) * itemQty;
@@ -892,14 +895,16 @@ exports.initiatePayUPayment = async (req, res) => {
             const effectivePrice = parseFloat(item.variant_id ? item.variant_price : item.selling_price);
             const effectiveName = item.variant_id ? `${item.product_name} (${item.variant_title})` : item.product_name;
 
-            const adminMargin = parseFloat(item.admin_margin_percent || 10.0);
+            const adminMargin = parseFloat(item.admin_margin_percent || 0);
             const purchasePrice = parseFloat(item.purchase_price || 0);
             const gstPercent = parseFloat(item.gst_percentage || 0);
             let itemProfit = 0;
             if (adminMargin > 0) {
                 itemProfit = (effectivePrice * adminMargin) / 100;
             } else {
-                itemProfit = (effectivePrice / (1 + (gstPercent / 100))) - purchasePrice;
+                const grossProfit = effectivePrice - purchasePrice;
+                const gstAmt = (effectivePrice * gstPercent) / 100;
+                itemProfit = grossProfit - gstAmt;
             }
             const bvEarnedPerUnit = itemProfit > 0 ? (itemProfit * (bvGenerationPct / 100)) : 0;
 

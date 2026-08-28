@@ -69,7 +69,7 @@ exports.getCart = async (req, res) => {
                 sp.minimum_order_quantity, sp.purchase_price, h.gst_percentage,
                 s.display_name as seller_name,
                 spv.title as variant_title, spv.color as variant_color, spv.size as variant_size, spv.sku as variant_sku,
-                GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (COALESCE(spv.price, sp.selling_price) * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((COALESCE(spv.price, sp.selling_price) / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned,
+                GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (COALESCE(spv.price, sp.selling_price) * (sp.admin_margin_percent / 100)) * (? / 100), ((COALESCE(spv.price, sp.selling_price) - IFNULL(sp.purchase_price, 0)) - ((COALESCE(spv.price, sp.selling_price) * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
                 (
                     ? = '' 
                     OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = ci.seller_product_id)
