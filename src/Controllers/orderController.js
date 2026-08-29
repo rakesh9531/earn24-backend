@@ -199,11 +199,18 @@ exports.createOrder = async (req, res) => {
             await notificationService.checkStockAndNotify(item.seller_product_id, connection);
         }
 
-        // 7. Wallet Deduction (Final Check)
+        // 7. Wallet Deduction (Final Check & Transaction Log)
         if (paymentMethod === 'WALLET') {
             const [walletRows] = await connection.query('SELECT balance FROM user_wallets WHERE user_id = ? FOR UPDATE', [userId]);
             if (!walletRows[0] || walletRows[0].balance < totalAmount) throw new Error("Insufficient wallet balance.");
             await connection.query('UPDATE user_wallets SET balance = balance - ? WHERE user_id = ?', [totalAmount, userId]);
+            
+            // Record Debit Entry in user_wallet_transactions for Customer Wallet History
+            await connection.query(
+                `INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks, created_at) 
+                 VALUES (?, 'debit', ?, 'order_purchase', ?, ?, NOW())`,
+                [userId, totalAmount, orderId, `Payment for Order #${orderNumber}`]
+            ).catch(err => console.warn('Wallet transaction log write warning:', err.message));
         }
 
         // 8. Clean up Cart (Only Delete ordered items)

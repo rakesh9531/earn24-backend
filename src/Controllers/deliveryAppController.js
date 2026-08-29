@@ -155,7 +155,7 @@ exports.getMyOrders = async (req, res) => {
     try {
         // Fetch Order and Customer/Address details
         const query = `
-            SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.order_status,
+            SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.payment_status, o.order_status,
                    u.full_name as customer_name, u.mobile_number as customer_phone,
                    sa.address_line_1, sa.address_line_2, sa.landmark, sa.city, sa.state, sa.pincode
             FROM orders o
@@ -167,6 +167,10 @@ exports.getMyOrders = async (req, res) => {
         const [orders] = await db.query(query, [agentId]);
 
         for (let order of orders) {
+            const isPrepaid = (order.payment_method === 'WALLET' || order.payment_method === 'ONLINE' || order.payment_method === 'PAYU' || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID');
+            order.is_paid = isPrepaid ? 1 : 0;
+            order.collectable_amount = isPrepaid ? 0.00 : parseFloat(order.total_amount);
+            order.payment_instruction = isPrepaid ? "PREPAID / WALLET (Do NOT collect cash)" : `COLLECT CASH: ₹${parseFloat(order.total_amount).toFixed(2)}`;
             // FIX: Removed p.weight and p.unit. 
             // Instead, we fetch attributes_snapshot which contains the weight/size user ordered.
             const itemQuery = `
