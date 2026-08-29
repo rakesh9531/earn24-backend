@@ -941,15 +941,20 @@ exports.getDashboardSummary = async (req, res) => {
   // const userId = 1; // Using a placeholder user ID for now.
 
   try {
-    // --- CORRECTED QUERY: Fetch balance from the separate 'wallets' table ---
+    // --- FETCH BALANCE FROM USER WALLETS ---
     const walletQuery = "SELECT balance FROM user_wallets WHERE user_id = ?";
     const [walletRows] = await db.query(walletQuery, [userId]);
 
-    // --- NEW QUERY: Fetch pre-calculated BV from users table ---
+    // --- FETCH TOTAL EARNED INCOME TILL DATE (SUM of all credit transactions) ---
+    const earnedQuery = "SELECT IFNULL(SUM(amount), 0) as total_earned FROM user_wallet_transactions WHERE user_id = ? AND txn_type = 'credit'";
+    const [earnedRows] = await db.query(earnedQuery, [userId]);
+    const totalEarnedTillDate = parseFloat(earnedRows[0]?.total_earned || 0);
+
+    // --- FETCH BV FROM USERS TABLE ---
     const bvQuery = "SELECT total_bv_self, total_bv_downline FROM users WHERE id = ?";
     const [bvRows] = await db.query(bvQuery, [userId]);
 
-    // --- This query correctly counts direct referrals ---
+    // --- COUNT DIRECT REFERRALS ---
     const downlineQuery =
       "SELECT COUNT(id) as downline_count FROM users WHERE sponsor_id = ?";
     const [downlineRows] = await db.query(downlineQuery, [userId]);
@@ -961,8 +966,8 @@ exports.getDashboardSummary = async (req, res) => {
     res.status(200).json({
       status: true,
       data: {
-        // Use optional chaining (?.) and a default value (|| 0) for safety
         walletBalance: walletRows[0]?.balance || 0,
+        totalEarnedTillDate: totalEarnedTillDate,
         totalBv: selfBv + downlineBv, // Return combined BV
         selfBv: selfBv,               // Send self BV separately if frontend needs it
         downlineBv: downlineBv,       // Send downline BV separately if frontend needs it

@@ -5,10 +5,17 @@ const db = require('../../db');
  * Primarily used to get 'CONFIRMED' orders that need to be processed.
  */
 exports.getOrdersByStatus = async (req, res) => {
-    // Default to fetching 'CONFIRMED' orders if no status is provided
+    // Default to fetching 'CONFIRMED' and 'PLACED' orders if no status is provided
     const status = req.query.status || 'CONFIRMED';
     
     try {
+        let whereClause = "WHERE o.order_status = ?";
+        let params = [status];
+        if (status === 'CONFIRMED') {
+            whereClause = "WHERE (o.order_status = 'CONFIRMED' OR o.order_status = 'PLACED')";
+            params = [];
+        }
+
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.order_status, o.created_at, u.full_name as customer_name,
                    o.rejection_reason, o.last_rejected_by_agent_id,
@@ -16,10 +23,10 @@ exports.getOrdersByStatus = async (req, res) => {
             FROM orders o
             JOIN users u ON o.user_id = u.id
             LEFT JOIN delivery_agents da ON o.last_rejected_by_agent_id = da.id
-            WHERE o.order_status = ?
+            ${whereClause}
             ORDER BY o.created_at ASC
         `;
-        const [orders] = await db.query(query, [status]);
+        const [orders] = await db.query(query, params);
 
         res.status(200).json({ status: true, data: orders });
     } catch (error) {
