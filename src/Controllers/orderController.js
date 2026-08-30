@@ -1137,16 +1137,30 @@ exports.cancelUserOrder = async (req, res) => {
       processedRefundType = 'WALLET';
       refundStatus = 'REFUNDED';
 
-      await connection.query(
-        "UPDATE users SET wallet_balance = wallet_balance + ? WHERE id = ?",
-        [refundAmount, order.user_id]
-      );
+      const [wCheck] = await connection.query("SELECT id FROM user_wallets WHERE user_id = ?", [order.user_id]);
+      if (wCheck.length > 0) {
+        await connection.query(
+          "UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?",
+          [refundAmount, order.user_id]
+        );
+      } else {
+        await connection.query(
+          "INSERT INTO user_wallets (user_id, balance, created_at, updated_at) VALUES (?, ?, NOW(), NOW())",
+          [order.user_id, refundAmount]
+        );
+      }
 
       await connection.query(
-        `INSERT INTO user_wallet_transactions (user_id, amount, transaction_type, remarks, created_at)
-         VALUES (?, ?, 'CREDIT', ?, NOW())`,
-        [order.user_id, refundAmount, `Refund for Cancelled Order #${order.order_number || order.id}`]
-      );
+        `INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks, created_at)
+         VALUES (?, 'credit', ?, 'refund', ?, ?, NOW())`,
+        [order.user_id, refundAmount, order.id, `Refund for Cancelled Order #${order.order_number || order.id}`]
+      ).catch(async () => {
+        await connection.query(
+          `INSERT INTO user_wallet_transactions (user_id, amount, transaction_type, remarks, created_at)
+           VALUES (?, ?, 'CREDIT', ?, NOW())`,
+          [order.user_id, refundAmount, `Refund for Cancelled Order #${order.order_number || order.id}`]
+        ).catch(e => console.warn('Wallet transaction write warning:', e.message));
+      });
     } else if (isPaid && refund_type === 'BANK') {
       // Trigger PayU Bank Refund API
       processedRefundType = 'BANK';
@@ -1193,9 +1207,15 @@ exports.cancelUserOrder = async (req, res) => {
     // 2. Reverse Stock Quantities
     const [items] = await connection.query("SELECT * FROM order_items WHERE order_id = ?", [orderId]);
     for (const item of items) {
+      if (item.seller_product_variant_id) {
+        await connection.query(
+          "UPDATE seller_product_variants SET stock_quantity = stock_quantity + ? WHERE id = ?",
+          [item.quantity, item.seller_product_variant_id]
+        ).catch(() => {});
+      }
       if (item.seller_product_id) {
         await connection.query(
-          "UPDATE seller_products SET stock_quantity = stock_quantity + ? WHERE id = ?",
+          "UPDATE seller_products SET quantity = quantity + ? WHERE id = ?",
           [item.quantity, item.seller_product_id]
         );
       }
