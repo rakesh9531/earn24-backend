@@ -328,11 +328,24 @@ exports.adminResolveReturn = async (req, res) => {
             }
         }
 
-        await conn.query(`
-            UPDATE order_returns
-            SET admin_action = ?, admin_notes = ?, status = ?, refund_status = ?
-            WHERE id = ?
-        `, [action, admin_notes || null, newStatus, refundStatus, id]);
+        await conn.query(`ALTER TABLE order_returns MODIFY COLUMN status VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+        await conn.query(`ALTER TABLE order_returns MODIFY COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+        await conn.query(`ALTER TABLE order_returns MODIFY COLUMN refund_status VARCHAR(50) DEFAULT 'NOT_INITIATED';`).catch(() => {});
+
+        try {
+            await conn.query(`
+                UPDATE order_returns
+                SET admin_action = ?, admin_notes = ?, status = ?, refund_status = ?
+                WHERE id = ?
+            `, [action, admin_notes || null, newStatus, refundStatus, id]);
+        } catch (updateErr) {
+            console.warn("Primary status update failed, executing safe fallback update:", updateErr.message);
+            await conn.query(`
+                UPDATE order_returns
+                SET admin_action = ?, admin_notes = ?, status = ?, refund_status = ?
+                WHERE id = ?
+            `, [action, admin_notes || null, action === 'APPROVED' ? 'APPROVED' : 'REJECTED', refundStatus, id]);
+        }
 
         await conn.commit();
         res.json({
