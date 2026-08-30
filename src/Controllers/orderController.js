@@ -205,12 +205,19 @@ exports.createOrder = async (req, res) => {
             if (!walletRows[0] || walletRows[0].balance < totalAmount) throw new Error("Insufficient wallet balance.");
             await connection.query('UPDATE user_wallets SET balance = balance - ? WHERE user_id = ?', [totalAmount, userId]);
             
-            // Record Debit Entry in user_wallet_transactions for Customer Wallet History
+            // Record Debit Entry in user_wallet_transactions for Customer Wallet History (Primary + Schema Fallback)
             await connection.query(
                 `INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks, created_at) 
                  VALUES (?, 'debit', ?, 'order_purchase', ?, ?, NOW())`,
                 [userId, totalAmount, orderId, `Payment for Order #${orderNumber}`]
-            ).catch(err => console.warn('Wallet transaction log write warning:', err.message));
+            ).catch(async (primaryErr) => {
+                console.warn('Primary wallet debit log failed, running fallback insert:', primaryErr.message);
+                await connection.query(
+                    `INSERT INTO user_wallet_transactions (user_id, amount, transaction_type, remarks, created_at) 
+                     VALUES (?, ?, 'DEBIT', ?, NOW())`,
+                    [userId, totalAmount, `Payment for Order #${orderNumber}`]
+                ).catch(e => console.warn('Wallet debit transaction fallback log write warning:', e.message));
+            });
         }
 
         // 8. Clean up Cart (Only Delete ordered items)

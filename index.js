@@ -145,7 +145,12 @@ async function ensureTablesExist() {
         await db.query(`ALTER TABLE orders ADD COLUMN cancellation_refund_type VARCHAR(50) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE orders ADD COLUMN cancellation_refund_status VARCHAR(50) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE orders ADD COLUMN cancelled_at DATETIME NULL;`).catch(() => {});
-        console.log("✅ Auto-verified seller_product_variants, delivery_agents, return_window_days, orders & order_items item_status columns.");
+        await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN txn_type VARCHAR(50) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN source VARCHAR(50) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN reference_id VARCHAR(255) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN remarks VARCHAR(255) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN transaction_type VARCHAR(50) NULL;`).catch(() => {});
+        console.log("✅ Auto-verified seller_product_variants, delivery_agents, return_window_days, orders & user_wallet_transactions columns.");
     } catch (err) {
         console.warn("Table auto-creation warning:", err.message);
     }
