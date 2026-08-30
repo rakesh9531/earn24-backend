@@ -1310,10 +1310,11 @@ exports.searchProducts = async (req, res) => {
 
     // --- 3. Handle Sorting & Search Relevance ---
     let orderByClause = "ORDER BY p.popularity DESC";
+    const dataQueryParams = [...queryParams];
     if (query) {
       const exactPattern = `${query.trim()}%`;
       const containsPattern = `%${query.trim()}%`;
-      queryParams.push(exactPattern, containsPattern);
+      dataQueryParams.push(exactPattern, containsPattern);
       orderByClause = `ORDER BY (CASE WHEN p.name LIKE ? THEN 1 WHEN p.name LIKE ? THEN 2 ELSE 3 END), p.popularity DESC`;
     } else {
       switch (sortBy) {
@@ -1326,8 +1327,8 @@ exports.searchProducts = async (req, res) => {
       }
     }
 
-    const pageNum = parseInt(page, 10);
-    const limitNum = parseInt(limit, 10);
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = parseInt(limit, 10) || 20;
     const offset = (pageNum - 1) * limitNum;
 
     // --- 4. Final Data Query with BV Calculation & Attribute Subquery ---
@@ -1374,7 +1375,7 @@ exports.searchProducts = async (req, res) => {
         `;
 
     const [productsRaw] = await db.query(dataQuery, [
-      ...queryParams,
+      ...dataQueryParams,
       limitNum,
       offset,
     ]);
