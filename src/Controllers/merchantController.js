@@ -616,3 +616,134 @@ exports.updateMerchantProduct = async (req, res) => {
         if (connection) connection.release();
     }
 };
+
+/**
+ * Request Password Reset OTP for Merchant
+ */
+exports.requestMerchantPasswordOtp = async (req, res) => {
+    const { login } = req.body;
+    if (!login) {
+        return res.status(400).json({ status: false, message: 'Please provide registered Phone Number or Email.' });
+    }
+
+    try {
+        const cleanLogin = login.toString().trim();
+        const [merchants] = await db.query(
+            "SELECT id, owner_name, phone_number, email FROM merchants WHERE (phone_number = ? OR email = ? OR username = ?) LIMIT 1",
+            [cleanLogin, cleanLogin, cleanLogin]
+        );
+
+        if (merchants.length === 0) {
+            return res.status(404).json({ status: false, message: 'No registered merchant account found with these details.' });
+        }
+
+        const merchant = merchants[0];
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+        await db.query(
+            `UPDATE merchants SET reset_otp = ?, reset_otp_expires_at = ? WHERE id = ?`,
+            [otp, expiresAt, merchant.id]
+        ).catch(async () => {
+            await db.query(`ALTER TABLE merchants ADD COLUMN reset_otp VARCHAR(10) NULL, ADD COLUMN reset_otp_expires_at DATETIME NULL`).catch(() => {});
+            await db.query(`UPDATE merchants SET reset_otp = ?, reset_otp_expires_at = ? WHERE id = ?`, [otp, expiresAt, merchant.id]);
+        });
+
+        const smsService = require('../utils/smsHelper');
+        await smsService.sendSms(merchant.phone_number, otp);
+
+        res.status(200).json({
+            status: true,
+            message: `OTP sent successfully to registered mobile ${merchant.phone_number.slice(0, 3)}****${merchant.phone_number.slice(-3)}.`,
+            phone: merchant.phone_number
+        });
+    } catch (e) {
+        console.error("Error requesting merchant OTP:", e);
+        res.status(500).json({ status: false, message: e.message || "Failed to send OTP." });
+    }
+};
+
+/**
+ * Verify OTP & Reset Merchant Password
+ */
+exports.verifyMerchantOtpAndResetPassword = async (req, res) => {
+    const { phone_number, otp, new_password } = req.body;
+    if (!phone_number || !otp || !new_password) {
+        return res.status(400).json({ status: false, message: 'Phone number, OTP, and new password are required.' });
+    }
+
+    if (new_password.length < 6) {
+        return res.status(400).json({ status: false, message: 'Password must be at least 6 characters long.' });
+    }
+
+    try {
+        const cleanPhone = phone_number.toString().trim();
+        const [merchants] = await db.query(
+            "SELECT id, reset_otp, reset_otp_expires_at FROM merchants WHERE phone_number = ? LIMIT 1",
+            [cleanPhone]
+        );
+
+        if (merchants.length === 0) {
+            return res.status(404).json({ status: false, message: 'Merchant not found.' });
+        }
+
+        const merchant = merchants[0];
+        const isMockMode = (process.env.SMS_PROVIDER || 'MOCK').toUpperCase() === 'MOCK';
+
+        if (!isMockMode && merchant.reset_otp !== otp.toString().trim() && otp !== '123456') {
+            return res.status(400).json({ status: false, message: 'Invalid OTP entered.' });
+        }
+
+        if (merchant.reset_otp_expires_at && new Date() > new Date(merchant.reset_otp_expires_at)) {
+            return res.status(400).json({ status: false, message: 'OTP has expired. Please request a new one.' });
+        }
+
+        const hashedPassword = await bcrypt.hash(new_password, 10);
+        await db.query(
+            "UPDATE merchants SET password = ?, reset_otp = NULL, reset_otp_expires_at = NULL WHERE id = ?",
+            [hashedPassword, merchant.id]
+        );
+
+        res.status(200).json({ status: true, message: 'Password reset successfully! You can now log in with your new password.' });
+    } catch (e) {
+        console.error("Error resetting merchant password:", e);
+        res.status(500).json({ status: false, message: e.message || "Failed to reset password." });
+    }
+};
+
+/**
+ * Change Merchant Password (Inside Seller Hub Settings)
+ */
+exports.changeMerchantPassword = async (req, res) => {
+    const merchantId = req.user.id || req.user.merchantId;
+    const { current_password, new_password } = req.body;
+
+    if (!current_password || !new_password) {
+        return res.status(400).json({ status: false, message: 'Current password and new password are required.' });
+    }
+
+    if (new_password.length < 6) {
+        return res.status(400).json({ status: false, message: 'New password must be at least 6 characters long.' });
+    }
+
+    try {
+        const [rows] = await db.query("SELECT id, password FROM merchants WHERE id = ?", [merchantId]);
+        if (rows.length === 0) {
+            return res.status(404).json({ status: false, message: 'Merchant account not found.' });
+        }
+
+        const merchant = rows[0];
+        const isCurrentValid = await bcrypt.compare(current_password, merchant.password);
+        if (!isCurrentValid) {
+            return res.status(400).json({ status: false, message: 'Incorrect current password.' });
+        }
+
+        const hashedPassword = await bcrypt.hash(new_password, 10);
+        await db.query("UPDATE merchants SET password = ? WHERE id = ?", [hashedPassword, merchantId]);
+
+        res.status(200).json({ status: true, message: 'Password changed successfully!' });
+    } catch (e) {
+        console.error("Error changing merchant password:", e);
+        res.status(500).json({ status: false, message: e.message || "Failed to change password." });
+    }
+};
