@@ -246,10 +246,21 @@ exports.completeDelivery = async (req, res) => {
     try {
         await connection.beginTransaction();
 
+        // Check if order was already prepaid / wallet paid
+        const [existingOrders] = await connection.query(`SELECT payment_method, payment_status FROM orders WHERE id = ?`, [orderId]);
+        const existingOrder = existingOrders[0];
+        const isPrepaid = existingOrder && (
+            (existingOrder.payment_status || '').toUpperCase() === 'PAID' || 
+            (existingOrder.payment_status || '').toUpperCase() === 'COMPLETED' || 
+            ['WALLET', 'ONLINE', 'RAZORPAY', 'PAYU'].includes((existingOrder.payment_method || '').toUpperCase())
+        );
+
+        const finalPaymentMethod = isPrepaid ? existingOrder.payment_method : (paymentMode || 'COD');
+
         // 1. Update Order Status
         const [updateResult] = await connection.query(
             "UPDATE orders SET order_status='DELIVERED', payment_status='COMPLETED', payment_method=?, delivery_otp=NULL, delivered_at=NOW() WHERE id=? AND order_status != 'DELIVERED'", 
-            [paymentMode, orderId]
+            [finalPaymentMethod, orderId]
         );
 
         if (updateResult.affectedRows > 0) {
