@@ -1274,6 +1274,132 @@ exports.cancelUserOrder = async (req, res) => {
   }
 };
 
+exports.requestReturn = async (req, res) => {
+  const userId = req.user.id;
+  const { orderId } = req.params;
+  const { reason, type, requestType, orderItemId, evidence_images } = req.body;
+
+  const reqType = (type || requestType || 'RETURN').toUpperCase();
+  const returnReason = reason || 'Return requested by user';
+
+  try {
+    // 1. Check if order exists and belongs to user
+    const [orders] = await db.query(
+      `SELECT id, order_number, order_status, delivered_at, created_at FROM orders WHERE id = ? AND user_id = ?`,
+      [orderId, userId]
+    );
+
+    if (!orders || orders.length === 0) {
+      return res.status(404).json({ status: false, message: 'Order not found.' });
+    }
+
+    const order = orders[0];
+
+    // 2. Check if order status is DELIVERED
+    if (order.order_status !== 'DELIVERED') {
+      return res.status(400).json({ status: false, message: 'Return or replacement can only be requested for DELIVERED orders.' });
+    }
+
+    // 3. Find order items
+    const [items] = await db.query(
+      `SELECT oi.*, sp.seller_id as merchant_seller_id
+       FROM order_items oi
+       LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+       WHERE oi.order_id = ?`,
+      [orderId]
+    );
+
+    if (!items || items.length === 0) {
+      return res.status(404).json({ status: false, message: 'No items found for this order.' });
+    }
+
+    // Choose target item (specific orderItemId or first item)
+    const targetItem = orderItemId ? items.find(i => i.id == orderItemId) || items[0] : items[0];
+
+    // 4. Get merchant_id if available
+    let merchantId = null;
+    if (targetItem.merchant_seller_id) {
+      const [sellerRows] = await db.query(
+        `SELECT sellerable_id FROM sellers WHERE id = ? AND sellerable_type = 'Merchant'`,
+        [targetItem.merchant_seller_id]
+      ).catch(() => [[]]);
+      if (sellerRows && sellerRows.length > 0) {
+        merchantId = sellerRows[0].sellerable_id;
+      }
+    }
+
+    // 5. Ensure order_returns table exists
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS order_returns (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        order_id INT NOT NULL,
+        order_item_id INT NULL,
+        user_id INT NOT NULL,
+        merchant_id INT NULL,
+        return_type VARCHAR(50) DEFAULT 'RETURN',
+        request_type VARCHAR(50) DEFAULT 'RETURN',
+        reason TEXT NULL,
+        evidence_images LONGTEXT NULL,
+        refund_amount DECIMAL(10,2) DEFAULT 0.00,
+        status VARCHAR(50) DEFAULT 'PENDING',
+        merchant_action VARCHAR(50) DEFAULT 'PENDING',
+        admin_action VARCHAR(50) DEFAULT 'PENDING',
+        refund_status VARCHAR(50) DEFAULT 'NOT_INITIATED',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `).catch(() => {});
+
+    // 6. Check if request already submitted
+    const [existing] = await db.query(
+      `SELECT id FROM order_returns WHERE order_id = ? AND status NOT IN ('REJECTED', 'CLOSED')`,
+      [orderId]
+    ).catch(() => [[]]);
+
+    if (existing && existing.length > 0) {
+      return res.status(400).json({
+        status: false,
+        message: `A ${reqType.toLowerCase()} request for this order is already in progress.`
+      });
+    }
+
+    // 7. Insert Return / Replacement Request
+    const [result] = await db.query(
+      `INSERT INTO order_returns 
+        (order_id, order_item_id, user_id, merchant_id, return_type, request_type, reason, evidence_images, refund_amount, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
+      [
+        orderId,
+        targetItem.id,
+        userId,
+        merchantId,
+        reqType,
+        reqType,
+        returnReason,
+        evidence_images ? JSON.stringify(evidence_images) : null,
+        targetItem.total_price || targetItem.price || 0
+      ]
+    );
+
+    // 8. Update Order status flag
+    await db.query(`ALTER TABLE orders ADD COLUMN is_return_requested TINYINT DEFAULT 0;`).catch(() => {});
+    await db.query(`UPDATE orders SET is_return_requested = 1 WHERE id = ?`, [orderId]).catch(() => {});
+
+    res.status(200).json({
+      status: true,
+      message: `Your ${reqType === 'RETURN' ? 'Return' : 'Replacement'} request for Order #${order.order_number || orderId} has been submitted successfully! Merchant/Admin will review it within 24-48 hours.`,
+      request_id: result.insertId
+    });
+
+  } catch (error) {
+    console.error("Error in requestReturn:", error);
+    res.status(500).json({
+      status: false,
+      message: error.message || 'Failed to submit return/replacement request.'
+    });
+  }
+};
+
 /*
 =============================================================================
                           PREVIOUS CODE REFERENCE
