@@ -145,8 +145,8 @@ async function ensureTablesExist() {
         await db.query(`ALTER TABLE orders ADD COLUMN cancellation_refund_type VARCHAR(50) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE orders ADD COLUMN cancellation_refund_status VARCHAR(50) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE orders ADD COLUMN cancelled_at DATETIME NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN txn_type VARCHAR(50) NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN source VARCHAR(50) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN source VARCHAR(100) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE user_wallet_transactions MODIFY COLUMN source VARCHAR(100) NULL DEFAULT 'SYSTEM';`).catch(() => {});
         await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN reference_id VARCHAR(255) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN remarks VARCHAR(255) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN transaction_type VARCHAR(50) NULL;`).catch(() => {});

@@ -206,6 +206,7 @@ exports.createOrder = async (req, res) => {
             await connection.query('UPDATE user_wallets SET balance = balance - ? WHERE user_id = ?', [totalAmount, userId]);
             
             // Record Debit Entry in user_wallet_transactions for Customer Wallet History (Primary + Schema Fallback)
+            await connection.query(`ALTER TABLE user_wallet_transactions MODIFY COLUMN source VARCHAR(100) NULL DEFAULT 'SYSTEM';`).catch(() => {});
             await connection.query(
                 `INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks, created_at) 
                  VALUES (?, 'debit', ?, 'order_purchase', ?, ?, NOW())`,
