@@ -150,6 +150,7 @@ async function ensureTablesExist() {
         await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN reference_id VARCHAR(255) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN remarks VARCHAR(255) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN transaction_type VARCHAR(50) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns MODIFY COLUMN status VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
         await db.query(`ALTER TABLE order_returns MODIFY COLUMN merchant_id INT NULL DEFAULT NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns MODIFY COLUMN order_item_id INT NULL DEFAULT NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN request_type VARCHAR(50) DEFAULT 'RETURN';`).catch(() => {});
@@ -160,7 +161,6 @@ async function ensureTablesExist() {
         await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN refund_status VARCHAR(50) DEFAULT 'NOT_INITIATED';`).catch(() => {});
-        console.log("✅ Auto-verified seller_product_variants, delivery_agents, return_window_days, orders, user_wallet_transactions & order_returns columns.");
         console.log("✅ Auto-verified seller_product_variants, delivery_agents, return_window_days, orders, user_wallet_transactions & order_returns columns.");
     } catch (err) {
         console.warn("Table auto-creation warning:", err.message);
