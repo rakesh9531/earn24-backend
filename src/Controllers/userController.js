@@ -1229,7 +1229,13 @@ exports.getWalletHistory = async (req, res) => {
 
     // 1. Fetch Data
     const sql = `
-            SELECT id, amount, LOWER(COALESCE(txn_type, transaction_type, 'debit')) as txn_type, source, remarks, reference_id, created_at 
+            SELECT id, amount, 
+                   CASE 
+                     WHEN remarks LIKE 'Payment for Order%' THEN 'debit'
+                     WHEN remarks LIKE 'Refund%' OR remarks LIKE 'Cashback%' THEN 'credit'
+                     ELSE LOWER(COALESCE(txn_type, transaction_type, 'debit'))
+                   END as txn_type, 
+                   source, remarks, reference_id, created_at 
             FROM user_wallet_transactions 
             WHERE user_id = ? 
             ORDER BY created_at DESC 
