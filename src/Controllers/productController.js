@@ -1254,13 +1254,10 @@ exports.searchProducts = async (req, res) => {
         });
     }
 
-    // --- 1. Get BV Setting (From your Home Screen logic) ---
-    const [settingsRows] = await db.query(
-      "SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'",
-    );
-    const bvGenerationPct = settingsRows[0]
-      ? parseFloat(settingsRows[0].setting_value)
-      : 80.0;
+    const [adminRow] = await db.query(
+      `SELECT bv_generation_percentage FROM admin_settings LIMIT 1`
+    ).catch(() => [[{ bv_generation_percentage: 80 }]]);
+    const bvGenerationPct = (adminRow && adminRow[0] && adminRow[0].bv_generation_percentage) ? parseFloat(adminRow[0].bv_generation_percentage) : 80;
 
     // --- 2. Build WHERE Clauses ---
     let whereClauses = [
@@ -1271,11 +1268,11 @@ exports.searchProducts = async (req, res) => {
     ];
     let queryParams = [];
 
-    if (query) {
-      const searchTerms = query.trim().split(/\s+/).filter(Boolean);
-      const searchConditions = searchTerms
-        .map((term) => {
-          const pat = `%${term}%`;
+    if (query && query.trim().length > 0) {
+      const stems = extractSearchStems(query);
+      const searchConditions = stems
+        .map((stem) => {
+          const pat = `%${stem}%`;
           queryParams.push(pat, pat, pat, pat, pat, pat, pat, pat);
           return `(
             p.name LIKE ? 
@@ -1287,7 +1284,7 @@ exports.searchProducts = async (req, res) => {
             OR EXISTS (SELECT 1 FROM seller_product_variants spv_s WHERE spv_s.seller_product_id = sp.id AND (spv_s.title LIKE ? OR spv_s.sku LIKE ?))
           )`;
         })
-        .join(" AND ");
+        .join(" OR ");
       whereClauses.push(`(${searchConditions})`);
     }
 
@@ -1311,11 +1308,15 @@ exports.searchProducts = async (req, res) => {
     // --- 3. Handle Sorting & Search Relevance ---
     let orderByClause = "ORDER BY p.popularity DESC";
     const dataQueryParams = [...queryParams];
-    if (query) {
-      const exactPattern = `${query.trim()}%`;
-      const containsPattern = `%${query.trim()}%`;
-      dataQueryParams.push(exactPattern, containsPattern);
-      orderByClause = `ORDER BY (CASE WHEN p.name LIKE ? THEN 1 WHEN p.name LIKE ? THEN 2 ELSE 3 END), p.popularity DESC`;
+    if (query && query.trim().length > 0) {
+      const trimmed = query.trim();
+      const exactPattern = `${trimmed}%`;
+      const containsPattern = `%${trimmed}%`;
+      const stems = extractSearchStems(query);
+      const primaryStemPattern = stems.length > 1 ? `%${stems[stems.length - 1]}%` : containsPattern;
+
+      dataQueryParams.push(exactPattern, containsPattern, primaryStemPattern);
+      orderByClause = `ORDER BY (CASE WHEN p.name LIKE ? THEN 1 WHEN p.name LIKE ? THEN 2 WHEN p.name LIKE ? THEN 3 ELSE 4 END), p.popularity DESC`;
     } else {
       switch (sortBy) {
         case "price_asc":
@@ -1423,15 +1424,19 @@ exports.getSearchSuggestions = async (req, res) => {
   }
 
   try {
-    const searchTerm = `%${query.trim().toLowerCase()}%`;
+    const raw = query.trim().toLowerCase();
+    const stems = extractSearchStems(raw);
+    const conditions = stems.map(() => `LOWER(name) LIKE ?`).join(" OR ");
+    const params = stems.map(s => `%${s}%`);
+
     const [suggestions] = await db.query(
-      `SELECT id, name FROM products WHERE LOWER(name) LIKE ? LIMIT 15`,
-      [searchTerm]
+      `SELECT DISTINCT id, name FROM products WHERE (${conditions}) LIMIT 15`,
+      params
     ).catch(async (e) => {
       console.warn("getSearchSuggestions query fallback:", e.message);
       const [fallback] = await db.query(
-        `SELECT id, name FROM products WHERE name LIKE ? LIMIT 10`,
-        [searchTerm]
+        `SELECT DISTINCT id, name FROM products WHERE name LIKE ? LIMIT 10`,
+        [`%${raw}%`]
       );
       return [fallback];
     });

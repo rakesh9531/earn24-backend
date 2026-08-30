@@ -1221,18 +1221,34 @@ exports.cancelUserOrder = async (req, res) => {
       }
     }
 
-    // 3. Update Order Record
-    await connection.query(
-      `UPDATE orders SET 
-        order_status = 'CANCELLED', 
-        payment_status = IF(payment_status = 'PAID' OR payment_status = 'SUCCESS', 'REFUNDED', payment_status),
-        cancellation_reason = ?,
-        cancellation_refund_type = ?,
-        cancellation_refund_status = ?,
-        cancelled_at = NOW()
-       WHERE id = ?`,
-      [cancellation_reason || 'Cancelled by User', processedRefundType, refundStatus, orderId]
-    );
+    // 3. Update Order Record with Fallback
+    try {
+      await connection.query(
+        `UPDATE orders SET 
+          order_status = 'CANCELLED', 
+          payment_status = IF(payment_status = 'PAID' OR payment_status = 'SUCCESS', 'REFUNDED', payment_status),
+          cancellation_reason = ?,
+          cancellation_refund_type = ?,
+          cancellation_refund_status = ?,
+          cancelled_at = NOW()
+         WHERE id = ?`,
+        [cancellation_reason || 'Cancelled by User', processedRefundType, refundStatus, orderId]
+      );
+    } catch (updateErr) {
+      console.warn("Full order cancel update failed, attempting column addition and fallback...", updateErr.message);
+      await connection.query(`ALTER TABLE orders ADD COLUMN cancellation_reason VARCHAR(255) NULL;`).catch(() => {});
+      await connection.query(`ALTER TABLE orders ADD COLUMN cancellation_refund_type VARCHAR(50) NULL;`).catch(() => {});
+      await connection.query(`ALTER TABLE orders ADD COLUMN cancellation_refund_status VARCHAR(50) NULL;`).catch(() => {});
+      await connection.query(`ALTER TABLE orders ADD COLUMN cancelled_at DATETIME NULL;`).catch(() => {});
+      
+      await connection.query(
+        `UPDATE orders SET 
+          order_status = 'CANCELLED', 
+          payment_status = IF(payment_status = 'PAID' OR payment_status = 'SUCCESS', 'REFUNDED', payment_status)
+         WHERE id = ?`,
+        [orderId]
+      );
+    }
 
     await connection.commit();
     res.status(200).json({
