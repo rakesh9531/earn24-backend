@@ -141,7 +141,11 @@ async function ensureTablesExist() {
         await db.query(`ALTER TABLE order_items ADD COLUMN item_status VARCHAR(50) DEFAULT 'ACTIVE';`).catch(() => {});
         await db.query(`ALTER TABLE order_items ADD COLUMN cancelled_at DATETIME NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_items ADD COLUMN cancellation_reason VARCHAR(255) NULL;`).catch(() => {});
-        console.log("✅ Auto-verified seller_product_variants, delivery_agents, return_window_days & order_items item_status columns.");
+        await db.query(`ALTER TABLE orders ADD COLUMN cancellation_reason VARCHAR(255) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE orders ADD COLUMN cancellation_refund_type VARCHAR(50) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE orders ADD COLUMN cancellation_refund_status VARCHAR(50) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE orders ADD COLUMN cancelled_at DATETIME NULL;`).catch(() => {});
+        console.log("✅ Auto-verified seller_product_variants, delivery_agents, return_window_days, orders & order_items item_status columns.");
     } catch (err) {
         console.warn("Table auto-creation warning:", err.message);
     }
