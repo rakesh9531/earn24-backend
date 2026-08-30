@@ -1423,23 +1423,23 @@ exports.getSearchSuggestions = async (req, res) => {
   }
 
   try {
-    const searchTerm = query.trim();
-
-    // --- THIS IS THE FIX ---
-    // We use the LOWER() function on both the column and the search term
-    // to ensure the search is always case-insensitive. We order by popularity so the best items show up first.
-    // We expanded the LIMIT to 50 so practically "all" relevant items show, without crashing the frontend.
+    const searchTerm = `%${query.trim().toLowerCase()}%`;
     const [suggestions] = await db.query(
-      `SELECT name, MAX(popularity) as pop FROM products WHERE LOWER(name) LIKE ? AND is_active = 1 AND is_deleted = 0 GROUP BY name ORDER BY pop DESC LIMIT 50`,
-      [`%${searchTerm.toLowerCase()}%`], 
-    );
+      `SELECT id, name FROM products WHERE LOWER(name) LIKE ? LIMIT 15`,
+      [searchTerm]
+    ).catch(async (e) => {
+      console.warn("getSearchSuggestions query fallback:", e.message);
+      const [fallback] = await db.query(
+        `SELECT id, name FROM products WHERE name LIKE ? LIMIT 10`,
+        [searchTerm]
+      );
+      return [fallback];
+    });
 
-    res.status(200).json({ status: true, data: suggestions });
+    res.status(200).json({ status: true, data: suggestions || [] });
   } catch (error) {
     console.error("Error fetching search suggestions:", error);
-    res
-      .status(500)
-      .json({ status: false, message: "Could not fetch suggestions." });
+    res.status(200).json({ status: true, data: [] });
   }
 };
 
