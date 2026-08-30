@@ -1357,6 +1357,15 @@ exports.requestReturn = async (req, res) => {
     await db.query(`ALTER TABLE order_returns ADD COLUMN evidence_images LONGTEXT NULL;`).catch(() => {});
     await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
     await db.query(`ALTER TABLE order_returns ADD COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns MODIFY COLUMN merchant_id INT NULL DEFAULT NULL;`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns MODIFY COLUMN order_item_id INT NULL DEFAULT NULL;`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN request_type VARCHAR(50) DEFAULT 'RETURN';`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN return_type VARCHAR(50) DEFAULT 'RETURN';`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_id INT NULL DEFAULT NULL;`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN order_item_id INT NULL DEFAULT NULL;`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN evidence_images LONGTEXT NULL;`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
     await db.query(`ALTER TABLE order_returns ADD COLUMN refund_status VARCHAR(50) DEFAULT 'NOT_INITIATED';`).catch(() => {});
 
     // 6. Check if request already submitted
@@ -1372,6 +1381,10 @@ exports.requestReturn = async (req, res) => {
       });
     }
 
+    const safeItemId = (targetItem && targetItem.id) ? targetItem.id : 0;
+    const safeMerchantId = merchantId || null;
+    const itemRefundAmount = (targetItem && (targetItem.total_price || targetItem.price)) ? (targetItem.total_price || targetItem.price) : 0;
+
     // 7. Insert Return / Replacement Request with Primary & Fallback
     let result;
     try {
@@ -1381,27 +1394,29 @@ exports.requestReturn = async (req, res) => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
         [
           orderId,
-          targetItem.id,
+          safeItemId,
           userId,
-          merchantId,
+          safeMerchantId,
           reqType,
           reqType,
           returnReason,
           evidence_images ? JSON.stringify(evidence_images) : null,
-          targetItem.total_price || targetItem.price || 0
+          itemRefundAmount
         ]
       );
     } catch (insertErr) {
       console.warn("Primary return insert failed, executing fallback insert:", insertErr.message);
       [result] = await db.query(
         `INSERT INTO order_returns 
-          (order_id, user_id, reason, refund_amount, status)
-         VALUES (?, ?, ?, ?, 'PENDING')`,
+          (order_id, order_item_id, user_id, merchant_id, reason, refund_amount, status)
+         VALUES (?, ?, ?, ?, ?, ?, 'PENDING')`,
         [
           orderId,
+          safeItemId,
           userId,
+          safeMerchantId,
           returnReason,
-          targetItem.total_price || targetItem.price || 0
+          itemRefundAmount
         ]
       );
     }
