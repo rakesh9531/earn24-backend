@@ -1350,6 +1350,15 @@ exports.requestReturn = async (req, res) => {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `).catch(() => {});
 
+    await db.query(`ALTER TABLE order_returns ADD COLUMN request_type VARCHAR(50) DEFAULT 'RETURN';`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN return_type VARCHAR(50) DEFAULT 'RETURN';`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_id INT NULL;`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN order_item_id INT NULL;`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN evidence_images LONGTEXT NULL;`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN refund_status VARCHAR(50) DEFAULT 'NOT_INITIATED';`).catch(() => {});
+
     // 6. Check if request already submitted
     const [existing] = await db.query(
       `SELECT id FROM order_returns WHERE order_id = ? AND status NOT IN ('REJECTED', 'CLOSED')`,
@@ -1363,23 +1372,39 @@ exports.requestReturn = async (req, res) => {
       });
     }
 
-    // 7. Insert Return / Replacement Request
-    const [result] = await db.query(
-      `INSERT INTO order_returns 
-        (order_id, order_item_id, user_id, merchant_id, return_type, request_type, reason, evidence_images, refund_amount, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
-      [
-        orderId,
-        targetItem.id,
-        userId,
-        merchantId,
-        reqType,
-        reqType,
-        returnReason,
-        evidence_images ? JSON.stringify(evidence_images) : null,
-        targetItem.total_price || targetItem.price || 0
-      ]
-    );
+    // 7. Insert Return / Replacement Request with Primary & Fallback
+    let result;
+    try {
+      [result] = await db.query(
+        `INSERT INTO order_returns 
+          (order_id, order_item_id, user_id, merchant_id, return_type, request_type, reason, evidence_images, refund_amount, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
+        [
+          orderId,
+          targetItem.id,
+          userId,
+          merchantId,
+          reqType,
+          reqType,
+          returnReason,
+          evidence_images ? JSON.stringify(evidence_images) : null,
+          targetItem.total_price || targetItem.price || 0
+        ]
+      );
+    } catch (insertErr) {
+      console.warn("Primary return insert failed, executing fallback insert:", insertErr.message);
+      [result] = await db.query(
+        `INSERT INTO order_returns 
+          (order_id, user_id, reason, refund_amount, status)
+         VALUES (?, ?, ?, ?, 'PENDING')`,
+        [
+          orderId,
+          userId,
+          returnReason,
+          targetItem.total_price || targetItem.price || 0
+        ]
+      );
+    }
 
     // 8. Update Order status flag
     await db.query(`ALTER TABLE orders ADD COLUMN is_return_requested TINYINT DEFAULT 0;`).catch(() => {});
