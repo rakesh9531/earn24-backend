@@ -1267,6 +1267,11 @@ exports.searchProducts = async (req, res) => {
         });
     }
 
+    const [adminRow] = await db.query(
+      `SELECT bv_generation_percentage FROM admin_settings LIMIT 1`
+    ).catch(() => [[{ bv_generation_percentage: 80 }]]);
+    const bvGenerationPct = (adminRow && adminRow[0] && adminRow[0].bv_generation_percentage) ? parseFloat(adminRow[0].bv_generation_percentage) : 80;
+
     // --- Diagnostic DB Check for Debugging ---
     if (query && query.trim().length > 0) {
       const [diagProducts] = await db.query(`SELECT id, name, is_active, is_deleted FROM products WHERE LOWER(name) LIKE ? LIMIT 5`, [`%${query.trim().toLowerCase()}%`]).catch(() => [[]]);
