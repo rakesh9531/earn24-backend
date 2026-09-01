@@ -1333,7 +1333,7 @@ exports.searchProducts = async (req, res) => {
       whereClauses.push(`(
         EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = ?)
         OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
-        OR (p.is_universal_pincode = 1 AND NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode != 'ALL'))
+        OR p.is_universal_pincode = 1
         OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id)
       )`);
       queryParams.push(pincode);
@@ -1344,7 +1344,7 @@ exports.searchProducts = async (req, res) => {
         EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
         OR (
           NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode != 'ALL')
-          AND (p.is_universal_pincode = 1 OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id))
+          AND (p.is_universal_pincode = 1 OR p.is_universal_pincode IS NULL OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id))
         )
       )`);
     }
