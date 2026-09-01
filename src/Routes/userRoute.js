@@ -55,6 +55,10 @@ router.post('/register/initiate', userController.registerInitiate);
 // 2. User enters OTP -> Moves data from Temp to Users Table -> Auto Logs in
 router.post('/register/verify', userController.verifyRegistrationOtp);
 
+// Email OTP Verification
+router.post('/send-email-otp', userController.sendEmailOtp);
+router.post('/verify-email-otp', userController.verifyEmailOtp);
+
 // --- LOGIN FLOW (Standard) ---
 router.post('/loginUser', userController.loginUser);
 
@@ -76,6 +80,8 @@ router.post('/resend-otp', userController.resendOtp);
 
 router.get('/profile', auth, userController.getUserProfile);
 router.put('/profile/update', auth, uploadProfile.single('profileImage'), userController.updateUserProfile);
+router.post('/profile/send-mobile-otp', auth, userController.sendProfileMobileOtp);
+router.post('/profile/verify-mobile-otp', auth, userController.verifyProfileMobileOtp);
 router.get('/summary', auth, userController.getDashboardSummary);
 router.get('/profit-history', auth, userController.getProfitHistory);
 router.get('/bv-history', auth, userController.getBvHistory);

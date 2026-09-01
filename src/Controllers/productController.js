@@ -1857,3 +1857,33 @@ exports.getProductsBySubcategory = async (req, res) => {
     res.status(500).json({ status: false, message: "Internal server error." });
   }
 };
+
+exports.checkPincodeServiceability = async (req, res) => {
+    try {
+        const { pincode } = req.params;
+        if (!pincode || !/^[1-9][0-9]{5}$/.test(pincode.trim())) {
+            return res.status(400).json({ status: false, message: "Invalid 6-digit Indian pincode format (e.g., 828207, 110001)." });
+        }
+
+        const cleanPin = pincode.trim();
+        const [rows] = await db.query(
+            "SELECT count(*) as total FROM seller_product_pincodes WHERE pincode = ? OR pincode = 'ALL'",
+            [cleanPin]
+        );
+
+        const isLocalAvailable = rows[0]?.total > 0;
+
+        res.json({
+            status: true,
+            pincode: cleanPin,
+            serviceable: true,
+            localOffersCount: rows[0]?.total || 0,
+            message: isLocalAvailable
+                ? `Pincode ${cleanPin} is active with local seller offers!`
+                : `Pincode ${cleanPin} is valid! Pan-India products delivered to this pincode.`
+        });
+    } catch (e) {
+        console.error("checkPincodeServiceability error:", e);
+        res.status(500).json({ status: false, message: "Could not verify pincode." });
+    }
+};
