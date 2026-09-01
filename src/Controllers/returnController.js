@@ -301,6 +301,18 @@ exports.adminResolveReturn = async (req, res) => {
                     UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?
                 `, [ret.refund_amount, ret.user_id]);
 
+                // Deduct returned BV / Cashback from user's personal BV & metrics
+                const [[itemBvRow]] = await conn.query("SELECT total_bv_earned FROM order_items WHERE id = ?", [ret.order_item_id]);
+                if (itemBvRow && itemBvRow.total_bv_earned > 0) {
+                    const returnedBv = parseFloat(itemBvRow.total_bv_earned);
+                    await conn.query(`
+                        UPDATE users SET 
+                            aggregate_personal_bv = GREATEST(0, aggregate_personal_bv - ?),
+                            total_bv_self = GREATEST(0, total_bv_self - ?)
+                        WHERE id = ?
+                    `, [returnedBv, returnedBv, ret.user_id]);
+                }
+
                 // Deduct from merchant wallet (claw back) if merchant_id is present
                 if (ret.merchant_id) {
                     const platformFee = ret.refund_amount * 0.10;
