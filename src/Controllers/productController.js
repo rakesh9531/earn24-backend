@@ -1324,7 +1324,7 @@ exports.searchProducts = async (req, res) => {
         p.is_universal_pincode = 1 
         OR p.is_universal_pincode IS NULL 
         OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
-        OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id)
+        OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode != 'ALL')
       )`);
     }
 
@@ -1374,7 +1374,6 @@ exports.searchProducts = async (req, res) => {
             JOIN products p ON sp.product_id = p.id
             LEFT JOIN product_categories c ON p.category_id = c.id
             LEFT JOIN product_subcategories sc ON p.subcategory_id = sc.id
-            LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
         `;
