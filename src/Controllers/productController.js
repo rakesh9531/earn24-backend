@@ -1310,6 +1310,9 @@ exports.searchProducts = async (req, res) => {
     if (isPincodeProvided) {
       whereClauses.push("(p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode = 'ALL' OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))");
       queryParams.push(pincode);
+    } else {
+      // Pan-India Mode: Only show universal products or products not restricted to specific local pincodes
+      whereClauses.push("(p.is_universal_pincode = 1 OR spp.pincode = 'ALL' OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))");
     }
 
     const whereString = `WHERE ${whereClauses.join(" AND ")}`;
@@ -1318,14 +1321,20 @@ exports.searchProducts = async (req, res) => {
     let orderByClause = "ORDER BY p.popularity DESC";
     const dataQueryParams = [...queryParams];
     if (query && query.trim().length > 0) {
-      const trimmed = query.trim();
-      const exactPattern = `${trimmed}%`;
+      const trimmed = query.trim().toLowerCase();
+      const exactMatch = trimmed;
+      const startsWithPattern = `${trimmed}%`;
       const containsPattern = `%${trimmed}%`;
-      const stems = extractSearchStems(query);
-      const primaryStemPattern = stems.length > 1 ? `%${stems[stems.length - 1]}%` : containsPattern;
 
-      dataQueryParams.push(exactPattern, containsPattern, primaryStemPattern);
-      orderByClause = `ORDER BY (CASE WHEN p.name LIKE ? THEN 1 WHEN p.name LIKE ? THEN 2 WHEN p.name LIKE ? THEN 3 ELSE 4 END), p.popularity DESC`;
+      dataQueryParams.push(exactMatch, startsWithPattern, containsPattern);
+      orderByClause = `ORDER BY (
+        CASE 
+          WHEN LOWER(p.name) = ? THEN 1 
+          WHEN LOWER(p.name) LIKE ? THEN 2 
+          WHEN LOWER(p.name) LIKE ? THEN 3 
+          ELSE 4 
+        END
+      ), p.popularity DESC`;
     } else {
       switch (sortBy) {
         case "price_asc":
