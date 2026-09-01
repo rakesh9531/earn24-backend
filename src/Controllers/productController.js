@@ -1267,17 +1267,26 @@ exports.searchProducts = async (req, res) => {
         });
     }
 
-    const [adminRow] = await db.query(
-      `SELECT bv_generation_percentage FROM admin_settings LIMIT 1`
-    ).catch(() => [[{ bv_generation_percentage: 80 }]]);
-    const bvGenerationPct = (adminRow && adminRow[0] && adminRow[0].bv_generation_percentage) ? parseFloat(adminRow[0].bv_generation_percentage) : 80;
+    // --- Diagnostic DB Check for Debugging ---
+    if (query && query.trim().length > 0) {
+      const [diagProducts] = await db.query(`SELECT id, name, is_active, is_deleted FROM products WHERE LOWER(name) LIKE ? LIMIT 5`, [`%${query.trim().toLowerCase()}%`]).catch(() => [[]]);
+      console.log(`[SEARCH DIAGNOSTIC] Products matching name LIKE '%${query}%':`, diagProducts);
+
+      const [diagSellerProds] = await db.query(`
+        SELECT sp.id as offer_id, sp.product_id, sp.selling_price, sp.is_active as sp_active, p.name 
+        FROM seller_products sp 
+        JOIN products p ON sp.product_id = p.id 
+        WHERE LOWER(p.name) LIKE ? LIMIT 5
+      `, [`%${query.trim().toLowerCase()}%`]).catch(() => [[]]);
+      console.log(`[SEARCH DIAGNOSTIC] Seller_products matching name LIKE '%${query}%':`, diagSellerProds);
+    }
 
     // --- 2. Build WHERE Clauses ---
     let whereClauses = [
-      "(sp.is_active = 1 OR sp.is_active = TRUE)", 
-      "(p.is_active = 1 OR p.is_active = TRUE)", 
-      "(p.is_deleted = 0 OR p.is_deleted IS NULL)", 
-      "sp.selling_price > 0"
+      "(p.is_deleted = 0 OR p.is_deleted IS NULL)",
+      "(p.is_active = 1 OR p.is_active IS NULL OR p.is_active = TRUE)",
+      "(sp.is_active = 1 OR sp.is_active IS NULL OR sp.is_active = TRUE)",
+      "(sp.selling_price > 0 OR sp.selling_price IS NULL)"
     ];
     let queryParams = [];
 
@@ -1285,16 +1294,16 @@ exports.searchProducts = async (req, res) => {
       const stems = extractSearchStems(query);
       const searchConditions = stems
         .map((stem) => {
-          const pat = `%${stem}%`;
+          const pat = `%${stem.toLowerCase()}%`;
           queryParams.push(pat, pat, pat, pat, pat, pat, pat, pat);
           return `(
-            p.name LIKE ? 
-            OR p.description LIKE ? 
-            OR b.name LIKE ? 
-            OR c.name LIKE ? 
-            OR sc.name LIKE ?
-            OR sp.sku LIKE ?
-            OR EXISTS (SELECT 1 FROM seller_product_variants spv_s WHERE spv_s.seller_product_id = sp.id AND (spv_s.title LIKE ? OR spv_s.sku LIKE ?))
+            LOWER(p.name) LIKE ? 
+            OR LOWER(p.description) LIKE ? 
+            OR LOWER(b.name) LIKE ? 
+            OR LOWER(c.name) LIKE ? 
+            OR LOWER(sc.name) LIKE ?
+            OR LOWER(sp.sku) LIKE ?
+            OR EXISTS (SELECT 1 FROM seller_product_variants spv_s WHERE spv_s.seller_product_id = sp.id AND (LOWER(spv_s.title) LIKE ? OR LOWER(spv_s.sku) LIKE ?))
           )`;
         })
         .join(" OR ");
