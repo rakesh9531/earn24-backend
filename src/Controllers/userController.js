@@ -1285,12 +1285,18 @@ exports.getWalletHistory = async (req, res) => {
   }
 };
 
+// Ensure otp_records mobile_number column supports longer email strings
+db.query("ALTER TABLE otp_records MODIFY COLUMN mobile_number VARCHAR(191) NOT NULL").catch(() => {});
+
 exports.sendEmailOtp = async (req, res) => {
     try {
         const { email } = req.body;
         if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
             return res.status(400).json({ status: false, message: "Valid email address is required." });
         }
+
+        // Alter table column dynamically in case it wasn't expanded
+        await db.query("ALTER TABLE otp_records MODIFY COLUMN mobile_number VARCHAR(191) NOT NULL").catch(() => {});
         
         const [existing] = await db.query("SELECT id FROM users WHERE email = ?", [email.trim()]);
         if (existing.length > 0) {
@@ -1298,11 +1304,12 @@ exports.sendEmailOtp = async (req, res) => {
         }
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const key = `e_${email.trim().toLowerCase()}`;
         await db.query(`
             INSERT INTO otp_records (mobile_number, otp_code, attempts_count, last_sent_at)
             VALUES (?, ?, 1, NOW())
             ON DUPLICATE KEY UPDATE otp_code = VALUES(otp_code), last_sent_at = NOW()
-        `, [`email_${email.trim()}`, otp]);
+        `, [key, otp]);
 
         console.log(`[EMAIL OTP] Generated OTP for ${email}: ${otp}`);
 
@@ -1324,9 +1331,10 @@ exports.verifyEmailOtp = async (req, res) => {
             return res.status(400).json({ status: false, message: "Email and OTP are required." });
         }
 
+        const key = `e_${email.trim().toLowerCase()}`;
         const [rows] = await db.query(
             "SELECT otp_code, last_sent_at FROM otp_records WHERE mobile_number = ?",
-            [`email_${email.trim()}`]
+            [key]
         );
 
         if (!rows.length || rows[0].otp_code !== otp.toString().trim()) {
