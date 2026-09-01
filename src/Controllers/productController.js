@@ -1308,11 +1308,20 @@ exports.searchProducts = async (req, res) => {
 
     const isPincodeProvided = pincode && pincode !== 'ALL' && pincode !== 'null' && pincode !== 'undefined' && pincode !== '';
     if (isPincodeProvided) {
-      whereClauses.push("(p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode = 'ALL' OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))");
+      whereClauses.push(`(
+        p.is_universal_pincode = 1 
+        OR p.is_universal_pincode IS NULL 
+        OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND (spp_c.pincode = ? OR spp_c.pincode = 'ALL'))
+        OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id)
+      )`);
       queryParams.push(pincode);
     } else {
-      // Pan-India Mode: Only show universal products or products not restricted to specific local pincodes
-      whereClauses.push("(p.is_universal_pincode = 1 OR spp.pincode = 'ALL' OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))");
+      whereClauses.push(`(
+        p.is_universal_pincode = 1 
+        OR p.is_universal_pincode IS NULL 
+        OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
+        OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id)
+      )`);
     }
 
     const whereString = `WHERE ${whereClauses.join(" AND ")}`;
