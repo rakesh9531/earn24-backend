@@ -1352,33 +1352,49 @@ exports.searchProducts = async (req, res) => {
     const whereString = `WHERE ${whereClauses.join(" AND ")}`;
 
     // --- 3. Handle Sorting & Search Relevance ---
-    let orderByClause = "ORDER BY p.popularity DESC";
+    let sortParts = [];
     const dataQueryParams = [...queryParams];
+
+    if (isPincodeProvided) {
+      sortParts.push(`(
+        CASE 
+          WHEN EXISTS (SELECT 1 FROM seller_product_pincodes spp_sort WHERE spp_sort.seller_product_id = sp.id AND spp_sort.pincode = ?) THEN 1
+          ELSE 2
+        END
+      )`);
+      dataQueryParams.push(pincode);
+    }
+
     if (query && query.trim().length > 0) {
       const trimmed = query.trim().toLowerCase();
       const exactMatch = trimmed;
       const startsWithPattern = `${trimmed}%`;
       const containsPattern = `%${trimmed}%`;
 
-      dataQueryParams.push(exactMatch, startsWithPattern, containsPattern);
-      orderByClause = `ORDER BY (
+      sortParts.push(`(
         CASE 
           WHEN LOWER(p.name) = ? THEN 1 
           WHEN LOWER(p.name) LIKE ? THEN 2 
           WHEN LOWER(p.name) LIKE ? THEN 3 
           ELSE 4 
         END
-      ), p.popularity DESC`;
-    } else {
-      switch (sortBy) {
-        case "price_asc":
-          orderByClause = "ORDER BY sp.selling_price ASC";
-          break;
-        case "price_desc":
-          orderByClause = "ORDER BY sp.selling_price DESC";
-          break;
-      }
+      )`);
+      dataQueryParams.push(exactMatch, startsWithPattern, containsPattern);
     }
+
+    switch (sortBy) {
+      case "price_asc":
+        sortParts.push("sp.selling_price ASC");
+        break;
+      case "price_desc":
+        sortParts.push("sp.selling_price DESC");
+        break;
+      default:
+        sortParts.push("p.popularity DESC");
+        break;
+    }
+
+    const orderByClause = `ORDER BY ${sortParts.join(", ")}`;
 
     const pageNum = parseInt(page, 10) || 1;
     const limitNum = parseInt(limit, 10) || 20;
