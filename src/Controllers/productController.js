@@ -1326,12 +1326,20 @@ exports.searchProducts = async (req, res) => {
 
     const isPincodeProvided = pincode && pincode !== 'ALL' && pincode !== 'null' && pincode !== 'undefined' && pincode !== '';
     if (isPincodeProvided) {
+      // Specific Pincode Mode (e.g. 828207): Show local offers for 828207 AND universal Pan-India offers
       whereClauses.push(`(
         p.is_universal_pincode = 1 
         OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND (spp_c.pincode = ? OR spp_c.pincode = 'ALL'))
         OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id)
       )`);
       queryParams.push(pincode);
+    } else {
+      // Pan-India Mode: Strictly show ONLY Pan-India products (Hide specific local-only pincode products)
+      whereClauses.push(`(
+        p.is_universal_pincode = 1 
+        OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
+        OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id)
+      )`);
     }
 
     const whereString = `WHERE ${whereClauses.join(" AND ")}`;
