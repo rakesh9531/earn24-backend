@@ -1254,7 +1254,11 @@ exports.searchProducts = async (req, res) => {
       pincode,
     } = req.query;
 
+    console.log(`\n=================== [SEARCH DEBUG REQ] ===================`);
+    console.log(`[SEARCH REQ PARAMS] query="${query}", pincode="${pincode}", categoryId="${categoryId}", brandId="${brandId}", sortBy="${sortBy}", page=${page}`);
+
     if (!query && !categoryId && !brandId) {
+      console.log(`[SEARCH WARN] No query, categoryId or brandId provided.`);
       return res
         .status(400)
         .json({
@@ -1270,9 +1274,9 @@ exports.searchProducts = async (req, res) => {
 
     // --- 2. Build WHERE Clauses ---
     let whereClauses = [
-      "sp.is_active = TRUE", 
-      "p.is_active = 1", 
-      "p.is_deleted = 0", 
+      "(sp.is_active = 1 OR sp.is_active = TRUE)", 
+      "(p.is_active = 1 OR p.is_active = TRUE)", 
+      "(p.is_deleted = 0 OR p.is_deleted IS NULL)", 
       "sp.selling_price > 0"
     ];
     let queryParams = [];
@@ -1359,6 +1363,9 @@ exports.searchProducts = async (req, res) => {
     const limitNum = parseInt(limit, 10) || 20;
     const offset = (pageNum - 1) * limitNum;
 
+    console.log(`[SEARCH DEBUG WHERE] ${whereString}`);
+    console.log(`[SEARCH DEBUG PARAMS]`, queryParams);
+
     // --- 4. Final Data Query with BV Calculation & Attribute Subquery ---
     const baseSelectAndJoins = `
             FROM seller_products sp
@@ -1427,6 +1434,14 @@ exports.searchProducts = async (req, res) => {
     const [countRows] = await db.query(countQuery, queryParams);
     const totalProducts = countRows[0].total;
 
+    console.log(`[SEARCH DEBUG RESULT] Total Count=${totalProducts}, Output Products=${processedProducts.length}`);
+    if (processedProducts.length > 0) {
+      console.log(`[SEARCH DEBUG MATCHES]:`, processedProducts.slice(0, 3).map(p => ({ id: p.id, name: p.name, price: p.selling_price })));
+    } else {
+      console.log(`[SEARCH DEBUG WARN] 0 products matched.`);
+    }
+    console.log(`=================== [SEARCH DEBUG END] ===================\n`);
+
     res.status(200).json({
       status: true,
       data: {
@@ -1440,7 +1455,9 @@ exports.searchProducts = async (req, res) => {
       },
     });
   } catch (error) {
+    console.error("=================== [SEARCH DEBUG ERROR] ===================");
     console.error("Error in searchProducts:", error);
+    console.error("===========================================================");
     res.status(500).json({ status: false, message: "Search failed." });
   }
 };
