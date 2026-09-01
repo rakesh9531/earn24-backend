@@ -1,5 +1,30 @@
 const db = require('../../db');
 
+// --- AUTOMATIC SCHEMA MIGRATION: REMOVE RESTRICTIVE UNIQUE INDEX ON CART ITEMS ---
+(async () => {
+    try {
+        await db.query("ALTER TABLE cart_items DROP INDEX cart_product_unique");
+        console.log("✅ Successfully dropped legacy cart_product_unique constraint!");
+    } catch (e) {}
+    try {
+        await db.query("ALTER TABLE cart_items DROP INDEX unique_cart_product");
+    } catch (e) {}
+    try {
+        await db.query("ALTER TABLE cart_items DROP INDEX cart_id_seller_product_id");
+    } catch (e) {}
+    try {
+        const [indexes] = await db.query("SHOW INDEX FROM cart_items WHERE Key_name != 'PRIMARY' AND Non_unique = 0");
+        for (const idx of indexes) {
+            if (idx.Key_name !== 'PRIMARY') {
+                try {
+                    await db.query(`ALTER TABLE cart_items DROP INDEX \`${idx.Key_name}\``);
+                    console.log(`✅ Dropped non-unique index ${idx.Key_name} from cart_items`);
+                } catch (err) {}
+            }
+        }
+    } catch (e) {}
+})();
+
 // Helper function to get or create a cart for a user
 const getOrCreateCart = async (connection, userId) => {
     let [cart] = await connection.query('SELECT id FROM carts WHERE user_id = ?', [userId]);
@@ -25,13 +50,26 @@ exports.getCart = async (req, res) => {
         const bvSetting = settingsRows.find(s => s.setting_key === 'bv_generation_pct_of_profit');
         const bvGenerationPct = bvSetting ? parseFloat(bvSetting.setting_value) : 80.0;
 
+        // Auto-migration: ensure seller_product_variant_id column exists
+        try {
+            await db.query("ALTER TABLE cart_items ADD COLUMN seller_product_variant_id INT NULL AFTER seller_product_id");
+        } catch (e) {
+            // Column already exists
+        }
+
         let query = `
             SELECT 
-                ci.id as cart_item_id, ci.quantity, sp.id as offer_id, p.id as product_id, p.name,
-                p.main_image_url, b.name as brand_name, sp.selling_price, sp.mrp,
+                ci.id as cart_item_id, ci.quantity, ci.seller_product_variant_id,
+                sp.id as offer_id, p.id as product_id,
+                IF(spv.id IS NOT NULL, CONCAT(p.name, ' (', IFNULL(spv.title, CONCAT(IFNULL(spv.color,''), ' ', IFNULL(spv.size,''))), ')'), p.name) as name,
+                COALESCE(spv.variant_image_url, p.main_image_url) as main_image_url,
+                b.name as brand_name,
+                COALESCE(spv.price, sp.selling_price) as selling_price,
+                COALESCE(spv.mrp, sp.mrp) as mrp,
                 sp.minimum_order_quantity, sp.purchase_price, h.gst_percentage,
                 s.display_name as seller_name,
-                GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100)) as bv_earned,
+                spv.title as variant_title, spv.color as variant_color, spv.size as variant_size, spv.sku as variant_sku,
+                GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (COALESCE(spv.price, sp.selling_price) * (sp.admin_margin_percent / 100)) * (? / 100), ((COALESCE(spv.price, sp.selling_price) - IFNULL(sp.purchase_price, 0)) - ((COALESCE(spv.price, sp.selling_price) * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
                 (
                     ? = '' 
                     OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = ci.seller_product_id)
@@ -41,12 +79,13 @@ exports.getCart = async (req, res) => {
             JOIN seller_products sp ON ci.seller_product_id = sp.id
             JOIN products p ON sp.product_id = p.id
             JOIN sellers s ON sp.seller_id = s.id
+            LEFT JOIN seller_product_variants spv ON ci.seller_product_variant_id = spv.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE ci.cart_id = ?
         `;
         
-        const params = [bvGenerationPct, activePincode, activePincode, cartId];
+        const params = [bvGenerationPct, bvGenerationPct, activePincode, activePincode, cartId];
 
         // Handle filtering by selected items if cartItemIds is provided
         if (cartItemIds) {
@@ -72,10 +111,10 @@ exports.getCart = async (req, res) => {
     }
 };
 
-// POST /add - Add an item to the cart
+// POST /add - Add an item to the cart (with variant support)
 exports.addItemToCart = async (req, res) => {
     const userId = req.user.id;
-    const { sellerProductId, quantity } = req.body;
+    const { sellerProductId, variantId, quantity } = req.body;
 
     if (!sellerProductId || !quantity || quantity < 1) {
         return res.status(400).json({ status: false, message: 'Product ID and a valid quantity are required.' });
@@ -86,21 +125,51 @@ exports.addItemToCart = async (req, res) => {
         await connection.beginTransaction();
         const cartId = await getOrCreateCart(connection, userId);
 
-        const query = `
-            INSERT INTO cart_items (cart_id, seller_product_id, quantity)
-            VALUES (?, ?, ?)
-            ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity)
-        `;
-        await connection.query(query, [cartId, sellerProductId, quantity]);
+        let actualSellerProductId = sellerProductId;
+        const [spCheck] = await connection.query("SELECT id FROM seller_products WHERE id = ?", [sellerProductId]);
+        if (spCheck.length === 0) {
+            const [spByProduct] = await connection.query("SELECT id FROM seller_products WHERE product_id = ? AND is_active = TRUE LIMIT 1", [sellerProductId]);
+            if (spByProduct.length > 0) {
+                actualSellerProductId = spByProduct[0].id;
+            }
+        }
+
+        let existingRows = [];
+        if (variantId) {
+            const [rows] = await connection.query(
+                "SELECT id, quantity FROM cart_items WHERE cart_id = ? AND seller_product_id = ? AND seller_product_variant_id = ?",
+                [cartId, actualSellerProductId, variantId]
+            );
+            existingRows = rows;
+        } else {
+            const [rows] = await connection.query(
+                "SELECT id, quantity FROM cart_items WHERE cart_id = ? AND seller_product_id = ? AND (seller_product_variant_id IS NULL OR seller_product_variant_id = 0)",
+                [cartId, actualSellerProductId]
+            );
+            existingRows = rows;
+        }
+
+        if (existingRows && existingRows.length > 0) {
+            await connection.query(
+                "UPDATE cart_items SET quantity = quantity + ? WHERE id = ?",
+                [quantity, existingRows[0].id]
+            );
+        } else {
+            await connection.query(
+                "INSERT INTO cart_items (cart_id, seller_product_id, seller_product_variant_id, quantity) VALUES (?, ?, ?, ?)",
+                [cartId, actualSellerProductId, variantId || null, quantity]
+            );
+        }
+
         await connection.commit();
         
         res.status(200).json({ status: true, message: 'Item added to cart.' });
     } catch (error) {
-        await connection.rollback();
+        if (connection) await connection.rollback();
         console.error("Error adding item to cart:", error);
         res.status(500).json({ status: false, message: 'Failed to add item to cart.' });
     } finally {
-        connection.release();
+        if (connection) connection.release();
     }
 };
 
@@ -115,17 +184,34 @@ exports.updateCartItem = async (req, res) => {
     }
 
     try {
+        const [itemRows] = await db.query(
+            `SELECT ci.quantity, sp.minimum_order_quantity 
+             FROM cart_items ci 
+             JOIN carts c ON ci.cart_id = c.id 
+             JOIN seller_products sp ON ci.seller_product_id = sp.id 
+             WHERE ci.id = ? AND c.user_id = ?`,
+            [itemId, userId]
+        );
+
+        if (itemRows.length === 0) {
+            return res.status(404).json({ status: false, message: 'Cart item not found.' });
+        }
+
+        const minOrderQty = itemRows[0].minimum_order_quantity || 1;
+        if (quantity < minOrderQty) {
+            return res.status(400).json({ 
+                status: false, 
+                message: `Minimum order quantity for this item is ${minOrderQty}.` 
+            });
+        }
+
         const query = `
             UPDATE cart_items ci
             JOIN carts c ON ci.cart_id = c.id
             SET ci.quantity = ?
             WHERE ci.id = ? AND c.user_id = ?
         `;
-        const [result] = await db.query(query, [quantity, itemId, userId]);
-
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ status: false, message: 'Cart item not found.' });
-        }
+        await db.query(query, [quantity, itemId, userId]);
 
         res.status(200).json({ status: true, message: 'Cart updated successfully.' });
     } catch (error) {

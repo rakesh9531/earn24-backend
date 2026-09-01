@@ -27,9 +27,11 @@ class Order {
 
     created_at,
     updated_at,
-    // These will be populated from JOINs
     shipping_address,
-    items 
+    items,
+    return_request,
+    return_window_days,
+    is_returnable
   }) {
     const timeZone = 'Asia/Kolkata';
 
@@ -65,10 +67,11 @@ class Order {
     this.updatedAt = moment(updated_at).tz(timeZone).format('YYYY-MM-DD HH:mm:ss');
 
     // Associated Data (from JOINs)
-    // The constructor expects that the data passed in might already have
-    // the full address object and an array of OrderItem objects.
-    this.shippingAddress = shipping_address || null; // Will be a full Address object
-    this.items = items || []; // Will be an array of OrderItem objects
+    this.shippingAddress = shipping_address || null;
+    this.items = items || [];
+    this.returnRequest = return_request || null;
+    this.returnWindowDays = parseInt(return_window_days || 7);
+    this.isReturnable = is_returnable !== undefined ? (is_returnable === 1 || is_returnable === true) : true;
   }
 }
 

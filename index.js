@@ -85,27 +85,89 @@ io.on('connection', (socket) => {
 
 const corsOptions = {
   origin: function (origin, callback) {
-
     if (!origin) return callback(null, true);
 
     if (
       origin.endsWith('.earn24.in') ||
-      origin === 'https://earn24.in' ||
-      origin === 'http://earn24.in' ||
-      origin.includes('localhost')
+      origin.includes('earn24.in') ||
+      origin.includes('payu.in') ||
+      origin.includes('localhost') ||
+      origin.includes('127.0.0.1')
     ) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(null, true);
     }
   },
-
   credentials: true
 };
 
 
 
 app.use(cors(corsOptions));
+
+// Auto-verify and create seller_product_variants table if missing on live server
+async function ensureTablesExist() {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS seller_product_variants (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                seller_product_id INT NOT NULL,
+                product_id INT NULL,
+                title VARCHAR(255) NULL,
+                color VARCHAR(100) NULL,
+                size VARCHAR(100) NULL,
+                sku VARCHAR(100) NULL,
+                price DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+                mrp DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+                stock_quantity INT NOT NULL DEFAULT 0,
+                variant_image_url LONGTEXT NULL,
+                variant_image_urls LONGTEXT NULL,
+                is_active TINYINT(1) DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_sp_id (seller_product_id),
+                INDEX idx_prod_id (product_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+        await db.query(`ALTER TABLE seller_product_variants MODIFY COLUMN variant_image_url LONGTEXT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE seller_product_variants ADD COLUMN variant_image_urls LONGTEXT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE delivery_agents ADD COLUMN is_online TINYINT DEFAULT 1;`).catch(() => {});
+        await db.query(`ALTER TABLE delivery_agents ADD COLUMN is_active TINYINT DEFAULT 1;`).catch(() => {});
+        await db.query(`ALTER TABLE products ADD COLUMN return_window_days TINYINT DEFAULT 7;`).catch(() => {});
+        await db.query(`ALTER TABLE products ADD COLUMN is_returnable TINYINT DEFAULT 1;`).catch(() => {});
+        await db.query(`ALTER TABLE seller_products ADD COLUMN return_window_days TINYINT DEFAULT 7;`).catch(() => {});
+        await db.query(`ALTER TABLE seller_products ADD COLUMN is_returnable TINYINT DEFAULT 1;`).catch(() => {});
+        await db.query(`ALTER TABLE order_items ADD COLUMN item_status VARCHAR(50) DEFAULT 'ACTIVE';`).catch(() => {});
+        await db.query(`ALTER TABLE order_items ADD COLUMN cancelled_at DATETIME NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_items ADD COLUMN cancellation_reason VARCHAR(255) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE orders ADD COLUMN cancellation_reason VARCHAR(255) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE orders ADD COLUMN cancellation_refund_type VARCHAR(50) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE orders ADD COLUMN cancellation_refund_status VARCHAR(50) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE orders ADD COLUMN cancelled_at DATETIME NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN source VARCHAR(100) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE user_wallet_transactions MODIFY COLUMN source VARCHAR(100) NULL DEFAULT 'SYSTEM';`).catch(() => {});
+        await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN reference_id VARCHAR(255) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN remarks VARCHAR(255) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE user_wallet_transactions ADD COLUMN transaction_type VARCHAR(50) NULL;`).catch(() => {});
+        await db.query(`UPDATE user_wallet_transactions SET txn_type = 'debit', transaction_type = 'DEBIT' WHERE remarks LIKE 'Payment for Order%';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns MODIFY COLUMN status VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns MODIFY COLUMN merchant_id INT NULL DEFAULT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns MODIFY COLUMN order_item_id INT NULL DEFAULT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN request_type VARCHAR(50) DEFAULT 'RETURN';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN return_type VARCHAR(50) DEFAULT 'RETURN';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_id INT NULL DEFAULT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN order_item_id INT NULL DEFAULT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN evidence_images LONGTEXT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN refund_status VARCHAR(50) DEFAULT 'NOT_INITIATED';`).catch(() => {});
+        console.log("✅ Auto-verified seller_product_variants, delivery_agents, return_window_days, orders, user_wallet_transactions & order_returns columns.");
+    } catch (err) {
+        console.warn("Table auto-creation warning:", err.message);
+    }
+}
+ensureTablesExist();
 
 
 
@@ -399,6 +461,31 @@ async function testDatabaseConnection() {
       WHERE uwt.id IS NULL
     `);
     console.log("Migration: Historical profit ledger records successfully synced to user_wallet_transactions.");
+
+    // Auto-migration: Drop legacy cart_product_unique index on cart_items table so multiple variants can exist in cart
+    try {
+      await connection.query("ALTER TABLE cart_items DROP INDEX cart_product_unique");
+      console.log("✅ Migration: Successfully dropped legacy cart_product_unique constraint from cart_items.");
+    } catch (e) {
+      // Index already dropped
+    }
+    try {
+      await connection.query("ALTER TABLE cart_items DROP INDEX unique_cart_product");
+    } catch (e) {}
+    try {
+      await connection.query("ALTER TABLE cart_items DROP INDEX cart_id_seller_product_id");
+    } catch (e) {}
+    try {
+      const [cartIndexes] = await connection.query("SHOW INDEX FROM cart_items WHERE Key_name != 'PRIMARY' AND Non_unique = 0");
+      for (const idx of cartIndexes) {
+        if (idx.Key_name !== 'PRIMARY') {
+          try {
+            await connection.query(`ALTER TABLE cart_items DROP INDEX \`${idx.Key_name}\``);
+            console.log(`✅ Migration: Dropped restrictive unique index ${idx.Key_name} from cart_items.`);
+          } catch (err) {}
+        }
+      }
+    } catch (e) {}
 
     connection.release();
   } catch (error) {

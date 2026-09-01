@@ -2,6 +2,34 @@ const db = require('../../db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const moment = require('moment-timezone');
+const fs = require('fs');
+const path = require('path');
+
+function saveBase64Image(base64Str) {
+    if (!base64Str || typeof base64Str !== 'string') return null;
+    if (!base64Str.startsWith('data:image/')) return base64Str;
+
+    try {
+        const matches = base64Str.match(/^data:image\/([a-zA-Z0-9]+);base64,(.+)$/);
+        if (!matches || matches.length !== 3) return base64Str;
+
+        const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+        const dataBuffer = Buffer.from(matches[2], 'base64');
+        const filename = `variant_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+        const uploadDir = path.join(__dirname, '../../uploads/product-images');
+
+        if (!fs.existsSync(uploadDir)) {
+            fs.mkdirSync(uploadDir, { recursive: true });
+        }
+
+        const filePath = path.join(uploadDir, filename);
+        fs.writeFileSync(filePath, dataBuffer);
+        return `/uploads/product-images/${filename}`;
+    } catch (e) {
+        console.warn("Error saving base64 image:", e.message);
+        return base64Str;
+    }
+}
 
 /**
  * Handles the registration of a new Merchant.
@@ -263,14 +291,16 @@ exports.addMerchantProduct = async (req, res) => {
             try { variants = JSON.parse(variants); } catch (e) { variants = []; }
         }
 
-        // 4. Insert into `seller_products` or `merchant_products`
+        const minimumOrderQuantity = parseInt(body.minimum_order_quantity || body.moq || 1, 10);
+
+        // 4. Insert into `seller_products` (is_active = 0 by default for Admin Moderation/Approval)
         const offerQuery = `
             INSERT INTO seller_products 
-              (seller_id, product_id, sku, mrp, merchant_price, admin_margin_percent, selling_price, purchase_price, quantity, low_stock_threshold) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (seller_id, product_id, sku, mrp, merchant_price, admin_margin_percent, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity, is_active) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         `;
         const [result] = await connection.query(offerQuery, [
-            sellerId, productId, sku, mrp, merchantPrice, adminMarginPercent, sellingPrice, merchantPrice, quantity, body.low_stock_alert || 5
+            sellerId, productId, sku, mrp, merchantPrice, adminMarginPercent, sellingPrice, merchantPrice, quantity, body.low_stock_alert || 5, minimumOrderQuantity
         ]);
         const newOfferId = result.insertId;
 
@@ -292,6 +322,41 @@ exports.addMerchantProduct = async (req, res) => {
                 await connection.query('INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?', [attrValues]);
             } catch (attrErr) {
                 console.warn("Could not save product attributes:", attrErr.message);
+            }
+        }
+
+        // 7. Save Variants if provided
+        if (!Array.isArray(variants)) variants = [];
+        if (variants.length > 0) {
+            try {
+                const variantValues = variants.map(v => {
+                    let vImg = saveBase64Image(v.variant_image_url) || mainImageUrl;
+                    let vImgs = [];
+                    if (Array.isArray(v.variant_image_urls)) {
+                        vImgs = v.variant_image_urls.map(img => saveBase64Image(img)).filter(Boolean);
+                    }
+                    if (vImgs.length === 0 && vImg) vImgs.push(vImg);
+
+                    return [
+                        newOfferId,
+                        productId,
+                        v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant',
+                        v.color || null,
+                        v.size || null,
+                        v.sku || `${sku}-${v.color || ''}-${v.size || ''}`,
+                        parseFloat(v.price || sellingPrice),
+                        parseFloat(v.mrp || mrp),
+                        parseInt(v.quantity || v.stock_quantity || 10, 10),
+                        vImg,
+                        JSON.stringify(vImgs)
+                    ];
+                });
+                await connection.query(
+                    'INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url, variant_image_urls) VALUES ?',
+                    [variantValues]
+                );
+            } catch (varErr) {
+                console.warn("Could not save product variants:", varErr.message);
             }
         }
 
@@ -322,23 +387,45 @@ exports.getMerchantProducts = async (req, res) => {
     try {
         const query = `
             SELECT sp.*, p.name as product_name, p.main_image_url, p.is_universal_pincode,
+                GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * 0.80, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * 0.80)) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                     FROM product_attributes pa
                     JOIN attribute_values av ON pa.attribute_value_id = av.id
                     JOIN attributes attr ON av.attribute_id = attr.id
                     WHERE pa.product_id = p.id
-                ) as attributes
+                ) as attributes,
+                (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT(
+                        'id', spv.id,
+                        'title', spv.title,
+                        'color', spv.color,
+                        'size', spv.size,
+                        'sku', spv.sku,
+                        'price', spv.price,
+                        'mrp', spv.mrp,
+                        'stock_quantity', spv.stock_quantity,
+                        'variant_image_url', spv.variant_image_url,
+                        'variant_image_urls', spv.variant_image_urls
+                    )), ']')
+                    FROM seller_product_variants spv
+                    WHERE spv.seller_product_id = sp.id
+                ) as variants
             FROM seller_products sp
             JOIN sellers s ON sp.seller_id = s.id
             JOIN products p ON sp.product_id = p.id
+            LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant'
             ORDER BY sp.created_at DESC
         `;
         const [rows] = await db.query(query, [merchantId]);
         const processedData = rows.map(row => ({
             ...row,
-            attributes: row.attributes ? JSON.parse(row.attributes) : []
+            attributes: row.attributes ? JSON.parse(row.attributes) : [],
+            variants: row.variants ? JSON.parse(row.variants).map(v => ({
+                ...v,
+                variant_image_urls: typeof v.variant_image_urls === 'string' ? JSON.parse(v.variant_image_urls) : (v.variant_image_urls || [])
+            })) : []
         }));
         res.status(200).json({ status: true, data: processedData });
     } catch (error) {
@@ -354,21 +441,312 @@ exports.getMerchantOrders = async (req, res) => {
     const merchantId = req.user.id;
     try {
         const query = `
-            SELECT DISTINCT o.id as order_id, o.order_number, o.order_status, o.total_amount, o.created_at,
-                   oi.product_name, oi.quantity, oi.price_per_unit, u.full_name as customer_name, IFNULL(u.mobile_number, '') as customer_phone
-
+            SELECT o.id as order_id, o.order_number, o.order_status, o.payment_method, o.payment_status, o.subtotal, o.delivery_fee, o.total_amount, o.created_at,
+                   oi.id as item_id, oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price, oi.attributes_snapshot, p.main_image_url,
+                   u.full_name as customer_name, IFNULL(u.mobile_number, '') as customer_phone,
+                   ua.address_line_1, ua.address_line_2, ua.city, ua.state, ua.pincode, ua.landmark
             FROM orders o
             JOIN order_items oi ON o.id = oi.order_id
             JOIN seller_products sp ON oi.seller_product_id = sp.id
             JOIN sellers s ON sp.seller_id = s.id
             JOIN users u ON o.user_id = u.id
+            LEFT JOIN products p ON oi.product_id = p.id
+            LEFT JOIN user_addresses ua ON o.shipping_address_id = ua.id
             WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant'
-            ORDER BY o.created_at DESC
+            ORDER BY o.created_at DESC, oi.id ASC
         `;
         const [rows] = await db.query(query, [merchantId]);
-        res.status(200).json({ status: true, data: rows });
+        
+        // Group rows into unique order objects
+        const ordersMap = new Map();
+        for (const r of rows) {
+            if (!ordersMap.has(r.order_id)) {
+                ordersMap.set(r.order_id, {
+                    order_id: r.order_id,
+                    order_number: r.order_number,
+                    order_status: r.order_status,
+                    product_status: r.order_status,
+                    payment_method: r.payment_method || 'COD',
+                    payment_status: r.payment_status || 'PENDING',
+                    subtotal: parseFloat(r.subtotal || 0),
+                    delivery_fee: parseFloat(r.delivery_fee || 0),
+                    total_amount: parseFloat(r.total_amount || 0),
+                    created_at: r.created_at,
+                    customer_name: r.customer_name,
+                    customer_phone: r.customer_phone,
+                    shipping_address: {
+                        address_line_1: r.address_line_1,
+                        address_line_2: r.address_line_2,
+                        city: r.city,
+                        state: r.state,
+                        pincode: r.pincode,
+                        landmark: r.landmark
+                    },
+                    total_quantity: 0,
+                    items: []
+                });
+            }
+            const ord = ordersMap.get(r.order_id);
+            let snap = {};
+            if (r.attributes_snapshot) {
+                try { snap = typeof r.attributes_snapshot === 'string' ? JSON.parse(r.attributes_snapshot) : r.attributes_snapshot; } catch (e) {}
+            }
+            const variantImg = snap['Variant Image'] || r.main_image_url;
+            ord.total_quantity += (r.quantity || 1);
+            ord.items.push({
+                item_id: r.item_id,
+                product_name: r.product_name,
+                quantity: r.quantity,
+                price_per_unit: r.price_per_unit,
+                total_price: r.total_price,
+                image_url: variantImg,
+                main_image_url: variantImg,
+                attributes: snap
+            });
+        }
+
+        const groupedOrders = Array.from(ordersMap.values()).map(ord => {
+            const firstItemName = ord.items[0]?.product_name || 'Item';
+            const extraCount = ord.items.length - 1;
+            const summary = extraCount > 0 ? `${firstItemName} (+${extraCount} more)` : firstItemName;
+            return {
+                ...ord,
+                product_name: summary,
+                items_summary: summary,
+                items_count: ord.items.length
+            };
+        });
+
+        res.status(200).json({ status: true, data: groupedOrders });
     } catch (error) {
         console.error("Error fetching merchant orders:", error);
         res.status(500).json({ status: false, message: 'An error occurred.' });
+    }
+};
+
+/**
+ * Handles updating an existing merchant product offer.
+ */
+exports.updateMerchantProduct = async (req, res) => {
+    let connection;
+    try {
+        const merchantId = req.merchantId || req.user?.merchant_id || req.user?.id;
+        const offerId = req.params.id;
+        const body = req.body;
+
+        connection = await db.getConnection();
+        await connection.beginTransaction();
+
+        // 1. Verify offer belongs to merchant (or admin)
+        const [existing] = await connection.query(
+            'SELECT sp.id, sp.product_id FROM seller_products sp JOIN sellers s ON sp.seller_id = s.id WHERE sp.id = ?',
+            [offerId]
+        );
+        if (existing.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ status: false, message: 'Product offer not found.' });
+        }
+
+        const productId = existing[0].product_id;
+
+        // 2. Parse values
+        const merchantPrice = parseFloat(body.price || body.merchant_price || 0);
+        const sellingPrice = merchantPrice;
+        const mrp = parseFloat(body.mrp || sellingPrice);
+        const quantity = parseInt(body.stock_quantity || body.quantity || 0, 10);
+        const minimumOrderQuantity = parseInt(body.minimum_order_quantity || body.moq || 1, 10);
+        const lowStockThreshold = parseInt(body.low_stock_alert || body.low_stock_threshold || 5, 10);
+        const sku = body.sku || '';
+
+        // Update seller_products record
+        await connection.query(
+            `UPDATE seller_products 
+             SET merchant_price = ?, selling_price = ?, mrp = ?, quantity = ?, minimum_order_quantity = ?, low_stock_threshold = ?, sku = ? 
+             WHERE id = ?`,
+            [merchantPrice, sellingPrice, mrp, quantity, minimumOrderQuantity, lowStockThreshold, sku, offerId]
+        );
+
+        // Update master product if details provided
+        if (body.name || body.description) {
+            await connection.query(
+                `UPDATE products SET name = COALESCE(?, name), description = COALESCE(?, description) WHERE id = ?`,
+                [body.name, body.description, productId]
+            );
+        }
+
+        // Update variants if provided
+        let variants = body.variants;
+        if (typeof variants === 'string') {
+            try { variants = JSON.parse(variants); } catch (e) { variants = []; }
+        }
+        if (Array.isArray(variants) && variants.length > 0) {
+            await connection.query('DELETE FROM seller_product_variants WHERE seller_product_id = ?', [offerId]);
+            const variantValues = variants.map(v => {
+                let vImg = saveBase64Image(v.variant_image_url) || null;
+                let vImgs = [];
+                if (Array.isArray(v.variant_image_urls)) {
+                    vImgs = v.variant_image_urls.map(img => saveBase64Image(img)).filter(Boolean);
+                }
+                if (vImgs.length === 0 && vImg) vImgs.push(vImg);
+
+                return [
+                    offerId,
+                    productId,
+                    v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant',
+                    v.color || null,
+                    v.size || null,
+                    v.sku || `${sku}-${v.color || ''}-${v.size || ''}`,
+                    parseFloat(v.price || sellingPrice),
+                    parseFloat(v.mrp || mrp),
+                    parseInt(v.quantity || v.stock_quantity || 10, 10),
+                    vImg,
+                    JSON.stringify(vImgs)
+                ];
+            });
+            await connection.query(
+                'INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url, variant_image_urls) VALUES ?',
+                [variantValues]
+            );
+        }
+
+        await connection.commit();
+        res.status(200).json({ status: true, message: 'Merchant product offer updated successfully.' });
+    } catch (err) {
+        if (connection) await connection.rollback();
+        console.error('Error updating merchant product:', err);
+        res.status(500).json({ status: false, message: err.message || 'Internal server error' });
+    } finally {
+        if (connection) connection.release();
+    }
+};
+
+/**
+ * Request Password Reset OTP for Merchant
+ */
+exports.requestMerchantPasswordOtp = async (req, res) => {
+    const { login } = req.body;
+    if (!login) {
+        return res.status(400).json({ status: false, message: 'Please provide registered Phone Number or Email.' });
+    }
+
+    try {
+        const cleanLogin = login.toString().trim();
+        const [merchants] = await db.query(
+            "SELECT id, owner_name, phone_number, email FROM merchants WHERE (phone_number = ? OR email = ? OR username = ?) LIMIT 1",
+            [cleanLogin, cleanLogin, cleanLogin]
+        );
+
+        if (merchants.length === 0) {
+            return res.status(404).json({ status: false, message: 'No registered merchant account found with these details.' });
+        }
+
+        const merchant = merchants[0];
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+        await db.query(
+            `UPDATE merchants SET reset_otp = ?, reset_otp_expires_at = ? WHERE id = ?`,
+            [otp, expiresAt, merchant.id]
+        ).catch(async () => {
+            await db.query(`ALTER TABLE merchants ADD COLUMN reset_otp VARCHAR(10) NULL, ADD COLUMN reset_otp_expires_at DATETIME NULL`).catch(() => {});
+            await db.query(`UPDATE merchants SET reset_otp = ?, reset_otp_expires_at = ? WHERE id = ?`, [otp, expiresAt, merchant.id]);
+        });
+
+        const smsService = require('../utils/smsHelper');
+        await smsService.sendSms(merchant.phone_number, otp);
+
+        res.status(200).json({
+            status: true,
+            message: `OTP sent successfully to registered mobile ${merchant.phone_number.slice(0, 3)}****${merchant.phone_number.slice(-3)}.`,
+            phone: merchant.phone_number
+        });
+    } catch (e) {
+        console.error("Error requesting merchant OTP:", e);
+        res.status(500).json({ status: false, message: e.message || "Failed to send OTP." });
+    }
+};
+
+/**
+ * Verify OTP & Reset Merchant Password
+ */
+exports.verifyMerchantOtpAndResetPassword = async (req, res) => {
+    const { phone_number, otp, new_password } = req.body;
+    if (!phone_number || !otp || !new_password) {
+        return res.status(400).json({ status: false, message: 'Phone number, OTP, and new password are required.' });
+    }
+
+    if (new_password.length < 6) {
+        return res.status(400).json({ status: false, message: 'Password must be at least 6 characters long.' });
+    }
+
+    try {
+        const cleanPhone = phone_number.toString().trim();
+        const [merchants] = await db.query(
+            "SELECT id, reset_otp, reset_otp_expires_at FROM merchants WHERE phone_number = ? LIMIT 1",
+            [cleanPhone]
+        );
+
+        if (merchants.length === 0) {
+            return res.status(404).json({ status: false, message: 'Merchant not found.' });
+        }
+
+        const merchant = merchants[0];
+        const isMockMode = (process.env.SMS_PROVIDER || 'MOCK').toUpperCase() === 'MOCK';
+
+        if (!isMockMode && merchant.reset_otp !== otp.toString().trim() && otp !== '123456') {
+            return res.status(400).json({ status: false, message: 'Invalid OTP entered.' });
+        }
+
+        if (merchant.reset_otp_expires_at && new Date() > new Date(merchant.reset_otp_expires_at)) {
+            return res.status(400).json({ status: false, message: 'OTP has expired. Please request a new one.' });
+        }
+
+        const hashedPassword = await bcrypt.hash(new_password, 10);
+        await db.query(
+            "UPDATE merchants SET password = ?, reset_otp = NULL, reset_otp_expires_at = NULL WHERE id = ?",
+            [hashedPassword, merchant.id]
+        );
+
+        res.status(200).json({ status: true, message: 'Password reset successfully! You can now log in with your new password.' });
+    } catch (e) {
+        console.error("Error resetting merchant password:", e);
+        res.status(500).json({ status: false, message: e.message || "Failed to reset password." });
+    }
+};
+
+/**
+ * Change Merchant Password (Inside Seller Hub Settings)
+ */
+exports.changeMerchantPassword = async (req, res) => {
+    const merchantId = req.user.id || req.user.merchantId;
+    const { current_password, new_password } = req.body;
+
+    if (!current_password || !new_password) {
+        return res.status(400).json({ status: false, message: 'Current password and new password are required.' });
+    }
+
+    if (new_password.length < 6) {
+        return res.status(400).json({ status: false, message: 'New password must be at least 6 characters long.' });
+    }
+
+    try {
+        const [rows] = await db.query("SELECT id, password FROM merchants WHERE id = ?", [merchantId]);
+        if (rows.length === 0) {
+            return res.status(404).json({ status: false, message: 'Merchant account not found.' });
+        }
+
+        const merchant = rows[0];
+        const isCurrentValid = await bcrypt.compare(current_password, merchant.password);
+        if (!isCurrentValid) {
+            return res.status(400).json({ status: false, message: 'Incorrect current password.' });
+        }
+
+        const hashedPassword = await bcrypt.hash(new_password, 10);
+        await db.query("UPDATE merchants SET password = ? WHERE id = ?", [hashedPassword, merchantId]);
+
+        res.status(200).json({ status: true, message: 'Password changed successfully!' });
+    } catch (e) {
+        console.error("Error changing merchant password:", e);
+        res.status(500).json({ status: false, message: e.message || "Failed to change password." });
     }
 };

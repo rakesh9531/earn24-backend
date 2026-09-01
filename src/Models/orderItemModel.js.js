@@ -13,8 +13,11 @@ class OrderItem {
     bv_earned_per_unit,
     total_bv_earned,
     created_at,
-    // You can also join to get the main_image_url for display in order history
-    main_image_url 
+    attributes_snapshot,
+    main_image_url,
+    item_status,
+    cancelled_at,
+    cancellation_reason
   }) {
     const timeZone = 'Asia/Kolkata';
 
@@ -30,9 +33,23 @@ class OrderItem {
     this.totalPrice = parseFloat(total_price);
     this.bvEarnedPerUnit = parseFloat(bv_earned_per_unit);
     this.totalBvEarned = parseFloat(total_bv_earned);
+    this.itemStatus = item_status || 'ACTIVE';
+    this.cancelledAt = cancelled_at ? moment(cancelled_at).tz(timeZone).format('YYYY-MM-DD HH:mm:ss') : null;
+    this.cancellationReason = cancellation_reason || null;
 
-    // Optional joined data
-    this.imageUrl = main_image_url || null;
+    let parsedAttributes = null;
+    let finalImageUrl = main_image_url || null;
+    if (attributes_snapshot) {
+      try {
+        parsedAttributes = typeof attributes_snapshot === 'string' ? JSON.parse(attributes_snapshot) : attributes_snapshot;
+        if (parsedAttributes && parsedAttributes['Variant Image']) {
+          finalImageUrl = parsedAttributes['Variant Image'];
+        }
+      } catch (e) {}
+    }
+
+    this.attributesSnapshot = parsedAttributes;
+    this.imageUrl = finalImageUrl;
     
     this.createdAt = moment(created_at).tz(timeZone).format('YYYY-MM-DD HH:mm:ss');
   }

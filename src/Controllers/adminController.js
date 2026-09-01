@@ -1097,8 +1097,12 @@ exports.updateSubCategory = async (req, res) => {
     }
 
     if (req.file) {
-      const oldPath = path.join(__dirname, '../../', existing[0].image_url || '');
-      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      if (existing[0].image_url && existing[0].image_url.trim() !== '') {
+        const oldPath = path.join(__dirname, '../../', existing[0].image_url);
+        if (fs.existsSync(oldPath) && fs.statSync(oldPath).isFile()) {
+          fs.unlinkSync(oldPath);
+        }
+      }
 
       const image_url = `/uploads/category/${req.file.filename}`;
       fields.push('image_url = ?');

@@ -155,8 +155,8 @@ exports.getMyOrders = async (req, res) => {
     try {
         // Fetch Order and Customer/Address details
         const query = `
-            SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.order_status,
-                   u.full_name as customer_name, u.mobile_number as customer_phone,
+            SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.payment_status, o.order_status,
+                   u.full_name as customer_name, u.mobile_number as customer_phone, sa.alternate_phone as customer_alt_phone,
                    sa.address_line_1, sa.address_line_2, sa.landmark, sa.city, sa.state, sa.pincode
             FROM orders o
             JOIN users u ON o.user_id = u.id
@@ -167,6 +167,10 @@ exports.getMyOrders = async (req, res) => {
         const [orders] = await db.query(query, [agentId]);
 
         for (let order of orders) {
+            const isPrepaid = (order.payment_method === 'WALLET' || order.payment_method === 'ONLINE' || order.payment_method === 'PAYU' || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID');
+            order.is_paid = isPrepaid ? 1 : 0;
+            order.collectable_amount = isPrepaid ? 0.00 : parseFloat(order.total_amount);
+            order.payment_instruction = isPrepaid ? "PREPAID / WALLET (Do NOT collect cash)" : `COLLECT CASH: ₹${parseFloat(order.total_amount).toFixed(2)}`;
             // FIX: Removed p.weight and p.unit. 
             // Instead, we fetch attributes_snapshot which contains the weight/size user ordered.
             const itemQuery = `
@@ -212,7 +216,16 @@ exports.getMyOrders = async (req, res) => {
 exports.startDelivery = async (req, res) => {
     const { orderId } = req.body;
     try {
-        await db.query("UPDATE orders SET order_status = 'OUT_FOR_DELIVERY' WHERE id = ?", [orderId]);
+        const [check] = await db.query("SELECT order_status, cancellation_reason, cancelled_by FROM orders WHERE id = ?", [orderId]);
+        if (check[0] && check[0].order_status === 'CANCELLED') {
+            return res.status(400).json({ 
+                status: false, 
+                isCancelled: true, 
+                message: `Order was CANCELLED by ${check[0].cancelled_by || 'Admin'}. Reason: ${check[0].cancellation_reason || 'N/A'}` 
+            });
+        }
+
+        await db.query("UPDATE orders SET order_status = 'OUT_FOR_DELIVERY' WHERE id = ? AND order_status != 'CANCELLED'", [orderId]);
         res.json({ status: true, message: "Delivery started. Customer notified." });
     } catch (e) { res.status(500).json({ status: false, message: e.message }); }
 };
@@ -220,10 +233,17 @@ exports.startDelivery = async (req, res) => {
 // 2. NEW: Trigger OTP only when agent reaches customer
 exports.sendDeliveryOTP = async (req, res) => {
     const { orderId } = req.body;
-    // const otp = Math.floor(100000 + Math.random() * 900000).toString(); 
-    
     const otp = "123456"; 
     try {
+        const [check] = await db.query("SELECT order_status, cancellation_reason, cancelled_by FROM orders WHERE id = ?", [orderId]);
+        if (check[0] && check[0].order_status === 'CANCELLED') {
+            return res.status(400).json({ 
+                status: false, 
+                isCancelled: true, 
+                message: `Order was CANCELLED by ${check[0].cancelled_by || 'Admin'}. Reason: ${check[0].cancellation_reason || 'N/A'}` 
+            });
+        }
+
         const [order] = await db.query(
             "SELECT u.mobile_number FROM orders o JOIN users u ON o.user_id = u.id WHERE o.id = ?", [orderId]
         );
@@ -242,10 +262,32 @@ exports.completeDelivery = async (req, res) => {
     try {
         await connection.beginTransaction();
 
+        // Check if order was cancelled by Admin
+        const [check] = await connection.query("SELECT order_status, cancellation_reason, cancelled_by FROM orders WHERE id = ? FOR UPDATE", [orderId]);
+        if (check[0] && check[0].order_status === 'CANCELLED') {
+            await connection.rollback();
+            return res.status(400).json({ 
+                status: false, 
+                isCancelled: true, 
+                message: `Order was CANCELLED by ${check[0].cancelled_by || 'Admin'}. Reason: ${check[0].cancellation_reason || 'N/A'}` 
+            });
+        }
+
+        // Check if order was already prepaid / wallet paid
+        const [existingOrders] = await connection.query(`SELECT payment_method, payment_status FROM orders WHERE id = ?`, [orderId]);
+        const existingOrder = existingOrders[0];
+        const isPrepaid = existingOrder && (
+            (existingOrder.payment_status || '').toUpperCase() === 'PAID' || 
+            (existingOrder.payment_status || '').toUpperCase() === 'COMPLETED' || 
+            ['WALLET', 'ONLINE', 'RAZORPAY', 'PAYU'].includes((existingOrder.payment_method || '').toUpperCase())
+        );
+
+        const finalPaymentMethod = isPrepaid ? existingOrder.payment_method : (paymentMode || 'COD');
+
         // 1. Update Order Status
         const [updateResult] = await connection.query(
             "UPDATE orders SET order_status='DELIVERED', payment_status='COMPLETED', payment_method=?, delivery_otp=NULL, delivered_at=NOW() WHERE id=? AND order_status != 'DELIVERED'", 
-            [paymentMode, orderId]
+            [finalPaymentMethod, orderId]
         );
 
         if (updateResult.affectedRows > 0) {
@@ -362,6 +404,15 @@ exports.cancelAssignment = async (req, res) => {
 exports.verifyOTP = async (req, res) => {
     const { orderId, otp } = req.body;
     try {
+        const [check] = await db.query("SELECT order_status, cancellation_reason, cancelled_by FROM orders WHERE id = ?", [orderId]);
+        if (check[0] && check[0].order_status === 'CANCELLED') {
+            return res.status(400).json({ 
+                status: false, 
+                isCancelled: true, 
+                message: `Order was CANCELLED by ${check[0].cancelled_by || 'Admin'}. Reason: ${check[0].cancellation_reason || 'N/A'}` 
+            });
+        }
+
         const [order] = await db.query("SELECT delivery_otp FROM orders WHERE id = ?", [orderId]);
         
         if (!order[0] || order[0].delivery_otp !== otp) {
@@ -373,9 +424,6 @@ exports.verifyOTP = async (req, res) => {
         res.status(500).json({ status: false, message: e.message });
     }
 };
-
-
-
 
 // 1. History: Only Completed or Cancelled orders
 exports.getHistory = async (req, res) => {
@@ -393,14 +441,15 @@ exports.getHistory = async (req, res) => {
         const totalItems = countResult[0].total;
         const totalPages = Math.ceil(totalItems / limit);
 
-        // 2. Fetch the paginated data
+        // 2. Fetch the paginated data (Includes cancellation details and proper date ordering)
         const query = `
-            SELECT o.order_number, o.total_amount, o.order_status, o.payment_method, 
-                   o.delivered_at, u.full_name as customer_name
+            SELECT o.id, o.order_number, o.total_amount, o.order_status, o.payment_method, 
+                   o.delivered_at, o.cancelled_at, o.updated_at, o.cancellation_reason, o.cancelled_by,
+                   u.full_name as customer_name
             FROM orders o
             JOIN users u ON o.user_id = u.id
             WHERE o.delivery_agent_id = ? AND o.order_status IN ('DELIVERED', 'CANCELLED')
-            ORDER BY o.delivered_at DESC 
+            ORDER BY COALESCE(o.delivered_at, o.cancelled_at, o.updated_at) DESC 
             LIMIT ? OFFSET ?`;
             
         const [rows] = await db.query(query, [agentId, limit, offset]);
@@ -431,7 +480,8 @@ exports.getEarningsSummary = async (req, res) => {
         const [overall] = await db.query(`
             SELECT 
                 SUM(CASE WHEN payment_method = 'COD' THEN total_amount ELSE 0 END) as total_cash_lifetime,
-                SUM(CASE WHEN payment_method != 'COD' THEN total_amount ELSE 0 END) as total_online_lifetime,
+                SUM(CASE WHEN payment_method IN ('ONLINE', 'RAZORPAY', 'PAYU') THEN total_amount ELSE 0 END) as total_online_lifetime,
+                SUM(CASE WHEN payment_method = 'WALLET' THEN total_amount ELSE 0 END) as total_wallet_lifetime,
                 COUNT(*) as total_orders_lifetime
             FROM orders WHERE delivery_agent_id = ? AND order_status = 'DELIVERED'`, [agentId]);
 

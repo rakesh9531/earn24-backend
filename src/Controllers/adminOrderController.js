@@ -5,21 +5,33 @@ const db = require('../../db');
  * Primarily used to get 'CONFIRMED' orders that need to be processed.
  */
 exports.getOrdersByStatus = async (req, res) => {
-    // Default to fetching 'CONFIRMED' orders if no status is provided
-    const status = req.query.status || 'CONFIRMED';
+    const status = req.query.status || 'ALL';
     
     try {
+        let whereClause = "";
+        let params = [];
+
+        if (status === 'CONFIRMED') {
+            whereClause = "WHERE o.order_status IN ('CONFIRMED', 'PLACED', 'SHIPPED', 'OUT_FOR_DELIVERY')";
+        } else if (status !== 'ALL') {
+            whereClause = "WHERE o.order_status = ?";
+            params = [status];
+        }
+
         const query = `
-            SELECT o.id, o.order_number, o.total_amount, o.order_status, o.created_at, u.full_name as customer_name,
-                   o.rejection_reason, o.last_rejected_by_agent_id,
-                   da.full_name as rejected_by_agent_name
+            SELECT o.id, o.order_number, o.total_amount, o.order_status, o.created_at, o.payment_method, o.payment_status,
+                   u.full_name as customer_name, u.mobile_number as customer_phone,
+                   o.delivery_agent_id, o.rejection_reason, o.last_rejected_by_agent_id,
+                   da.full_name as rejected_by_agent_name,
+                   curr_da.full_name as assigned_agent_name, curr_da.phone_number as assigned_agent_phone
             FROM orders o
-            JOIN users u ON o.user_id = u.id
+            LEFT JOIN users u ON o.user_id = u.id
             LEFT JOIN delivery_agents da ON o.last_rejected_by_agent_id = da.id
-            WHERE o.order_status = ?
-            ORDER BY o.created_at ASC
+            LEFT JOIN delivery_agents curr_da ON o.delivery_agent_id = curr_da.id
+            ${whereClause}
+            ORDER BY o.created_at DESC
         `;
-        const [orders] = await db.query(query, [status]);
+        const [orders] = await db.query(query, params);
 
         res.status(200).json({ status: true, data: orders });
     } catch (error) {
@@ -42,13 +54,12 @@ exports.assignOrderForDelivery = async (req, res) => {
     }
 
     try {
-        // First, check if the order is in a state that can be shipped (i.e., 'CONFIRMED')
         const [orderRows] = await db.query('SELECT order_status FROM orders WHERE id = ?', [orderId]);
         if (orderRows.length === 0) {
             return res.status(404).json({ status: false, message: "Order not found." });
         }
-        if (orderRows[0].order_status !== 'CONFIRMED') {
-            return res.status(409).json({ status: false, message: `Cannot ship an order with status '${orderRows[0].order_status}'.` });
+        if (['DELIVERED', 'CANCELLED'].includes(orderRows[0].order_status)) {
+            return res.status(409).json({ status: false, message: `Cannot assign order with status '${orderRows[0].order_status}'.` });
         }
 
         // Update the order status and assign the delivery agent
@@ -131,12 +142,22 @@ exports.getAdminOrderDetails = async (req, res) => {
         `;
         const [itemRows] = await db.query(itemsQuery, [orderId]);
 
-        // 3. Process the items to parse the JSON attributes snapshot
-        const processedItems = itemRows.map(item => ({
-            ...item,
-            // Convert the JSON string from DB into a real Javascript Object/Array
-            attributes: item.attributes_snapshot ? (typeof item.attributes_snapshot === 'string' ? JSON.parse(item.attributes_snapshot) : item.attributes_snapshot) : {}
-        }));
+        // 3. Process the items to parse the JSON attributes snapshot & prioritize variant image
+        const processedItems = itemRows.map(item => {
+            let attributes = {};
+            if (item.attributes_snapshot) {
+                try {
+                    attributes = typeof item.attributes_snapshot === 'string' ? JSON.parse(item.attributes_snapshot) : item.attributes_snapshot;
+                } catch (e) {}
+            }
+            const variantImg = attributes['Variant Image'] || item.main_image_url;
+            return {
+                ...item,
+                main_image_url: variantImg,
+                image_url: variantImg,
+                attributes: attributes
+            };
+        });
 
         // 4. Combine results into a single clean object
         const orderDetails = {
@@ -471,6 +492,24 @@ exports.cancelAdminOrder = async (req, res) => {
         );
 
         await connection.commit();
+
+        // 6. Emit real-time socket events for order cancellation
+        const io = req.app.get('socketio');
+        if (io) {
+            if (order.delivery_agent_id) {
+                io.to(`agent_${order.delivery_agent_id}`).emit('order_cancelled', {
+                    orderId: orderId,
+                    orderNumber: order.order_number,
+                    reason: reason,
+                    message: `Order #${order.order_number} was CANCELLED by Admin.`
+                });
+            }
+            io.to('admins').emit('order_status_updated', {
+                orderId: orderId,
+                status: 'CANCELLED'
+            });
+        }
+
         res.status(200).json({ status: true, message: "Order cancelled successfully.", data: { orderId, refundProcessed } });
 
     } catch (error) {

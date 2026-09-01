@@ -28,14 +28,19 @@ exports.sendSms = async (mobileNumber, otp) => {
                 console.error("[SMS Helper] Error: TWO_FACTOR_API_KEY is not defined in .env file.");
                 return false;
             }
-            const templateName = process.env.TWO_FACTOR_TEMPLATE_NAME || 'DeliveryOTP';
-            const url = `https://2factor.in/API/V1/${apiKey}/SMS/${cleanNumber}/${otp}/${templateName}`;
             
-            console.log(`[SMS Helper] Calling 2Factor for ${cleanNumber}...`);
+            // Direct 2Factor Text SMS Endpoint (omits unapproved template name so it sends Text SMS instead of Voice Call)
+            const templateName = process.env.TWO_FACTOR_TEMPLATE_NAME;
+            let url = `https://2factor.in/API/V1/${apiKey}/SMS/${cleanNumber}/${otp}`;
+            if (templateName && templateName !== 'DeliveryOTP' && templateName !== 'YOUR_TEMPLATE_NAME') {
+                url += `/${templateName}`;
+            }
+            
+            console.log(`[SMS Helper] Calling 2Factor Text SMS for ${cleanNumber}...`);
             const response = await axios.get(url);
 
             if (response.data.Status === 'Success') {
-                console.log(`[2Factor Success] OTP sent to ${cleanNumber}. Reference ID: ${response.data.Details}`);
+                console.log(`[2Factor Success] Text SMS OTP sent to ${cleanNumber}. Reference ID: ${response.data.Details}`);
                 return true;
             } else {
                 console.error("[2Factor Failed] API response:", response.data);

@@ -37,6 +37,7 @@ class Address {
         this.state = state;
         this.pincode = pincode;
         this.addressType = address_type;
+        this.alternatePhone = alternate_phone || null;
         this.isDefault = Boolean(is_default);
 
         this.createdAt = moment(created_at).tz(timeZone).format('YYYY-MM-DD HH:mm:ss');
