@@ -29,7 +29,7 @@ exports.processOrderForCommissions = async (connection, orderId) => {
 
         // 3. Fetch Order Items for BV calculation
         const [items] = await connection.query(`
-            SELECT oi.id, oi.product_id, oi.price_per_unit, oi.quantity, sp.purchase_price, h.gst_percentage
+            SELECT oi.id, oi.product_id, oi.price_per_unit, oi.quantity, sp.purchase_price, sp.admin_margin_percent, h.gst_percentage
             FROM order_items oi
             JOIN seller_products sp ON oi.seller_product_id = sp.id
             JOIN products p ON sp.product_id = p.id
@@ -39,11 +39,24 @@ exports.processOrderForCommissions = async (connection, orderId) => {
         let totalOrderBV = 0;
 
         for (const item of items) {
-            const basePrice = item.price_per_unit / (1 + ((item.gst_percentage || 0) / 100));
-            const netProfitPerUnit = basePrice - item.purchase_price;
+            let bvPerUnit = 0;
+            let netProfitPerUnit = 0;
+            const price = parseFloat(item.price_per_unit) || 0;
+            const adminMarginPct = parseFloat(item.admin_margin_percent || 0);
 
-            if (netProfitPerUnit > 0) {
-                const bvPerUnit = netProfitPerUnit * (bvPct / 100);
+            if (adminMarginPct > 0) {
+                const marginProfit = price * (adminMarginPct / 100);
+                bvPerUnit = marginProfit * (bvPct / 100);
+                netProfitPerUnit = marginProfit;
+            } else {
+                const basePrice = price / (1 + ((parseFloat(item.gst_percentage) || 0) / 100));
+                netProfitPerUnit = basePrice - (parseFloat(item.purchase_price) || 0);
+                if (netProfitPerUnit > 0) {
+                    bvPerUnit = netProfitPerUnit * (bvPct / 100);
+                }
+            }
+
+            if (bvPerUnit > 0) {
                 const totalBVForItem = bvPerUnit * item.quantity;
                 totalOrderBV += totalBVForItem;
 

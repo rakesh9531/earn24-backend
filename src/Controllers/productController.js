@@ -1232,7 +1232,16 @@ exports.getTrendingSearches = async (req, res) => {
 //     }
 // };
 
-// trying fixing
+const extractSearchStems = (text) => {
+    if (!text || typeof text !== 'string') return [];
+    const cleaned = text.toLowerCase().trim();
+    const words = cleaned.split(/\s+/).filter(w => w.length > 0);
+    if (words.length > 1) {
+        return [cleaned, ...words];
+    }
+    return words.length > 0 ? words : [cleaned];
+};
+
 exports.searchProducts = async (req, res) => {
   try {
     const {
@@ -1335,7 +1344,7 @@ exports.searchProducts = async (req, res) => {
     // --- 4. Final Data Query with BV Calculation & Attribute Subquery ---
     const baseSelectAndJoins = `
             FROM seller_products sp
-            JOIN sellers s ON sp.seller_id = s.id
+            LEFT JOIN sellers s ON sp.seller_id = s.id
             LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
             JOIN products p ON sp.product_id = p.id
             LEFT JOIN product_categories c ON p.category_id = c.id
@@ -1384,7 +1393,9 @@ exports.searchProducts = async (req, res) => {
     // --- 5. Process the Result (Parse JSON strings) ---
     const processedProducts = productsRaw.map((p) => ({
       ...p,
-      id: p.offer_id || p.product_id,
+      id: p.product_id,
+      product_id: p.product_id,
+      offer_id: p.offer_id,
       bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
       gallery_image_urls: p.gallery_image_urls
         ? (typeof p.gallery_image_urls === 'string' ? JSON.parse(p.gallery_image_urls) : p.gallery_image_urls)
@@ -1804,6 +1815,7 @@ exports.getProductsBySubcategory = async (req, res) => {
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.subcategory_id = ? 
+                AND (p.is_universal_pincode = 1 OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
                 AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
             GROUP BY sp.id ORDER BY p.popularity DESC LIMIT ? OFFSET ?;
       `;
@@ -1812,7 +1824,9 @@ exports.getProductsBySubcategory = async (req, res) => {
       countQuery = `
         SELECT COUNT(DISTINCT sp.id) as total FROM products AS p
         JOIN seller_products AS sp ON p.id = sp.product_id
-        WHERE p.subcategory_id = ? AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+        WHERE p.subcategory_id = ? 
+          AND (p.is_universal_pincode = 1 OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
+          AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
       `;
       countParams = [subcategoryId];
     }

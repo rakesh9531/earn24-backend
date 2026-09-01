@@ -492,6 +492,24 @@ exports.cancelAdminOrder = async (req, res) => {
         );
 
         await connection.commit();
+
+        // 6. Emit real-time socket events for order cancellation
+        const io = req.app.get('socketio');
+        if (io) {
+            if (order.delivery_agent_id) {
+                io.to(`agent_${order.delivery_agent_id}`).emit('order_cancelled', {
+                    orderId: orderId,
+                    orderNumber: order.order_number,
+                    reason: reason,
+                    message: `Order #${order.order_number} was CANCELLED by Admin.`
+                });
+            }
+            io.to('admins').emit('order_status_updated', {
+                orderId: orderId,
+                status: 'CANCELLED'
+            });
+        }
+
         res.status(200).json({ status: true, message: "Order cancelled successfully.", data: { orderId, refundProcessed } });
 
     } catch (error) {
