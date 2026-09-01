@@ -25,11 +25,14 @@ exports.getUserAddresses = async (req, res) => {
     }
 };
 
-// POST /add - Add a new address for the user (Simplified: no name or phone)
+// Ensure alternate_phone column exists
+db.query("ALTER TABLE user_addresses ADD COLUMN alternate_phone VARCHAR(20) DEFAULT NULL").catch(() => {});
+
+// POST /add - Add a new address for the user
 exports.addAddress = async (req, res) => {
     const userId = req.user.id;
-    // const userId = 1; // Placeholder for testing
-    const { addressLine1, addressLine2, landmark, city, state, pincode, addressType, isDefault } = req.body;
+    const { addressLine1, addressLine2, landmark, city, state, pincode, addressType, isDefault, alternatePhone, alternate_phone } = req.body;
+    const finalAltPhone = alternatePhone || alternate_phone || null;
     
     if (!addressLine1 || !city || !state || !pincode) {
         return res.status(400).json({ status: false, message: "Address Line 1, City, State, and Pincode are required." });
@@ -46,11 +49,11 @@ exports.addAddress = async (req, res) => {
 
         const query = `
             INSERT INTO user_addresses 
-            (user_id, address_line_1, address_line_2, landmark, city, state, pincode, address_type, is_default)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (user_id, address_line_1, address_line_2, landmark, city, state, pincode, address_type, alternate_phone, is_default)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         const [result] = await connection.query(query, [
-            userId, addressLine1, addressLine2 || null, landmark || null, city, state, pincode, addressType || 'Home', isDefault || false
+            userId, addressLine1, addressLine2 || null, landmark || null, city, state, pincode, addressType || 'Home', finalAltPhone, isDefault || false
         ]);
         
         await connection.commit();
@@ -68,14 +71,13 @@ exports.addAddress = async (req, res) => {
 // PUT /update/:addressId - Update an existing address
 exports.updateAddress = async (req, res) => {
     const userId = req.user.id;
-    // const userId = 1; // Placeholder for testing
     const { addressId } = req.params;
-    const { addressLine1, addressLine2, landmark, city, state, pincode, addressType } = req.body;
+    const { addressLine1, addressLine2, landmark, city, state, pincode, addressType, alternatePhone, alternate_phone } = req.body;
+    const finalAltPhone = alternatePhone !== undefined ? alternatePhone : alternate_phone;
     
     const fieldsToUpdate = [];
     const values = [];
 
-    // Dynamically build the SET part of the query based on fields provided in the request
     if (addressLine1) { fieldsToUpdate.push('address_line_1 = ?'); values.push(addressLine1); }
     if (addressLine2 !== undefined) { fieldsToUpdate.push('address_line_2 = ?'); values.push(addressLine2); }
     if (landmark !== undefined) { fieldsToUpdate.push('landmark = ?'); values.push(landmark); }
@@ -83,6 +85,7 @@ exports.updateAddress = async (req, res) => {
     if (state) { fieldsToUpdate.push('state = ?'); values.push(state); }
     if (pincode) { fieldsToUpdate.push('pincode = ?'); values.push(pincode); }
     if (addressType) { fieldsToUpdate.push('address_type = ?'); values.push(addressType); }
+    if (finalAltPhone !== undefined) { fieldsToUpdate.push('alternate_phone = ?'); values.push(finalAltPhone || null); }
 
     if (fieldsToUpdate.length === 0) {
         return res.status(400).json({ status: false, message: 'No fields provided to update.' });

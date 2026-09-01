@@ -858,7 +858,25 @@ exports.getUserProfile = async (req, res) => {
 exports.updateUserProfile = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { full_name, email, mobile_number, binary_placement_preference } = req.body;
+    const { full_name, email, mobile_number, binary_placement_preference, password } = req.body;
+
+    const [currentUser] = await db.query("SELECT password, email, mobile_number FROM users WHERE id = ?", [userId]);
+    const userObj = currentUser[0] || {};
+
+    const isEmailChanging = email && email !== userObj.email;
+    const isMobileChanging = mobile_number && mobile_number !== userObj.mobile_number;
+
+    if (isEmailChanging || isMobileChanging) {
+      if (!password) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ status: false, message: "Current password is required to change Email or Mobile Number." });
+      }
+      const validPassword = await bcrypt.compare(password, userObj.password);
+      if (!validPassword) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(401).json({ status: false, message: "Incorrect password. Cannot update Email or Mobile Number." });
+      }
+    }
 
     // 1. UNIQUE CHECKS (Email/Mobile)
     if (email || mobile_number) {
@@ -1265,4 +1283,109 @@ exports.getWalletHistory = async (req, res) => {
     console.error('Error fetching wallet history:', error);
     res.status(500).json({ status: false, message: 'Server error' });
   }
+};
+
+exports.sendEmailOtp = async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+            return res.status(400).json({ status: false, message: "Valid email address is required." });
+        }
+        
+        const [existing] = await db.query("SELECT id FROM users WHERE email = ?", [email.trim()]);
+        if (existing.length > 0) {
+            return res.status(409).json({ status: false, message: "Email is already registered. Please login or use another email." });
+        }
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        await db.query(`
+            INSERT INTO otp_records (mobile_number, otp_code, attempts_count, last_sent_at)
+            VALUES (?, ?, 1, NOW())
+            ON DUPLICATE KEY UPDATE otp_code = VALUES(otp_code), last_sent_at = NOW()
+        `, [`email_${email.trim()}`, otp]);
+
+        console.log(`[EMAIL OTP] Generated OTP for ${email}: ${otp}`);
+
+        res.json({
+            status: true,
+            message: `OTP sent successfully to ${email}.`,
+            mockOtp: otp
+        });
+    } catch (e) {
+        console.error("sendEmailOtp error:", e);
+        res.status(500).json({ status: false, message: "Failed to send Email OTP." });
+    }
+};
+
+exports.verifyEmailOtp = async (req, res) => {
+    try {
+        const { email, otp } = req.body;
+        if (!email || !otp) {
+            return res.status(400).json({ status: false, message: "Email and OTP are required." });
+        }
+
+        const [rows] = await db.query(
+            "SELECT otp_code, last_sent_at FROM otp_records WHERE mobile_number = ?",
+            [`email_${email.trim()}`]
+        );
+
+        if (!rows.length || rows[0].otp_code !== otp.toString().trim()) {
+            return res.status(400).json({ status: false, message: "Invalid or expired OTP code." });
+        }
+
+        res.json({ status: true, message: "Email verified successfully." });
+    } catch (e) {
+        console.error("verifyEmailOtp error:", e);
+        res.status(500).json({ status: false, message: "Verification failed." });
+    }
+};
+
+exports.sendProfileMobileOtp = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { mobile_number } = req.body;
+        if (!mobile_number || mobile_number.trim().length !== 10) {
+            return res.status(400).json({ status: false, message: "Valid 10-digit mobile number is required." });
+        }
+
+        const cleanMobile = mobile_number.trim();
+        const [existing] = await db.query("SELECT id FROM users WHERE mobile_number = ? AND id != ?", [cleanMobile, userId]);
+        if (existing.length > 0) {
+            return res.status(409).json({ status: false, message: "Mobile number is already in use by another account." });
+        }
+
+        const otpResult = await handleOtpSending(cleanMobile);
+        if (!otpResult.success) {
+            return res.status(otpResult.status).json({ status: false, message: otpResult.message });
+        }
+
+        res.json({ status: true, message: `OTP sent successfully to ${cleanMobile}.` });
+    } catch (e) {
+        console.error("sendProfileMobileOtp error:", e);
+        res.status(500).json({ status: false, message: "Failed to send Mobile OTP." });
+    }
+};
+
+exports.verifyProfileMobileOtp = async (req, res) => {
+    try {
+        const { mobile_number, otp } = req.body;
+        if (!mobile_number || !otp) {
+            return res.status(400).json({ status: false, message: "Mobile number and OTP are required." });
+        }
+
+        const cleanMobile = mobile_number.trim();
+        const [rows] = await db.query(
+            "SELECT otp_code FROM otp_records WHERE mobile_number = ?",
+            [cleanMobile]
+        );
+
+        if (!rows.length || rows[0].otp_code !== otp.toString().trim()) {
+            return res.status(400).json({ status: false, message: "Invalid or expired OTP code." });
+        }
+
+        res.json({ status: true, message: "Mobile number verified successfully." });
+    } catch (e) {
+        console.error("verifyProfileMobileOtp error:", e);
+        res.status(500).json({ status: false, message: "Mobile OTP verification failed." });
+    }
 };
