@@ -1447,9 +1447,73 @@ exports.searchProducts = async (req, res) => {
     const [countRows] = await db.query(countQuery, queryParams);
     const totalProducts = countRows[0].total;
 
-    console.log(`[SEARCH DEBUG RESULT] Total Count=${totalProducts}, Output Products=${processedProducts.length}`);
-    if (processedProducts.length > 0) {
-      console.log(`[SEARCH DEBUG MATCHES]:`, processedProducts.slice(0, 3).map(p => ({ id: p.id, name: p.name, price: p.selling_price })));
+    let finalProducts = processedProducts;
+    let finalTotal = totalProducts;
+
+    // --- SMART FALLBACK FOR PAN-INDIA MODE ---
+    if (finalTotal === 0 && !isPincodeProvided && query && query.trim().length > 0) {
+      console.log(`[SEARCH FALLBACK] 0 strict Pan-India products. Running fallback catalog search for "${query.trim()}"...`);
+      const fbWhere = [
+        "(p.is_deleted = 0 OR p.is_deleted IS NULL)",
+        "(p.is_active = 1 OR p.is_active IS NULL OR p.is_active = TRUE)",
+        "(sp.is_active = 1 OR sp.is_active IS NULL OR sp.is_active = TRUE)",
+        "(sp.selling_price > 0 OR sp.selling_price IS NULL)"
+      ];
+      const fbParams = [];
+      const stems = extractSearchStems(query);
+      const searchConds = stems.map((stem) => {
+        const pat = `%${stem.toLowerCase()}%`;
+        fbParams.push(pat, pat, pat, pat, pat, pat, pat, pat);
+        return `(
+          LOWER(p.name) LIKE ? 
+          OR LOWER(p.description) LIKE ? 
+          OR LOWER(b.name) LIKE ? 
+          OR LOWER(c.name) LIKE ? 
+          OR LOWER(sc.name) LIKE ?
+          OR LOWER(sp.sku) LIKE ?
+          OR EXISTS (SELECT 1 FROM seller_product_variants spv_s WHERE spv_s.seller_product_id = sp.id AND (LOWER(spv_s.title) LIKE ? OR LOWER(spv_s.sku) LIKE ?))
+        )`;
+      }).join(" OR ");
+      fbWhere.push(`(${searchConds})`);
+      const fbWhereString = `WHERE ${fbWhere.join(" AND ")}`;
+
+      const fbDataQueryParams = [...fbParams];
+      const trimmed = query.trim().toLowerCase();
+      fbDataQueryParams.push(trimmed, `${trimmed}%`, `%${trimmed}%`);
+
+      const [fbRaw] = await db.query(
+        `SELECT DISTINCT
+            p.id as product_id, p.name, p.main_image_url, p.description, p.gallery_image_urls,
+            b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, p.popularity,
+            COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+            GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (${bvGenerationPct} / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (${bvGenerationPct} / 100))) as bv_earned,
+            (SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') FROM product_attributes pa JOIN attribute_values av ON pa.attribute_value_id = av.id JOIN attributes attr ON av.attribute_id = attr.id WHERE pa.product_id = p.id) as attributes,
+            (SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']') FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id) as variants
+         ${baseSelectAndJoins} ${fbWhereString} ${orderByClause} LIMIT ? OFFSET ?`,
+        [...fbDataQueryParams, limitNum, offset]
+      ).catch(() => [[]]);
+
+      const [fbCount] = await db.query(`SELECT COUNT(DISTINCT p.id) as total ${baseSelectAndJoins} ${fbWhereString}`, fbParams).catch(() => [[{ total: 0 }]]);
+
+      if (fbRaw && fbRaw.length > 0) {
+        finalProducts = fbRaw.map((p) => ({
+          ...p,
+          id: p.product_id,
+          product_id: p.product_id,
+          offer_id: p.offer_id,
+          bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
+          gallery_image_urls: p.gallery_image_urls ? (typeof p.gallery_image_urls === 'string' ? JSON.parse(p.gallery_image_urls) : p.gallery_image_urls) : [],
+          attributes: p.attributes ? JSON.parse(p.attributes) : [],
+          variants: p.variants ? (typeof p.variants === 'string' ? JSON.parse(p.variants) : p.variants) : [],
+        }));
+        finalTotal = fbCount[0]?.total || finalProducts.length;
+        console.log(`[SEARCH FALLBACK SUCCESS] Returned ${finalProducts.length} fallback products for "${query.trim()}"`);
+      }
+    }
+
+    console.log(`[SEARCH DEBUG RESULT] Total Count=${finalTotal}, Output Products=${finalProducts.length}`);
+    if (finalProducts.length > 0) {
+      console.log(`[SEARCH DEBUG MATCHES]:`, finalProducts.slice(0, 3).map(p => ({ id: p.id, name: p.name, price: p.selling_price })));
     } else {
       console.log(`[SEARCH DEBUG WARN] 0 products matched.`);
     }
@@ -1458,12 +1522,12 @@ exports.searchProducts = async (req, res) => {
     res.status(200).json({
       status: true,
       data: {
-        products: processedProducts,
+        products: finalProducts,
         pagination: {
-          total: totalProducts,
+          total: finalTotal,
           page: pageNum,
           limit: limitNum,
-          totalPages: Math.ceil(totalProducts / limitNum),
+          totalPages: Math.ceil(finalTotal / limitNum),
         },
       },
     });
