@@ -1325,20 +1325,27 @@ exports.searchProducts = async (req, res) => {
     }
 
     const isPincodeProvided = pincode && pincode !== 'ALL' && pincode !== 'null' && pincode !== 'undefined' && pincode !== '';
+    console.log(`[SEARCH DEBUG PINCODE MODE] isPincodeProvided=${isPincodeProvided}, pincodeValue="${pincode}"`);
+
     if (isPincodeProvided) {
-      // Specific Pincode Mode (e.g. 828207): Show local offers for 828207 AND universal Pan-India offers
+      // MODE 1: Specific Pincode Mode (e.g. 828207)
+      // Show local offers specifically assigned to 828207 AND universal Pan-India offers
       whereClauses.push(`(
-        p.is_universal_pincode = 1 
-        OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND (spp_c.pincode = ? OR spp_c.pincode = 'ALL'))
+        EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = ?)
+        OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
+        OR (p.is_universal_pincode = 1 AND NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode != 'ALL'))
         OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id)
       )`);
       queryParams.push(pincode);
     } else {
-      // Pan-India Mode: Strictly show ONLY Pan-India products (Hide specific local-only pincode products)
+      // MODE 2: Pan-India Mode (ALL India)
+      // STRICTLY HIDE products that have specific local pincodes assigned (e.g. 828207) and no 'ALL' tag!
       whereClauses.push(`(
-        p.is_universal_pincode = 1 
-        OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
-        OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id)
+        EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
+        OR (
+          NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode != 'ALL')
+          AND (p.is_universal_pincode = 1 OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id))
+        )
       )`);
     }
 
