@@ -1328,18 +1328,10 @@ exports.searchProducts = async (req, res) => {
     if (isPincodeProvided) {
       whereClauses.push(`(
         p.is_universal_pincode = 1 
-        OR p.is_universal_pincode IS NULL 
         OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND (spp_c.pincode = ? OR spp_c.pincode = 'ALL'))
         OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id)
       )`);
       queryParams.push(pincode);
-    } else {
-      whereClauses.push(`(
-        p.is_universal_pincode = 1 
-        OR p.is_universal_pincode IS NULL 
-        OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
-        OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode != 'ALL')
-      )`);
     }
 
     const whereString = `WHERE ${whereClauses.join(" AND ")}`;
