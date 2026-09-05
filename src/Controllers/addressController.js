@@ -9,10 +9,10 @@ exports.getUserAddresses = async (req, res) => {
         const query = `
             SELECT 
                 ua.*,
-                u.full_name,
-                u.mobile_number
+                COALESCE(u.full_name, 'User') as full_name,
+                COALESCE(u.mobile_number, '') as mobile_number
             FROM user_addresses ua
-            JOIN users u ON ua.user_id = u.id
+            LEFT JOIN users u ON ua.user_id = u.id
             WHERE ua.user_id = ? 
             ORDER BY ua.is_default DESC, ua.updated_at DESC
         `;
