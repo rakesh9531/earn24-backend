@@ -282,7 +282,7 @@ exports.addMerchantProduct = async (req, res) => {
         // Parse pincodes and variants
         let pincodes = body.pincodes;
         if (typeof pincodes === 'string') {
-            try { pincodes = JSON.parse(pincodes); } catch (e) { pincodes = []; }
+            try { pincodes = JSON.parse(pincodes); } catch (e) { pincodes = pincodes.split(',').map(p => p.trim()).filter(Boolean); }
         }
         if (!Array.isArray(pincodes)) pincodes = [];
 
@@ -290,6 +290,7 @@ exports.addMerchantProduct = async (req, res) => {
         if (typeof variants === 'string') {
             try { variants = JSON.parse(variants); } catch (e) { variants = []; }
         }
+        if (!Array.isArray(variants)) variants = [];
 
         const minimumOrderQuantity = parseInt(body.minimum_order_quantity || body.moq || 1, 10);
 
@@ -304,8 +305,11 @@ exports.addMerchantProduct = async (req, res) => {
         ]);
         const newOfferId = result.insertId;
 
-        // 5. Save pincodes
-        if (pincodes.length > 0) {
+        // 5. Save pincodes (Handle Universal vs Specific)
+        const isUniversalDelivery = (body.delivery_type === 'universal' || body.pincode_type === 'pan_india' || body.is_universal_pincode === 1 || body.is_universal_pincode === '1' || body.is_universal_pincode === true || body.is_universal_pincode === 'true');
+        if (isUniversalDelivery) {
+            await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES (?, ?)', [newOfferId, 'ALL']);
+        } else if (pincodes.length > 0) {
             const pincodeValues = pincodes.map(p => [newOfferId, String(p).trim()]);
             await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES ?', [pincodeValues]);
         }
@@ -326,11 +330,10 @@ exports.addMerchantProduct = async (req, res) => {
         }
 
         // 7. Save Variants if provided
-        if (!Array.isArray(variants)) variants = [];
         if (variants.length > 0) {
             try {
                 const variantValues = variants.map(v => {
-                    let vImg = saveBase64Image(v.variant_image_url) || mainImageUrl;
+                    let vImg = saveBase64Image(v.variant_image_url || v.image_url) || mainImageUrl;
                     let vImgs = [];
                     if (Array.isArray(v.variant_image_urls)) {
                         vImgs = v.variant_image_urls.map(img => saveBase64Image(img)).filter(Boolean);
@@ -344,7 +347,7 @@ exports.addMerchantProduct = async (req, res) => {
                         v.color || null,
                         v.size || null,
                         v.sku || `${sku}-${v.color || ''}-${v.size || ''}`,
-                        parseFloat(v.price || sellingPrice),
+                        parseFloat(v.price || v.selling_price || sellingPrice),
                         parseFloat(v.mrp || mrp),
                         parseInt(v.quantity || v.stock_quantity || 10, 10),
                         vImg,
@@ -574,6 +577,41 @@ exports.updateMerchantProduct = async (req, res) => {
             );
         }
 
+        // Update pincode / delivery settings (Pan India vs Specific Pincodes)
+        const deliveryType = body.delivery_type || body.pincode_type;
+        const isUniversalProvided = body.is_universal_pincode !== undefined || deliveryType !== undefined;
+        if (isUniversalProvided) {
+            const isUniversal = (deliveryType === 'universal' || deliveryType === 'pan_india' || body.is_universal_pincode === 1 || body.is_universal_pincode === '1' || body.is_universal_pincode === true || body.is_universal_pincode === 'true') ? 1 : 0;
+            await connection.query('UPDATE products SET is_universal_pincode = ? WHERE id = ?', [isUniversal, productId]);
+
+            await connection.query('DELETE FROM seller_product_pincodes WHERE seller_product_id = ?', [offerId]);
+
+            if (isUniversal === 1) {
+                await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES (?, ?)', [offerId, 'ALL']);
+            } else {
+                let pincodes = body.pincodes;
+                if (typeof pincodes === 'string') {
+                    try { pincodes = JSON.parse(pincodes); } catch (e) { pincodes = pincodes.split(',').map(p => p.trim()).filter(Boolean); }
+                }
+                if (Array.isArray(pincodes) && pincodes.length > 0) {
+                    const pincodeValues = pincodes.map(p => [offerId, String(p).trim()]);
+                    await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES ?', [pincodeValues]);
+                }
+            }
+        } else if (body.pincodes !== undefined) {
+            let pincodes = body.pincodes;
+            if (typeof pincodes === 'string') {
+                try { pincodes = JSON.parse(pincodes); } catch (e) { pincodes = pincodes.split(',').map(p => p.trim()).filter(Boolean); }
+            }
+            if (Array.isArray(pincodes)) {
+                await connection.query('DELETE FROM seller_product_pincodes WHERE seller_product_id = ?', [offerId]);
+                if (pincodes.length > 0) {
+                    const pincodeValues = pincodes.map(p => [offerId, String(p).trim()]);
+                    await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES ?', [pincodeValues]);
+                }
+            }
+        }
+
         // Update variants if provided
         let variants = body.variants;
         if (typeof variants === 'string') {
@@ -582,7 +620,7 @@ exports.updateMerchantProduct = async (req, res) => {
         if (Array.isArray(variants) && variants.length > 0) {
             await connection.query('DELETE FROM seller_product_variants WHERE seller_product_id = ?', [offerId]);
             const variantValues = variants.map(v => {
-                let vImg = saveBase64Image(v.variant_image_url) || null;
+                let vImg = saveBase64Image(v.variant_image_url || v.image_url) || null;
                 let vImgs = [];
                 if (Array.isArray(v.variant_image_urls)) {
                     vImgs = v.variant_image_urls.map(img => saveBase64Image(img)).filter(Boolean);
@@ -596,7 +634,7 @@ exports.updateMerchantProduct = async (req, res) => {
                     v.color || null,
                     v.size || null,
                     v.sku || `${sku}-${v.color || ''}-${v.size || ''}`,
-                    parseFloat(v.price || sellingPrice),
+                    parseFloat(v.price || v.selling_price || sellingPrice),
                     parseFloat(v.mrp || mrp),
                     parseInt(v.quantity || v.stock_quantity || 10, 10),
                     vImg,
