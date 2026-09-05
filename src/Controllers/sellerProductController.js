@@ -859,11 +859,33 @@ exports.updateSellerOffer = async (req, res) => {
             await connection.query(updateQuery, [...values, id]);
         }
 
-        if (Array.isArray(pincodes)) {
+        const deliveryType = req.body.delivery_type || req.body.pincode_type;
+        const isUniversalProvided = req.body.is_universal_pincode !== undefined || req.body.is_pan_india !== undefined || deliveryType !== undefined;
+        let pincodeList = pincodes;
+        if (typeof pincodeList === 'string') {
+            try { pincodeList = JSON.parse(pincodeList); } catch (e) { pincodeList = pincodeList.split(',').map(p => p.trim()).filter(Boolean); }
+        }
+
+        if (isUniversalProvided) {
+            const isUniversal = (deliveryType === 'universal' || deliveryType === 'pan_india' || req.body.is_pan_india === true || req.body.is_pan_india === 1 || req.body.is_pan_india === 'true' || req.body.is_universal_pincode === 1 || req.body.is_universal_pincode === '1' || req.body.is_universal_pincode === true || req.body.is_universal_pincode === 'true') ? 1 : 0;
+            const [spRow] = await connection.query('SELECT product_id FROM seller_products WHERE id = ?', [id]);
+            if (spRow.length > 0) {
+                await connection.query('UPDATE products SET is_universal_pincode = ? WHERE id = ?', [isUniversal, spRow[0].product_id]);
+            }
             await connection.query('DELETE FROM seller_product_pincodes WHERE seller_product_id = ?', [id]);
-            if (pincodes.length > 0) {
-                const pincodeValues = pincodes.map(pincode => [id, pincode.trim()]);
+            if (isUniversal === 1) {
+                await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES (?, ?)', [id, 'ALL']);
+            } else if (Array.isArray(pincodeList) && pincodeList.length > 0) {
+                const pincodeValues = pincodeList.map(pincode => [id, String(pincode).trim()]);
                 await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES ?', [pincodeValues]);
+            }
+        } else if (pincodeList !== undefined) {
+            if (Array.isArray(pincodeList)) {
+                await connection.query('DELETE FROM seller_product_pincodes WHERE seller_product_id = ?', [id]);
+                if (pincodeList.length > 0) {
+                    const pincodeValues = pincodeList.map(pincode => [id, String(pincode).trim()]);
+                    await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES ?', [pincodeValues]);
+                }
             }
         }
 
