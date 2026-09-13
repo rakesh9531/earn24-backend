@@ -832,6 +832,7 @@ exports.getAllSellerOffers = async (req, res) => {
 
 exports.updateSellerOffer = async (req, res) => {
     const { id } = req.params;
+    console.log(`[UPDATE OFFER] Offer ID: ${id}, Body:`, req.body);
     const { sku, mrp, sellingPrice, purchasePrice, quantity, is_active, pincodes, low_stock_threshold, minimum_order_quantity } = req.body;
     const connection = await db.getConnection();
 
