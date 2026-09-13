@@ -239,6 +239,13 @@ async function testDatabaseConnection() {
       console.log("Database verification: user_business_volume columns already verified.");
     }
 
+    // Auto-migration for order_items seller_product_variant_id column
+    const [oiVariantCols] = await connection.query("SHOW COLUMNS FROM order_items LIKE 'seller_product_variant_id'").catch(() => [[]]);
+    if (oiVariantCols.length === 0) {
+      await connection.query("ALTER TABLE order_items ADD COLUMN seller_product_variant_id INT NULL AFTER seller_product_id").catch(() => {});
+      console.log("Database updated: Added seller_product_variant_id column to 'order_items' table.");
+    }
+
     // Auto-migration for user binary structure
     console.log("Running auto-migrations for binary schema verification...");
     const [userColumns] = await connection.query("SHOW COLUMNS FROM users");
