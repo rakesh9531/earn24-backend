@@ -938,7 +938,7 @@ exports.getHomeScreenData = async (req, res) => {
                 WHERE pc.is_active = TRUE AND pc.is_deleted = FALSE 
                   AND p.is_active = TRUE AND p.is_deleted = FALSE 
                   AND sp.is_active = TRUE AND sp.selling_price > 0 
-                  AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
+                  AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode = 'ALL' OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
                 ORDER BY pc.id ASC
             `, [pincode]);
             parentCategories = parents;
@@ -952,7 +952,7 @@ exports.getHomeScreenData = async (req, res) => {
                 WHERE psc.is_active = TRUE AND psc.is_deleted = FALSE 
                   AND p.is_active = TRUE AND p.is_deleted = FALSE 
                   AND sp.is_active = TRUE AND sp.selling_price > 0 
-                  AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
+                  AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode = 'ALL' OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
                 ORDER BY psc.name ASC
             `, [pincode]);
             subCategories = subs;
@@ -1022,6 +1022,7 @@ exports.getHomeScreenData = async (req, res) => {
                     WHERE (
                         p.is_universal_pincode = 1 
                         OR spp.pincode = ? 
+                        OR spp.pincode = 'ALL'
                         OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id)
                     ) AND p.category_id = ? AND sp.is_active = TRUE
                     GROUP BY sp.id ORDER BY p.popularity DESC LIMIT 10
@@ -1134,9 +1135,9 @@ exports.getRelatedProducts = async (req, res) => {
         if (isPincodeProvided) {
             const strictPincodeQuery = `
                 SELECT * FROM (
-                    (SELECT 1 as priority, ${baseSelect} FROM seller_products sp JOIN sellers s ON sp.seller_id = s.id LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant' JOIN products p ON sp.product_id = p.id LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id LEFT JOIN brands b ON p.brand_id = b.id LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id WHERE p.category_id = ? AND (spp.pincode = ? OR spp.pincode IS NULL) AND p.id != ? AND sp.is_active = TRUE GROUP BY sp.id)
+                    (SELECT 1 as priority, ${baseSelect} FROM seller_products sp JOIN sellers s ON sp.seller_id = s.id LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant' JOIN products p ON sp.product_id = p.id LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id LEFT JOIN brands b ON p.brand_id = b.id LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id WHERE p.category_id = ? AND (spp.pincode = ? OR spp.pincode = 'ALL' OR spp.pincode IS NULL) AND p.id != ? AND sp.is_active = TRUE GROUP BY sp.id)
                     UNION ALL
-                    (SELECT 2 as priority, ${baseSelect} FROM seller_products sp JOIN sellers s ON sp.seller_id = s.id LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant' JOIN products p ON sp.product_id = p.id LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id LEFT JOIN brands b ON p.brand_id = b.id LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id WHERE (spp.pincode = ? OR spp.pincode IS NULL) AND p.id != ? AND sp.is_active = TRUE AND p.id NOT IN (SELECT p_inner.id FROM seller_products sp_inner JOIN products p_inner ON sp_inner.product_id = p_inner.id LEFT JOIN seller_product_pincodes spp_inner ON sp_inner.id = spp_inner.seller_product_id WHERE p_inner.category_id = ? AND (spp_inner.pincode = ? OR spp_inner.pincode IS NULL)) GROUP BY sp.id)
+                    (SELECT 2 as priority, ${baseSelect} FROM seller_products sp JOIN sellers s ON sp.seller_id = s.id LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant' JOIN products p ON sp.product_id = p.id LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id LEFT JOIN brands b ON p.brand_id = b.id LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id WHERE (spp.pincode = ? OR spp.pincode = 'ALL' OR spp.pincode IS NULL) AND p.id != ? AND sp.is_active = TRUE AND p.id NOT IN (SELECT p_inner.id FROM seller_products sp_inner JOIN products p_inner ON sp_inner.product_id = p_inner.id LEFT JOIN seller_product_pincodes spp_inner ON sp_inner.id = spp_inner.seller_product_id WHERE p_inner.category_id = ? AND (spp_inner.pincode = ? OR spp_inner.pincode = 'ALL' OR spp_inner.pincode IS NULL)) GROUP BY sp.id)
                 ) as combined_results ORDER BY priority ASC, RAND() LIMIT ?
             `;
             const [rows] = await db.query(strictPincodeQuery, [categoryId, pincode, masterProductId, pincode, masterProductId, categoryId, pincode, G_LIMIT]);
