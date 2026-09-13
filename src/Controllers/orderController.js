@@ -336,16 +336,19 @@ exports.getOrderDetails = async (req, res) => {
         const addressQuery = `SELECT * FROM user_addresses WHERE id = ?`;
         const [addressRows] = await db.query(addressQuery, [orderRows[0].shipping_address_id]);
 
+        const [oiCols] = await db.query("SHOW COLUMNS FROM order_items LIKE 'seller_product_variant_id'").catch(() => [[]]);
+        const hasVariantCol = oiCols && oiCols.length > 0;
+
         const itemsQuery = `
             SELECT oi.*, p.name as master_product_name, p.main_image_url, b.name as brand_name,
-                   spv.sku as variant_sku, spv.color, spv.size, spv.title as variant_title,
+                   ${hasVariantCol ? "spv.sku as variant_sku, spv.color, spv.size, spv.title as variant_title," : "'' as variant_sku, '' as color, '' as size, '' as variant_title,"}
                    IFNULL(sp.return_window_days, 7) as return_window_days, 
                    IFNULL(sp.is_returnable, 1) as is_returnable
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
-            LEFT JOIN seller_product_variants spv ON oi.seller_product_variant_id = spv.id
+            ${hasVariantCol ? 'LEFT JOIN seller_product_variants spv ON oi.seller_product_variant_id = spv.id' : ''}
             WHERE oi.order_id = ?
         `;
         const [itemRows] = await db.query(itemsQuery, [orderId]);
@@ -363,12 +366,36 @@ exports.getOrderDetails = async (req, res) => {
             return_window_days: returnWindowDays,
             is_returnable: isReturnable ? 1 : 0,
             shipping_address: addressRows[0] ? new Address(addressRows[0]) : null,
-            items: itemRows.map(item => new OrderItem({
-                ...item,
-                brand_name: item.brand_name || '',
-                variant_title: item.variant_title || (item.color ? `${item.color} ${item.size || ''}` : ''),
-                sku: item.variant_sku || item.sku || ''
-            })),
+            items: itemRows.map(item => {
+                let vTitle = item.variant_title || '';
+                let vSku = item.variant_sku || item.sku || '';
+                let vColor = item.color || '';
+                let vSize = item.size || '';
+                
+                if (item.attributes_snapshot) {
+                    try {
+                        const snap = typeof item.attributes_snapshot === 'string' ? JSON.parse(item.attributes_snapshot) : item.attributes_snapshot;
+                        if (snap) {
+                            if (!vTitle && snap['Selected Variant']) vTitle = snap['Selected Variant'];
+                            if (!vTitle && snap['Title']) vTitle = snap['Title'];
+                            if (!vTitle && snap['Color'] && snap['Size']) vTitle = `${snap['Color']} ${snap['Size']}`;
+                            if (!vColor && snap['Color']) vColor = snap['Color'];
+                            if (!vColor && snap['color']) vColor = snap['color'];
+                            if (!vSize && snap['Size']) vSize = snap['Size'];
+                            if (!vSize && snap['size']) vSize = snap['size'];
+                            if (!vSku && snap['SKU']) vSku = snap['SKU'];
+                            if (!vSku && snap['sku']) vSku = snap['sku'];
+                        }
+                    } catch(e) {}
+                }
+                
+                return new OrderItem({
+                    ...item,
+                    brand_name: item.brand_name || '',
+                    variant_title: vTitle || (vColor ? `${vColor} ${vSize || ''}`.trim() : ''),
+                    sku: vSku
+                });
+            }),
             return_request: returnRows && returnRows[0] ? {
                 ...returnRows[0],
                 admin_remarks: returnRows[0].admin_remarks || returnRows[0].reject_reason || '',
