@@ -300,13 +300,6 @@ exports.completeDelivery = async (req, res) => {
         );
 
         if (updateResult.affectedRows > 0) {
-            console.log(`[Delivery] Order ${orderId} delivered. Return window expiry set. BV tracking executed...`);
-            
-            // 2. Trigger BV Tracking (Updates items, orders, users, and total pool bv)
-            const buyerIdForPromotion = await commissionService.processOrderForCommissions(connection, orderId);
-
-            // 3. Profit distribution will be processed by scheduled mlmDistributionJob after return window policy (7 days)
-            // (or immediately if return window is 0 days)
             const [winCheck] = await connection.query(`
                 SELECT MIN(IFNULL(sp.return_window_days, 7)) as min_window
                 FROM order_items oi
@@ -315,9 +308,12 @@ exports.completeDelivery = async (req, res) => {
             `, [orderId]).catch(() => [[{ min_window: 7 }]]);
 
             if (winCheck[0] && winCheck[0].min_window === 0) {
-                await distributionService.processOrderDistribution(connection, orderId);
+                await commissionService.processOrderForCommissions(connection, orderId).catch(() => {});
+                await distributionService.processOrderDistribution(connection, orderId).catch(() => {});
                 await connection.query('UPDATE order_items SET is_mlm_distributed = 1 WHERE order_id = ?', [orderId]).catch(() => {});
                 await connection.query('UPDATE orders SET is_mlm_distributed = 1 WHERE id = ?', [orderId]).catch(() => {});
+            } else {
+                console.log(`[Delivery] Order ${orderId} delivered. BV & Cashback distribution held for 7-day return window policy...`);
             }
 
             await connection.commit();

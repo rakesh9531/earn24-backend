@@ -337,18 +337,21 @@ exports.getOrderDetails = async (req, res) => {
         const [addressRows] = await db.query(addressQuery, [orderRows[0].shipping_address_id]);
 
         const itemsQuery = `
-            SELECT oi.*, p.main_image_url, 
+            SELECT oi.*, p.name as master_product_name, p.main_image_url, b.name as brand_name,
+                   spv.sku as variant_sku, spv.color, spv.size, spv.title as variant_title,
                    IFNULL(sp.return_window_days, 7) as return_window_days, 
                    IFNULL(sp.is_returnable, 1) as is_returnable
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
+            LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN seller_product_variants spv ON oi.seller_product_variant_id = spv.id
             WHERE oi.order_id = ?
         `;
         const [itemRows] = await db.query(itemsQuery, [orderId]);
 
         const [returnRows] = await db.query(
-            `SELECT id, status, request_type, reason, created_at FROM order_returns WHERE order_id = ? ORDER BY id DESC LIMIT 1`,
+            `SELECT id, status, request_type, reason, admin_remarks, reject_reason, refund_amount, created_at, updated_at FROM order_returns WHERE order_id = ? ORDER BY id DESC LIMIT 1`,
             [orderId]
         ).catch(() => [[]]);
 
@@ -360,8 +363,17 @@ exports.getOrderDetails = async (req, res) => {
             return_window_days: returnWindowDays,
             is_returnable: isReturnable ? 1 : 0,
             shipping_address: addressRows[0] ? new Address(addressRows[0]) : null,
-            items: itemRows.map(item => new OrderItem(item)),
-            return_request: returnRows && returnRows[0] ? returnRows[0] : null
+            items: itemRows.map(item => new OrderItem({
+                ...item,
+                brand_name: item.brand_name || '',
+                variant_title: item.variant_title || (item.color ? `${item.color} ${item.size || ''}` : ''),
+                sku: item.variant_sku || item.sku || ''
+            })),
+            return_request: returnRows && returnRows[0] ? {
+                ...returnRows[0],
+                admin_remarks: returnRows[0].admin_remarks || returnRows[0].reject_reason || '',
+                reject_reason: returnRows[0].reject_reason || returnRows[0].admin_remarks || ''
+            } : null
         });
 
         res.status(200).json({ status: true, data: orderData });
