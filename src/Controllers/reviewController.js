@@ -1,4 +1,4 @@
-const db = require('../config/db');
+const db = require('../../db');
 
 // Helper to recalculate average rating and total reviews for a product & seller_product
 async function recalculateProductRating(productId, sellerProductId = null) {
