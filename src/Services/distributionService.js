@@ -25,9 +25,9 @@ exports.processOrderDistribution = async (connection, orderId) => {
         const companySharePct = settings.profit_company_share_pct || 20.0;
         const yearMonth = new Date().getFullYear() * 100 + (new Date().getMonth() + 1);
 
-        // 3. Get Order Items (FIXED JOIN for GST)
+        // 3. Get Order Items (FIXED JOIN for GST & Admin Margin for Merchant Products)
         const [items] = await connection.query(`
-            SELECT oi.id as order_item_id, oi.price_per_unit, oi.quantity, sp.purchase_price, h.gst_percentage
+            SELECT oi.id as order_item_id, oi.price_per_unit, oi.quantity, sp.purchase_price, sp.admin_margin_percent, h.gst_percentage
             FROM order_items oi
             JOIN seller_products sp ON oi.seller_product_id = sp.id
             JOIN products p ON sp.product_id = p.id
@@ -35,9 +35,20 @@ exports.processOrderDistribution = async (connection, orderId) => {
             WHERE oi.order_id = ?`, [orderId]);
 
         for (const item of items) {
-            // A. Calculate Net Profit on Item (Anti-Tax Base Price)
-            const basePrice = item.price_per_unit / (1 + ((item.gst_percentage || 0) / 100));
-            const netProfitOnItem = (basePrice - item.purchase_price) * item.quantity;
+            let netProfitPerUnit = 0;
+            const price = parseFloat(item.price_per_unit) || 0;
+            const adminMarginPct = parseFloat(item.admin_margin_percent || 0);
+
+            if (adminMarginPct > 0) {
+                // Merchant / Seller product with Admin Margin Percentage
+                netProfitPerUnit = price * (adminMarginPct / 100);
+            } else {
+                // Admin product with Purchase Price
+                const basePrice = price / (1 + ((parseFloat(item.gst_percentage) || 0) / 100));
+                netProfitPerUnit = basePrice - (parseFloat(item.purchase_price) || 0);
+            }
+
+            const netProfitOnItem = netProfitPerUnit * item.quantity;
 
             if (netProfitOnItem <= 0) {
                 console.log(`[MLM] Skipping Distribution: Profit on item ${item.order_item_id} is 0 or negative.`);
@@ -46,7 +57,7 @@ exports.processOrderDistribution = async (connection, orderId) => {
 
             // B. Calculate Distributable Profit (80% by default)
             const distributableProfit = netProfitOnItem * ((100 - companySharePct) / 100);
-            console.log(`[MLM] Net Profit: ${netProfitOnItem.toFixed(2)}, Distributable (80%): ${distributableProfit.toFixed(2)}`);
+            console.log(`[MLM] Net Profit: ${netProfitOnItem.toFixed(2)}, Distributable (${100 - companySharePct}%): ${distributableProfit.toFixed(2)}`);
 
             // --- 4. START 15-FUNDS DISTRIBUTION ---
 
