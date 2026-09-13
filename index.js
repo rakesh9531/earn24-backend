@@ -187,6 +187,7 @@ app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 app.use('/uploads', express.static('src/uploads'));
 app.use('/uploads', express.static('src/uploads/brand-logos'));
 app.use('/uploads/kyc-docs', express.static(path.join(__dirname, 'src/uploads/kyc-docs')));
+app.use('/uploads/reviews', express.static(path.join(__dirname, 'src/uploads/reviews')));
 
 
 // Serve static files
@@ -245,6 +246,54 @@ async function testDatabaseConnection() {
       await connection.query("ALTER TABLE order_items ADD COLUMN seller_product_variant_id INT NULL AFTER seller_product_id").catch(() => {});
       console.log("Database updated: Added seller_product_variant_id column to 'order_items' table.");
     }
+
+    // Auto-migration for product_reviews table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS \`product_reviews\` (
+        \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+        \`user_id\` INT NULL,
+        \`product_id\` INT NOT NULL,
+        \`order_id\` INT NULL,
+        \`order_item_id\` INT NULL,
+        \`seller_product_id\` INT NULL,
+        \`rating\` DECIMAL(2,1) NOT NULL DEFAULT 5.0,
+        \`review_title\` VARCHAR(255) NULL,
+        \`review_text\` TEXT NULL,
+        \`media_urls\` JSON NULL,
+        \`status\` ENUM('PENDING', 'APPROVED', 'REJECTED') NOT NULL DEFAULT 'APPROVED',
+        \`is_verified_purchase\` TINYINT(1) DEFAULT 1,
+        \`created_by_admin\` TINYINT(1) DEFAULT 0,
+        \`admin_user_name\` VARCHAR(100) NULL,
+        \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        \`updated_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY \`idx_product_status\` (\`product_id\`, \`status\`),
+        KEY \`idx_user_product\` (\`user_id\`, \`product_id\`)
+      ) ENGINE=InnoDB;
+    `).catch(err => console.error("Review migration error:", err));
+
+    // Auto-migration for system_settings table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS \`system_settings\` (
+        \`setting_key\` VARCHAR(100) PRIMARY KEY,
+        \`setting_value\` TEXT NOT NULL,
+        \`updated_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB;
+    `).catch(() => {});
+
+    await connection.query(`
+      INSERT IGNORE INTO \`system_settings\` (\`setting_key\`, \`setting_value\`) VALUES ('review_auto_approve', '1')
+    `).catch(() => {});
+
+    // Ensure avg_rating & total_reviews on products & seller_products
+    const [prodCols] = await connection.query("SHOW COLUMNS FROM products LIKE 'avg_rating'");
+    if (prodCols.length === 0) {
+      await connection.query("ALTER TABLE products ADD COLUMN avg_rating DECIMAL(3,2) DEFAULT 0.00, ADD COLUMN total_reviews INT DEFAULT 0").catch(() => {});
+    }
+    const [spCols] = await connection.query("SHOW COLUMNS FROM seller_products LIKE 'avg_rating'");
+    if (spCols.length === 0) {
+      await connection.query("ALTER TABLE seller_products ADD COLUMN avg_rating DECIMAL(3,2) DEFAULT 0.00, ADD COLUMN total_reviews INT DEFAULT 0").catch(() => {});
+    }
+    console.log("Database verification: product_reviews & rating system schema verified.");
 
     // Auto-migration for user binary structure
     console.log("Running auto-migrations for binary schema verification...");
