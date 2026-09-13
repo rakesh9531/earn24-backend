@@ -88,6 +88,9 @@ router.use('/retailer/auth', retailerAuthRoutes);           // Login
 router.use('/retailer/inventory', retailerInventoryRoutes); // Inventory Management
 
 router.use('/delivery-app', deliveryAppRoute); // Inventory Management
+
+const reviewRoutes = require('./src/Routes/reviewRoute');
+router.use('/reviews', reviewRoutes);
 router.use('/rewards', rewardRoutes);
 router.use('/withdrawals', withdrawalRoutes);
 
