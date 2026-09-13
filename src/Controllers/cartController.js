@@ -72,6 +72,8 @@ exports.getCart = async (req, res) => {
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (COALESCE(spv.price, sp.selling_price) * (sp.admin_margin_percent / 100)) * (? / 100), ((COALESCE(spv.price, sp.selling_price) - IFNULL(sp.purchase_price, 0)) - ((COALESCE(spv.price, sp.selling_price) * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
                 (
                     ? = '' 
+                    OR p.is_universal_pincode = 1
+                    OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = ci.seller_product_id AND spp_c.pincode = 'ALL')
                     OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = ci.seller_product_id)
                     OR EXISTS (SELECT 1 FROM seller_product_pincodes spp WHERE spp.seller_product_id = ci.seller_product_id AND spp.pincode = ?)
                 ) AS is_available
@@ -128,7 +130,23 @@ exports.addItemToCart = async (req, res) => {
         let actualSellerProductId = sellerProductId;
         const [spCheck] = await connection.query("SELECT id FROM seller_products WHERE id = ?", [sellerProductId]);
         if (spCheck.length === 0) {
-            const [spByProduct] = await connection.query("SELECT id FROM seller_products WHERE product_id = ? AND is_active = TRUE LIMIT 1", [sellerProductId]);
+            const userPincode = req.body.pincode || '';
+            const [spByProduct] = await connection.query(`
+                SELECT sp.id 
+                FROM seller_products sp 
+                JOIN products p ON sp.product_id = p.id
+                WHERE sp.product_id = ? AND sp.is_active = TRUE
+                ORDER BY 
+                  (CASE 
+                    WHEN (
+                      ? = '' 
+                      OR p.is_universal_pincode = 1 
+                      OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
+                      OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id)
+                      OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = ?)
+                    ) THEN 1 ELSE 2 END) ASC,
+                  sp.selling_price ASC LIMIT 1
+            `, [sellerProductId, userPincode, userPincode]);
             if (spByProduct.length > 0) {
                 actualSellerProductId = spByProduct[0].id;
             }
@@ -273,8 +291,8 @@ exports.validateCartForCheckout = async (req, res) => {
             `SELECT 
                 sp.id as offer_id,
                 p.is_universal_pincode,
-                (SELECT COUNT(*) FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id) as restriction_count,
-                EXISTS(SELECT 1 FROM seller_product_pincodes spp WHERE spp.seller_product_id = sp.id AND spp.pincode = ?) as is_matched
+                (SELECT COUNT(*) FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode != 'ALL') as restriction_count,
+                EXISTS(SELECT 1 FROM seller_product_pincodes spp WHERE spp.seller_product_id = sp.id AND (spp.pincode = ? OR spp.pincode = 'ALL')) as is_matched
             FROM seller_products sp
             JOIN products p ON sp.product_id = p.id
             WHERE sp.id IN (?)`,
