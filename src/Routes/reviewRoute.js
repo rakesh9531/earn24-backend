@@ -3,7 +3,7 @@ const router = express.Router();
 const multer = require('multer');
 const path = require('path');
 const reviewController = require('../Controllers/reviewController');
-const auth = require('../Middleware/auth');
+const { auth, can } = require('../Middleware/auth');
 
 // Setup Multer Storage for Review Images & Videos
 const storage = multer.diskStorage({
