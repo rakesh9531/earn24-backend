@@ -163,6 +163,10 @@ async function ensureTablesExist() {
         await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN refund_status VARCHAR(50) DEFAULT 'NOT_INITIATED';`).catch(() => {});
+        await db.query(`ALTER TABLE order_items ADD COLUMN is_mlm_distributed TINYINT(1) DEFAULT 0;`).catch(() => {});
+        await db.query(`ALTER TABLE order_items ADD COLUMN delivered_at DATETIME NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_items ADD COLUMN return_window_expiry_date DATETIME NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE orders ADD COLUMN is_mlm_distributed TINYINT(1) DEFAULT 0;`).catch(() => {});
         console.log("✅ Auto-verified seller_product_variants, delivery_agents, return_window_days, orders, user_wallet_transactions & order_returns columns.");
     } catch (err) {
         console.warn("Table auto-creation warning:", err.message);
@@ -523,6 +527,7 @@ testDatabaseConnection();
 scheduleQualificationJob();
 scheduleFundJob();
 scheduleBinaryMatchingJob();
+require('./src/jobs/mlmDistributionJob');
 console.log('Scheduled MLM cron jobs have been initialized.');
 
 

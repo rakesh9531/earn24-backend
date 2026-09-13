@@ -110,9 +110,10 @@ exports.getMyReturnRequests = async (req, res) => {
     const userId = req.user.id;
     try {
         const [rows] = await db.query(`
-            SELECT r.*, o.order_number,
+            SELECT r.*, r.admin_remarks as reject_reason, o.order_number,
                    m.business_name as merchant_name,
-                   p.name as product_name
+                   p.name as product_name,
+                   COALESCE(p.main_image_url, '') as main_image_url
             FROM order_returns r
             JOIN orders o ON r.order_id = o.id
             LEFT JOIN merchants m ON r.merchant_id = m.id
@@ -123,7 +124,14 @@ exports.getMyReturnRequests = async (req, res) => {
             ORDER BY r.created_at DESC
         `, [userId]);
 
-        res.json({ status: true, data: rows });
+        const formattedRows = rows.map(r => ({
+            ...r,
+            reject_reason: r.admin_remarks || r.merchant_notes || null,
+            admin_remarks: r.admin_remarks || r.merchant_notes || null,
+            status_display: r.status === 'REJECTED' ? `REJECTED: ${r.admin_remarks || 'Not approved'}` : r.status
+        }));
+
+        res.json({ status: true, data: formattedRows });
     } catch (err) {
         console.error('[Return] getMyReturnRequests error:', err);
         res.status(500).json({ status: false, message: 'Could not fetch requests.' });
