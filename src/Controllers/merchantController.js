@@ -389,7 +389,15 @@ exports.getMerchantProducts = async (req, res) => {
     const merchantId = req.user.id;
     try {
         const query = `
-            SELECT sp.*, p.name as product_name, p.main_image_url, p.is_universal_pincode,
+            SELECT sp.*, 
+                p.name as product_name, 
+                p.description as product_description,
+                p.main_image_url, 
+                p.is_universal_pincode,
+                c.name as category_name,
+                b.name as brand_name,
+                h.hsn_code,
+                IFNULL(h.gst_percentage, 0) as gst_percentage,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * 0.80, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * 0.80)) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -417,6 +425,8 @@ exports.getMerchantProducts = async (req, res) => {
             FROM seller_products sp
             JOIN sellers s ON sp.seller_id = s.id
             JOIN products p ON sp.product_id = p.id
+            LEFT JOIN categories c ON p.category_id = c.id
+            LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant'
             ORDER BY sp.created_at DESC
@@ -424,6 +434,8 @@ exports.getMerchantProducts = async (req, res) => {
         const [rows] = await db.query(query, [merchantId]);
         const processedData = rows.map(row => ({
             ...row,
+            category: row.category_name || row.category || 'General',
+            brand: row.brand_name || row.brand || 'No Brand',
             attributes: row.attributes ? JSON.parse(row.attributes) : [],
             variants: row.variants ? JSON.parse(row.variants).map(v => ({
                 ...v,
