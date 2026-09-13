@@ -1598,13 +1598,20 @@ exports.getProductForUser = async (req, res) => {
 
   try {
     const activePincode = (pincode && pincode !== 'null' && pincode !== 'undefined') ? pincode : '';
+    
+    // Fetch system BV percentage setting
+    const [settingsRows] = await db.query(
+      "SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'",
+    );
+    const bvGenerationPct = settingsRows[0] ? parseFloat(settingsRows[0].setting_value) : 80.0;
+
     const query = `
             SELECT 
                 p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls, p.is_universal_pincode,
                 b.name as brand_name,
-                sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
-                s.display_name as seller_name,
-                GREATEST(0, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * 80 / 100) as bv_earned,
+                sp.id as offer_id, sp.seller_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.stock_quantity, sp.has_variants,
+                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (${bvGenerationPct} / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (${bvGenerationPct} / 100))) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
                     FROM product_attributes pa
@@ -1613,14 +1620,20 @@ exports.getProductForUser = async (req, res) => {
                     WHERE pa.product_id = p.id
                 ) as attributes,
                 (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                    FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id AND (spv.is_active = TRUE OR spv.is_active IS NULL)
+                ) as variants,
+                (
                     ? = '' 
                     OR p.is_universal_pincode = 1
+                    OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
                     OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id)
                     OR EXISTS (SELECT 1 FROM seller_product_pincodes spp WHERE spp.seller_product_id = sp.id AND spp.pincode = ?)
                 ) AS is_serviceable
             FROM products p
             JOIN seller_products sp ON p.id = sp.product_id
             JOIN sellers s ON sp.seller_id = s.id
+            LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE p.id = ? AND sp.is_active = TRUE
@@ -1641,13 +1654,20 @@ exports.getProductForUser = async (req, res) => {
     }
 
     const product = productRows[0];
+    product.id = product.product_id;
     product.is_serviceable = Boolean(product.is_serviceable);
+    product.has_variants = Boolean(product.has_variants);
+    product.bv_earned = parseFloat(product.bv_earned || 0).toFixed(2);
+
     // Parse JSON string fields into arrays for the frontend
     product.gallery_image_urls = product.gallery_image_urls
-      ? JSON.parse(product.gallery_image_urls)
+      ? (typeof product.gallery_image_urls === 'string' ? JSON.parse(product.gallery_image_urls) : product.gallery_image_urls)
       : [];
     product.attributes = product.attributes
-      ? JSON.parse(product.attributes)
+      ? (typeof product.attributes === 'string' ? JSON.parse(product.attributes) : product.attributes)
+      : [];
+    product.variants = product.variants
+      ? (typeof product.variants === 'string' ? JSON.parse(product.variants) : product.variants)
       : [];
 
     res.status(200).json({ status: true, data: product });
@@ -1779,11 +1799,18 @@ exports.getProductsByCategory = async (req, res) => {
     let queryParams = [];
     let countParams = [];
 
+    const variantsSubquery = `
+      (
+        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+        FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id AND (spv.is_active = TRUE OR spv.is_active IS NULL)
+      ) as variants
+    `;
+
     if (isPincodeProvided) {
       query = `
             SELECT 
-                p.id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
-                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
+                p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
+                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.stock_quantity, sp.has_variants,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (? / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -1791,7 +1818,8 @@ exports.getProductsByCategory = async (req, res) => {
                     JOIN attribute_values av ON pa.attribute_value_id = av.id
                     JOIN attributes attr ON av.attribute_id = attr.id
                     WHERE pa.product_id = p.id
-                ) as attributes
+                ) as attributes,
+                ${variantsSubquery}
             FROM products AS p
             JOIN seller_products AS sp ON p.id = sp.product_id
             LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
@@ -1815,8 +1843,8 @@ exports.getProductsByCategory = async (req, res) => {
     } else {
       query = `
             SELECT 
-                p.id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
-                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
+                p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
+                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.stock_quantity, sp.has_variants,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (? / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -1824,7 +1852,8 @@ exports.getProductsByCategory = async (req, res) => {
                     JOIN attribute_values av ON pa.attribute_value_id = av.id
                     JOIN attributes attr ON av.attribute_id = attr.id
                     WHERE pa.product_id = p.id
-                ) as attributes
+                ) as attributes,
+                ${variantsSubquery}
             FROM products AS p
             JOIN seller_products AS sp ON p.id = sp.product_id
             LEFT JOIN brands AS b ON p.brand_id = b.id
@@ -1852,8 +1881,12 @@ exports.getProductsByCategory = async (req, res) => {
 
     const formattedProducts = products.map(p => ({
       ...p,
-      attributes: p.attributes ? JSON.parse(p.attributes) : [],
-      gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : []
+      product_id: p.id,
+      has_variants: Boolean(p.has_variants),
+      bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
+      attributes: p.attributes ? (typeof p.attributes === 'string' ? JSON.parse(p.attributes) : p.attributes) : [],
+      gallery_image_urls: p.gallery_image_urls ? (typeof p.gallery_image_urls === 'string' ? JSON.parse(p.gallery_image_urls) : p.gallery_image_urls) : [],
+      variants: p.variants ? (typeof p.variants === 'string' ? JSON.parse(p.variants) : p.variants) : []
     }));
 
     res.status(200).json({
@@ -1896,11 +1929,18 @@ exports.getProductsBySubcategory = async (req, res) => {
     let queryParams = [];
     let countParams = [];
 
+    const variantsSubquery = `
+      (
+        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+        FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id AND (spv.is_active = TRUE OR spv.is_active IS NULL)
+      ) as variants
+    `;
+
     if (isPincodeProvided) {
       query = `
             SELECT 
-                p.id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
-                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
+                p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
+                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.stock_quantity, sp.has_variants,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (? / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -1908,7 +1948,8 @@ exports.getProductsBySubcategory = async (req, res) => {
                     JOIN attribute_values av ON pa.attribute_value_id = av.id
                     JOIN attributes attr ON av.attribute_id = attr.id
                     WHERE pa.product_id = p.id
-                ) as attributes
+                ) as attributes,
+                ${variantsSubquery}
             FROM products AS p
             JOIN seller_products AS sp ON p.id = sp.product_id
             LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
@@ -1932,8 +1973,8 @@ exports.getProductsBySubcategory = async (req, res) => {
     } else {
       query = `
             SELECT 
-                p.id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
-                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity,
+                p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
+                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.stock_quantity, sp.has_variants,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (? / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -1941,7 +1982,8 @@ exports.getProductsBySubcategory = async (req, res) => {
                     JOIN attribute_values av ON pa.attribute_value_id = av.id
                     JOIN attributes attr ON av.attribute_id = attr.id
                     WHERE pa.product_id = p.id
-                ) as attributes
+                ) as attributes,
+                ${variantsSubquery}
             FROM products AS p
             JOIN seller_products AS sp ON p.id = sp.product_id
             LEFT JOIN brands AS b ON p.brand_id = b.id
@@ -1969,8 +2011,12 @@ exports.getProductsBySubcategory = async (req, res) => {
 
     const formattedProducts = products.map(p => ({
       ...p,
-      attributes: p.attributes ? JSON.parse(p.attributes) : [],
-      gallery_image_urls: p.gallery_image_urls ? JSON.parse(p.gallery_image_urls) : []
+      product_id: p.id,
+      has_variants: Boolean(p.has_variants),
+      bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
+      attributes: p.attributes ? (typeof p.attributes === 'string' ? JSON.parse(p.attributes) : p.attributes) : [],
+      gallery_image_urls: p.gallery_image_urls ? (typeof p.gallery_image_urls === 'string' ? JSON.parse(p.gallery_image_urls) : p.gallery_image_urls) : [],
+      variants: p.variants ? (typeof p.variants === 'string' ? JSON.parse(p.variants) : p.variants) : []
     }));
 
     res.status(200).json({
