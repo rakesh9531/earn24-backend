@@ -73,17 +73,37 @@ exports.generateInvoicePDF = (order, user, seller) => {
         // Table Rows
         let i = 0;
         let position = tableTop + 20;
+        let activeSubtotal = 0;
+
         order.items.forEach(item => {
+            const isCancelled = item.item_status === 'CANCELLED' || item.status === 'CANCELLED';
+            const isReturned = item.item_status === 'RETURNED' || item.status === 'RETURNED' || item.return_status === 'REFUNDED';
+
+            let statusTag = "";
+            let itemQty = item.quantity;
+            let itemTotal = parseFloat(item.total_price || (item.quantity * item.price_per_unit) || 0);
+
+            if (isCancelled) {
+                statusTag = " [CANCELLED]";
+                itemTotal = 0;
+                itemQty = 0;
+            } else if (isReturned) {
+                statusTag = " [RETURNED]";
+                itemTotal = 0;
+            } else {
+                activeSubtotal += itemTotal;
+            }
+
             generateTableRow(
                 doc,
                 position,
                 i + 1,
-                item.product_name.substring(0, 25),
+                (item.product_name + statusTag).substring(0, 25),
                 item.hsn_code || "N/A",
-                item.quantity,
+                itemQty,
                 `${parseFloat(item.price_per_unit).toFixed(2)}`,
                 `${item.gst_percentage || 0}%`,
-                `${parseFloat(item.total_price).toFixed(2)}`
+                `${parseFloat(itemTotal).toFixed(2)}`
             );
             position += 20;
             i++;
@@ -93,20 +113,24 @@ exports.generateInvoicePDF = (order, user, seller) => {
         const summaryTop = position + 30;
         doc.moveTo(350, summaryTop).lineTo(550, summaryTop).stroke();
 
+        const displaySubtotal = activeSubtotal > 0 ? activeSubtotal : parseFloat(order.subtotal || 0);
+        const displayFee = parseFloat(order.delivery_fee || 0);
+        const displayGrandTotal = displaySubtotal + displayFee;
+
         doc.fontSize(10).font('Helvetica-Bold');
         doc.text("Subtotal:", 350, summaryTop + 10);
-        doc.font('Helvetica').text(`Rs. ${parseFloat(order.subtotal).toFixed(2)}`, 480, summaryTop + 10, { align: 'right' });
+        doc.font('Helvetica').text(`Rs. ${displaySubtotal.toFixed(2)}`, 480, summaryTop + 10, { align: 'right' });
 
         doc.font('Helvetica-Bold').text("Delivery Fee:", 350, summaryTop + 25);
-        doc.font('Helvetica').text(`Rs. ${parseFloat(order.delivery_fee).toFixed(2)}`, 480, summaryTop + 25, { align: 'right' });
+        doc.font('Helvetica').text(`Rs. ${displayFee.toFixed(2)}`, 480, summaryTop + 25, { align: 'right' });
 
         doc.moveTo(350, summaryTop + 40).lineTo(550, summaryTop + 40).stroke();
 
         doc.fontSize(12).font('Helvetica-Bold');
         doc.text("Grand Total:", 350, summaryTop + 50);
-        doc.text(`Rs. ${parseFloat(order.total_amount).toFixed(2)}`, 480, summaryTop + 50, { align: 'right' });
+        doc.text(`Rs. ${displayGrandTotal.toFixed(2)}`, 480, summaryTop + 50, { align: 'right' });
 
-        // Footer (Terms removed as requested)
+        // Footer
         doc.end();
     });
 };

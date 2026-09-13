@@ -445,7 +445,7 @@ exports.getMerchantOrders = async (req, res) => {
     try {
         const query = `
             SELECT o.id as order_id, o.order_number, o.order_status, o.payment_method, o.payment_status, o.subtotal, o.delivery_fee, o.total_amount, o.created_at,
-                   oi.id as item_id, oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price, oi.attributes_snapshot, p.main_image_url,
+                   oi.id as item_id, IFNULL(oi.item_status, o.order_status) as item_status, oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price, oi.attributes_snapshot, p.main_image_url,
                    u.full_name as customer_name, IFNULL(u.mobile_number, '') as customer_phone,
                    ua.address_line_1, ua.address_line_2, ua.city, ua.state, ua.pincode, ua.landmark
             FROM orders o
@@ -463,14 +463,20 @@ exports.getMerchantOrders = async (req, res) => {
         // Group rows into unique order objects
         const ordersMap = new Map();
         for (const r of rows) {
+            const isPaid = (r.payment_status === 'COMPLETED' || r.payment_status === 'PAID' || r.payment_method === 'WALLET' || r.payment_method === 'ONLINE' || r.payment_method === 'PAYU');
+            const displayPaymentStatus = isPaid ? 'PAID' : 'PENDING';
+            const fullPaymentDisplay = `${r.payment_method || 'COD'} (${displayPaymentStatus})`;
+
             if (!ordersMap.has(r.order_id)) {
                 ordersMap.set(r.order_id, {
                     order_id: r.order_id,
                     order_number: r.order_number,
                     order_status: r.order_status,
-                    product_status: r.order_status,
+                    product_status: r.item_status || r.order_status,
                     payment_method: r.payment_method || 'COD',
-                    payment_status: r.payment_status || 'PENDING',
+                    payment_status: displayPaymentStatus,
+                    full_payment_status: fullPaymentDisplay,
+                    payment_method_display: fullPaymentDisplay,
                     subtotal: parseFloat(r.subtotal || 0),
                     delivery_fee: parseFloat(r.delivery_fee || 0),
                     total_amount: parseFloat(r.total_amount || 0),
@@ -502,6 +508,7 @@ exports.getMerchantOrders = async (req, res) => {
                 quantity: r.quantity,
                 price_per_unit: r.price_per_unit,
                 total_price: r.total_price,
+                item_status: r.item_status,
                 image_url: variantImg,
                 main_image_url: variantImg,
                 attributes: snap

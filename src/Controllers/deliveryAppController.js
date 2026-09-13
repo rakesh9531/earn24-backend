@@ -284,21 +284,41 @@ exports.completeDelivery = async (req, res) => {
 
         const finalPaymentMethod = isPrepaid ? existingOrder.payment_method : (paymentMode || 'COD');
 
-        // 1. Update Order Status
+        // 1. Update Order & Order Items Status with Return Window Expiry Date
+        await connection.query(`
+            UPDATE order_items oi
+            JOIN seller_products sp ON oi.seller_product_id = sp.id
+            SET oi.delivered_at = NOW(),
+                oi.item_status = 'DELIVERED',
+                oi.return_window_expiry_date = DATE_ADD(NOW(), INTERVAL IFNULL(sp.return_window_days, 7) DAY)
+            WHERE oi.order_id = ?
+        `, [orderId]).catch(() => {});
+
         const [updateResult] = await connection.query(
             "UPDATE orders SET order_status='DELIVERED', payment_status='COMPLETED', payment_method=?, delivery_otp=NULL, delivered_at=NOW() WHERE id=? AND order_status != 'DELIVERED'", 
             [finalPaymentMethod, orderId]
         );
 
         if (updateResult.affectedRows > 0) {
-            console.log(`[Delivery] Order ${orderId} delivered. Triggering MLM...`);
+            console.log(`[Delivery] Order ${orderId} delivered. Return window expiry set. BV tracking executed...`);
             
             // 2. Trigger BV Tracking (Updates items, orders, users, and total pool bv)
-            // Returns the buyerId so we can run rank promotion AFTER the transaction
             const buyerIdForPromotion = await commissionService.processOrderForCommissions(connection, orderId);
 
-            // 3. Trigger 15-Fund Profit Distribution (Cashback, PB, Royalty, Pools)
-            await distributionService.processOrderDistribution(connection, orderId);
+            // 3. Profit distribution will be processed by scheduled mlmDistributionJob after return window policy (7 days)
+            // (or immediately if return window is 0 days)
+            const [winCheck] = await connection.query(`
+                SELECT MIN(IFNULL(sp.return_window_days, 7)) as min_window
+                FROM order_items oi
+                JOIN seller_products sp ON oi.seller_product_id = sp.id
+                WHERE oi.order_id = ?
+            `, [orderId]).catch(() => [[{ min_window: 7 }]]);
+
+            if (winCheck[0] && winCheck[0].min_window === 0) {
+                await distributionService.processOrderDistribution(connection, orderId);
+                await connection.query('UPDATE order_items SET is_mlm_distributed = 1 WHERE order_id = ?', [orderId]).catch(() => {});
+                await connection.query('UPDATE orders SET is_mlm_distributed = 1 WHERE id = ?', [orderId]).catch(() => {});
+            }
 
             await connection.commit();
 
