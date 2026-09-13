@@ -138,6 +138,7 @@ async function ensureTablesExist() {
         await db.query(`ALTER TABLE products ADD COLUMN is_returnable TINYINT DEFAULT 1;`).catch(() => {});
         await db.query(`ALTER TABLE seller_products ADD COLUMN return_window_days TINYINT DEFAULT 7;`).catch(() => {});
         await db.query(`ALTER TABLE seller_products ADD COLUMN is_returnable TINYINT DEFAULT 1;`).catch(() => {});
+        await db.query(`ALTER TABLE seller_products ADD COLUMN has_variants TINYINT(1) DEFAULT 0;`).catch(() => {});
         await db.query(`ALTER TABLE order_items ADD COLUMN item_status VARCHAR(50) DEFAULT 'ACTIVE';`).catch(() => {});
         await db.query(`ALTER TABLE order_items ADD COLUMN cancelled_at DATETIME NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_items ADD COLUMN cancellation_reason VARCHAR(255) NULL;`).catch(() => {});

@@ -795,6 +795,7 @@ const NewgetRelativeUrl = (file) => {
 // --- UPDATE MASTER PRODUCT (Supporting Image & Video Gallery) ---
 exports.updateMasterProduct = async (req, res) => {
   const { id } = req.params;
+  console.log(`[UPDATE MASTER PRODUCT] ID: ${id}, Body:`, req.body);
   const {
     name, description, categoryId, subcategoryId, brandId, hsnCodeId,
     attributeValueIds,
@@ -884,9 +885,22 @@ exports.updateMasterProduct = async (req, res) => {
         const hasVariants = req.body.has_variants === '1' || req.body.has_variants === 1 || req.body.has_variants === true || (Array.isArray(variantsList) && variantsList.length > 0);
 
         const [spRows] = await connection.query('SELECT id, selling_price, mrp FROM seller_products WHERE product_id = ?', [id]);
-        for (const sp of spRows) {
-            await connection.query('UPDATE seller_products SET has_variants = ? WHERE id = ?', [hasVariants ? 1 : 0, sp.id]);
-            await connection.query('DELETE FROM seller_product_variants WHERE seller_product_id = ?', [sp.id]);
+        let sellerProductIds = spRows.map(r => r.id);
+
+        if (sellerProductIds.length === 0) {
+            const [adminSeller] = await connection.query("SELECT id FROM sellers WHERE sellerable_type = 'Admin' LIMIT 1");
+            if (adminSeller.length > 0) {
+                const [insSp] = await connection.query(
+                    "INSERT INTO seller_products (seller_id, product_id, sku, mrp, selling_price, purchase_price, quantity) VALUES (?, ?, ?, 0, 0, 0, 100)",
+                    [adminSeller[0].id, id, `SKU-MASTER-${id}`]
+                );
+                sellerProductIds = [insSp.insertId];
+            }
+        }
+
+        for (const spId of sellerProductIds) {
+            await connection.query('UPDATE seller_products SET has_variants = ? WHERE id = ?', [hasVariants ? 1 : 0, spId]).catch(() => {});
+            await connection.query('DELETE FROM seller_product_variants WHERE seller_product_id = ?', [spId]);
             if (hasVariants && Array.isArray(variantsList) && variantsList.length > 0) {
                 const variantValues = variantsList.map(v => {
                     const vImg = v.variant_image_url || v.image_url || '';
@@ -895,14 +909,14 @@ exports.updateMasterProduct = async (req, res) => {
                         try { vImgs = JSON.parse(vImgs); } catch (e) { vImgs = [vImgs]; }
                     }
                     return [
-                        sp.id,
+                        spId,
                         id,
                         v.title || `${v.size || ''} ${v.color || ''}`.trim() || 'Variant',
                         v.color || null,
                         v.size || null,
                         v.sku || null,
-                        parseFloat(v.price || v.selling_price || sp.selling_price || 0),
-                        parseFloat(v.mrp || sp.mrp || 0),
+                        parseFloat(v.price || v.selling_price || 0),
+                        parseFloat(v.mrp || 0),
                         parseInt(v.quantity || v.stock_quantity || 10, 10),
                         vImg,
                         JSON.stringify(vImgs)
