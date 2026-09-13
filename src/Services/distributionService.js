@@ -270,7 +270,7 @@ async function recordProfitEntry(connection, userId, orderItemId, type, netProfi
         [
             userId, 
             amtCredited, 
-            `ORDER_${orderId}`, 
+            `ORDER_ITEM_${orderItemId}`, 
             `${type.replace(/_/g, ' ')}: ₹${amtCredited.toFixed(2)} from Order #${orderId}`
         ]
     );

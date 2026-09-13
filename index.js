@@ -442,8 +442,27 @@ async function testDatabaseConnection() {
       console.log("Migration: Added is_deleted to merchants table.");
     }
 
-    // Sync historical profit ledger records into user_wallet_transactions
+    // Clean up duplicate historical sync entries in user_wallet_transactions
+    try {
+      await connection.query(`
+        DELETE uwt_dup FROM user_wallet_transactions uwt_dup
+        WHERE uwt_dup.remarks LIKE '%Order Item #%'
+          AND EXISTS (
+            SELECT 1 FROM (SELECT * FROM user_wallet_transactions) uwt_orig
+            WHERE uwt_orig.user_id = uwt_dup.user_id
+              AND uwt_orig.id != uwt_dup.id
+              AND uwt_orig.amount = uwt_dup.amount
+              AND uwt_orig.source = 'level_income'
+              AND uwt_orig.remarks LIKE '%from Order #%'
+              AND ABS(TIMESTAMPDIFF(MINUTE, uwt_orig.created_at, uwt_dup.created_at)) <= 10
+          )
+      `);
+      console.log("Migration: Cleaned up duplicate wallet cashback entries.");
+    } catch (e) {
+      console.warn("Could not clean up duplicate wallet entries:", e.message);
+    }
 
+    // Sync historical profit ledger records into user_wallet_transactions
     console.log("Checking and syncing historical profit ledger records to user_wallet_transactions...");
     await connection.query(`
       INSERT INTO user_wallet_transactions (user_id, txn_type, amount, source, reference_id, remarks, created_at)
@@ -456,9 +475,14 @@ async function testDatabaseConnection() {
         CONCAT(REPLACE(pdl.distribution_type, '_', ' '), ' from Order Item #', pdl.order_item_id) AS remarks, 
         pdl.transaction_date AS created_at
       FROM profit_distribution_ledger pdl
+      LEFT JOIN order_items oi ON pdl.order_item_id = oi.id
       LEFT JOIN user_wallet_transactions uwt 
         ON uwt.user_id = pdl.user_id 
-        AND uwt.reference_id = CONCAT('ORDER_ITEM_', pdl.order_item_id)
+        AND (
+          uwt.reference_id = CONCAT('ORDER_ITEM_', pdl.order_item_id)
+          OR uwt.reference_id = CONCAT('ORDER_', oi.order_id)
+          OR uwt.remarks LIKE CONCAT('%from Order #', oi.order_id)
+        )
       WHERE uwt.id IS NULL
     `);
     console.log("Migration: Historical profit ledger records successfully synced to user_wallet_transactions.");
