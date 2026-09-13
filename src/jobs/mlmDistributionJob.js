@@ -42,8 +42,11 @@ async function processPendingReturnWindowDistributions() {
         for (const order of orders) {
             try {
                 await connection.beginTransaction();
-                console.log(`[MLM Distribution Job] Processing order #${order.order_id}...`);
+                console.log(`[MLM Distribution Job] Processing BV & MLM distribution for order #${order.order_id}...`);
                 
+                const commissionService = require('../Services/commissionService');
+                await commissionService.processOrderForCommissions(connection, order.order_id).catch(e => console.warn('[MLM Job] BV process notice:', e.message));
+
                 await distributionService.processOrderDistribution(connection, order.order_id);
 
                 await connection.query('UPDATE order_items SET is_mlm_distributed = 1 WHERE order_id = ?', [order.order_id]);

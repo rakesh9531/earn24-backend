@@ -17,7 +17,10 @@ class OrderItem {
     main_image_url,
     item_status,
     cancelled_at,
-    cancellation_reason
+    cancellation_reason,
+    brand_name,
+    variant_title,
+    sku
   }) {
     const timeZone = 'Asia/Kolkata';
 
@@ -36,6 +39,9 @@ class OrderItem {
     this.itemStatus = item_status || 'ACTIVE';
     this.cancelledAt = cancelled_at ? moment(cancelled_at).tz(timeZone).format('YYYY-MM-DD HH:mm:ss') : null;
     this.cancellationReason = cancellation_reason || null;
+    this.brandName = brand_name || '';
+    this.variantTitle = variant_title || '';
+    this.sku = sku || '';
 
     let parsedAttributes = null;
     let finalImageUrl = main_image_url || null;
