@@ -631,7 +631,7 @@ exports.addSellerOffer = async (req, res) => {
         }
         const sellerId = sellerRows[0].id;
 
-        const isPanIndia = req.body.is_pan_india === true || req.body.is_pan_india === 1 || req.body.is_pan_india === 'true' || (Array.isArray(pincodes) && (pincodes.includes('ALL') || pincodes.includes('PAN_INDIA')));
+        const isPanIndia = req.body.is_pan_india === true || req.body.is_pan_india === 1 || req.body.is_pan_india === 'true' || req.body.delivery_type === 'universal' || req.body.is_universal_pincode === 1 || req.body.is_universal_pincode === '1' || (Array.isArray(pincodes) && (pincodes.includes('ALL') || pincodes.includes('PAN_INDIA')));
 
         if (!productId || !mrp || !sellingPrice || !quantity || (!isPanIndia && (!Array.isArray(pincodes) || pincodes.length === 0)) || low_stock_threshold === undefined || minimum_order_quantity === undefined) {
             return res.status(400).json({ status: false, message: "Product, price, quantity, pincodes, and low stock threshold are required." });
