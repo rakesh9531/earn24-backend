@@ -425,7 +425,7 @@ exports.getMerchantProducts = async (req, res) => {
             FROM seller_products sp
             JOIN sellers s ON sp.seller_id = s.id
             JOIN products p ON sp.product_id = p.id
-            LEFT JOIN categories c ON p.category_id = c.id
+            LEFT JOIN product_categories c ON p.category_id = c.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant'
