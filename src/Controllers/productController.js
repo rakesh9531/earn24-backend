@@ -318,8 +318,10 @@ exports.createMasterProduct = async (req, res) => {
     try {
       await connection.beginTransaction();
 
+      const isUniversal = req.body.delivery_type === 'universal' || req.body.is_universal_pincode === 1 || req.body.is_universal_pincode === '1' || req.body.is_universal_pincode === true || req.body.is_universal_pincode === 'true' || req.body.is_pan_india === '1' || req.body.is_pan_india === true || req.body.delivery_type === undefined ? 1 : 0;
+
       // 4. Insert Product
-      const productQuery = `INSERT INTO products (name, slug, category_id, subcategory_id, brand_id, hsn_code_id, description, main_image_url, gallery_image_urls, is_approved, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      const productQuery = `INSERT INTO products (name, slug, category_id, subcategory_id, brand_id, hsn_code_id, description, main_image_url, gallery_image_urls, is_approved, is_active, is_universal_pincode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       const [result] = await connection.query(productQuery, [
         name,
         slug,
@@ -332,6 +334,7 @@ exports.createMasterProduct = async (req, res) => {
         JSON.stringify(galleryImageUrls),
         true,
         true,
+        isUniversal
       ]);
       const newProductId = result.insertId;
 
@@ -856,8 +859,11 @@ exports.updateMasterProduct = async (req, res) => {
       finalGallery = [...finalGallery, ...newUrls];
     }
 
-    fields.push("gallery_image_urls = ?");
-    values.push(JSON.stringify(finalGallery));
+    if (req.body.delivery_type !== undefined || req.body.is_universal_pincode !== undefined || req.body.is_pan_india !== undefined) {
+      const isUniversal = req.body.delivery_type === 'universal' || req.body.is_universal_pincode === 1 || req.body.is_universal_pincode === '1' || req.body.is_universal_pincode === true || req.body.is_universal_pincode === 'true' || req.body.is_pan_india === '1' || req.body.is_pan_india === true ? 1 : 0;
+      fields.push("is_universal_pincode = ?");
+      values.push(isUniversal);
+    }
 
     // --- 4. Attributes ---
     if (attributeValueIds) {
@@ -866,6 +872,47 @@ exports.updateMasterProduct = async (req, res) => {
         if (parsedIds.length > 0) {
             const productAttributeValues = parsedIds.map((vId) => [id, vId]);
             await connection.query(`INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?`, [productAttributeValues]);
+        }
+    }
+
+    // --- 4.5. Product Variants Synchronization ---
+    if (req.body.variants !== undefined || req.body.has_variants !== undefined) {
+        let variantsList = req.body.variants;
+        if (typeof variantsList === 'string') {
+            try { variantsList = JSON.parse(variantsList); } catch (e) { variantsList = []; }
+        }
+        const hasVariants = req.body.has_variants === '1' || req.body.has_variants === 1 || req.body.has_variants === true || (Array.isArray(variantsList) && variantsList.length > 0);
+
+        const [spRows] = await connection.query('SELECT id, selling_price, mrp FROM seller_products WHERE product_id = ?', [id]);
+        for (const sp of spRows) {
+            await connection.query('UPDATE seller_products SET has_variants = ? WHERE id = ?', [hasVariants ? 1 : 0, sp.id]);
+            await connection.query('DELETE FROM seller_product_variants WHERE seller_product_id = ?', [sp.id]);
+            if (hasVariants && Array.isArray(variantsList) && variantsList.length > 0) {
+                const variantValues = variantsList.map(v => {
+                    const vImg = v.variant_image_url || v.image_url || '';
+                    let vImgs = v.variant_image_urls || [];
+                    if (typeof vImgs === 'string') {
+                        try { vImgs = JSON.parse(vImgs); } catch (e) { vImgs = [vImgs]; }
+                    }
+                    return [
+                        sp.id,
+                        id,
+                        v.title || `${v.size || ''} ${v.color || ''}`.trim() || 'Variant',
+                        v.color || null,
+                        v.size || null,
+                        v.sku || null,
+                        parseFloat(v.price || v.selling_price || sp.selling_price || 0),
+                        parseFloat(v.mrp || sp.mrp || 0),
+                        parseInt(v.quantity || v.stock_quantity || 10, 10),
+                        vImg,
+                        JSON.stringify(vImgs)
+                    ];
+                });
+                await connection.query(
+                    'INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url, variant_image_urls) VALUES ?',
+                    [variantValues]
+                );
+            }
         }
     }
 
