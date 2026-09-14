@@ -2,13 +2,23 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 const reviewController = require('../Controllers/reviewController');
 const { auth, can } = require('../Middleware/auth');
+
+// Ensure upload directory exists
+const uploadDir = path.join(process.cwd(), 'src/uploads/reviews');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
 
 // Setup Multer Storage for Review Images & Videos
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, path.join(process.cwd(), 'src/uploads/reviews'));
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);

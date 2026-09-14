@@ -344,7 +344,7 @@ exports.getProductReviews = async (req, res) => {
     const [reviews] = await db.query(`
       SELECT 
         pr.*,
-        IF(pr.created_by_admin = 1, IFNULL(pr.admin_user_name, 'Verified Customer'), IFNULL(u.name, 'Earn24 Customer')) as user_name,
+        IF(pr.created_by_admin = 1, IFNULL(pr.admin_user_name, 'Verified Customer'), IFNULL(u.full_name, 'Earn24 Customer')) as user_name,
         IFNULL(u.user_pic, '') as user_avatar
       FROM product_reviews pr
       LEFT JOIN users u ON pr.user_id = u.id
@@ -422,7 +422,7 @@ exports.getAdminReviews = async (req, res) => {
     }
 
     if (search && search.trim().length > 0) {
-      whereClauses.push('(p.name LIKE ? OR u.name LIKE ? OR pr.review_text LIKE ? OR pr.admin_user_name LIKE ?)');
+      whereClauses.push('(p.name LIKE ? OR u.full_name LIKE ? OR pr.review_text LIKE ? OR pr.admin_user_name LIKE ?)');
       const pat = `%${search.trim()}%`;
       queryParams.push(pat, pat, pat, pat);
     }
@@ -434,7 +434,7 @@ exports.getAdminReviews = async (req, res) => {
         pr.*,
         p.name as product_name, p.main_image_url as product_image,
         sp.selling_price,
-        IF(pr.created_by_admin = 1, IFNULL(pr.admin_user_name, 'Admin Generated'), u.name) as user_name,
+        IF(pr.created_by_admin = 1, IFNULL(pr.admin_user_name, 'Admin Generated'), IFNULL(u.full_name, 'Earn24 Customer')) as user_name,
         u.email as user_email, u.mobile_number as user_mobile
       FROM product_reviews pr
       JOIN products p ON pr.product_id = p.id
@@ -608,7 +608,7 @@ exports.getMerchantReviews = async (req, res) => {
       SELECT 
         pr.*,
         p.name as product_name, p.main_image_url as product_image,
-        IF(pr.created_by_admin = 1, IFNULL(pr.admin_user_name, 'Verified Customer'), u.name) as user_name
+        IF(pr.created_by_admin = 1, IFNULL(pr.admin_user_name, 'Verified Customer'), IFNULL(u.full_name, 'Earn24 Customer')) as user_name
       FROM product_reviews pr
       JOIN seller_products sp ON pr.seller_product_id = sp.id
       JOIN sellers s ON sp.seller_id = s.id
