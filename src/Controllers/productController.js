@@ -1610,6 +1610,7 @@ exports.getProductForUser = async (req, res) => {
                 p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls, p.is_universal_pincode,
                 b.name as brand_name,
                 sp.id as offer_id, sp.seller_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
+                sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
                 COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (${bvGenerationPct} / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (${bvGenerationPct} / 100))) as bv_earned,
                 (
@@ -1811,6 +1812,7 @@ exports.getProductsByCategory = async (req, res) => {
             SELECT 
                 p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
                 b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
+                sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (? / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -1845,6 +1847,7 @@ exports.getProductsByCategory = async (req, res) => {
             SELECT 
                 p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
                 b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
+                sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (? / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
