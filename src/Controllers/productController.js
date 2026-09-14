@@ -166,6 +166,18 @@ const slugify = require("../utils/slugify");
 const path = require("path");
 const fs = require("fs");
 
+// Auto-migrate missing warranty columns in seller_products table on MySQL server
+(async () => {
+  try {
+    await db.query("ALTER TABLE seller_products ADD COLUMN warranty_type VARCHAR(50) NULL DEFAULT 'no_warranty'").catch(() => {});
+    await db.query("ALTER TABLE seller_products ADD COLUMN warranty_months INT NULL DEFAULT 0").catch(() => {});
+    await db.query("ALTER TABLE seller_products ADD COLUMN warranty_covered_by VARCHAR(255) NULL").catch(() => {});
+    await db.query("ALTER TABLE seller_products ADD COLUMN warranty_period VARCHAR(100) NULL").catch(() => {});
+  } catch (e) {
+    // Columns exist
+  }
+})();
+
 // Helper function to safely delete files
 const deleteFile = (filePath) => {
   if (!filePath) return;
