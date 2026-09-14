@@ -7,6 +7,24 @@ const IST   = 'Asia/Kolkata';
 const RETURN_WINDOW_DAYS      = 7;
 const REPLACEMENT_WINDOW_DAYS = 7;
 
+let isMigrationChecked = false;
+async function ensureReturnTableColumns() {
+    if (isMigrationChecked) return;
+    try {
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS variant_attribute_id INT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS reverse_awb_code VARCHAR(100) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS reverse_courier_name VARCHAR(100) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS replacement_awb_code VARCHAR(100) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS replacement_courier_name VARCHAR(100) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS pickup_otp VARCHAR(10) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS delivery_otp VARCHAR(10) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS rejection_reason VARCHAR(255) NULL;`).catch(() => {});
+        isMigrationChecked = true;
+    } catch (e) {
+        console.warn('[returnController] Auto-migration check warning:', e.message);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────
 // CUSTOMER: POST /returns/submit
 // Submit a Return OR Replacement request
@@ -18,7 +36,8 @@ exports.submitReturnRequest = async (req, res) => {
         orderItemId,
         requestType,   // 'RETURN' | 'REPLACEMENT'
         reason,
-        evidence_images // array of image URLs or base64
+        evidence_images, // array of image URLs or base64
+        variant_attribute_id
     } = req.body;
 
     if (!orderId || !orderItemId || !reason || !requestType) {
@@ -29,6 +48,8 @@ exports.submitReturnRequest = async (req, res) => {
     }
 
     try {
+        await ensureReturnTableColumns();
+
         // 1. Verify order belongs to user and is DELIVERED
         const [[order]] = await db.query(
             `SELECT id, order_status, delivered_at, updated_at FROM orders WHERE id = ? AND user_id = ?`,
@@ -39,14 +60,46 @@ exports.submitReturnRequest = async (req, res) => {
             return res.status(400).json({ status: false, message: 'Requests can only be made for DELIVERED orders.' });
         }
 
-        // 2. Check window (delivered_at preferred, fallback updated_at)
+        // 2. Check policy eligibility & stock for item
+        const [[item]] = await db.query(
+            `SELECT oi.*, sp.seller_id as merchant_seller_id, sp.stock_quantity as current_stock,
+                    COALESCE(sp.has_return_policy, psc.has_return_policy, 1) as has_return_policy,
+                    COALESCE(sp.return_window_days, psc.return_window_days, 7) as return_window_days,
+                    COALESCE(sp.is_replacement_available, psc.is_replacement_available, 1) as is_replacement_available,
+                    COALESCE(sp.replacement_window_days, psc.replacement_window_days, 7) as replacement_window_days
+             FROM order_items oi
+             JOIN seller_products sp ON oi.seller_product_id = sp.id
+             LEFT JOIN products p ON sp.product_id = p.id
+             LEFT JOIN product_subcategories psc ON p.sub_category_id = psc.id
+             WHERE oi.id = ? AND oi.order_id = ?`,
+            [orderItemId, orderId]
+        );
+        if (!item) return res.status(404).json({ status: false, message: 'Order item not found.' });
+
+        if (requestType === 'RETURN' && !item.has_return_policy) {
+            return res.status(400).json({ status: false, message: 'Returns are not allowed for this product.' });
+        }
+        if (requestType === 'REPLACEMENT' && !item.is_replacement_available) {
+            return res.status(400).json({ status: false, message: 'Replacements are not allowed for this product.' });
+        }
+
+        // Check active delivery window
         const deliveryDate = order.delivered_at || order.updated_at;
-        const windowDays = requestType === 'RETURN' ? RETURN_WINDOW_DAYS : REPLACEMENT_WINDOW_DAYS;
+        const windowDays = requestType === 'RETURN' ? item.return_window_days : item.replacement_window_days;
         const daysDiff = (Date.now() - new Date(deliveryDate).getTime()) / (1000 * 3600 * 24);
         if (daysDiff > windowDays) {
             return res.status(400).json({
                 status: false,
-                message: `${requestType === 'RETURN' ? 'Return' : 'Replacement'} policy window (${windowDays} days) has expired for this order.`
+                message: `${requestType === 'RETURN' ? 'Return' : 'Replacement'} window (${windowDays} days) has expired.`
+            });
+        }
+
+        // Check stock for replacement
+        if (requestType === 'REPLACEMENT' && item.current_stock <= 0) {
+            return res.status(400).json({
+                status: false,
+                code: 'OUT_OF_STOCK_FOR_REPLACEMENT',
+                message: 'Product is currently out of stock for replacement. Would you like to request a Refund Return instead?'
             });
         }
 
@@ -59,16 +112,6 @@ exports.submitReturnRequest = async (req, res) => {
             return res.status(400).json({ status: false, message: `A ${requestType.toLowerCase()} request for this item is already in progress.` });
         }
 
-        // 4. Get order item & merchant info
-        const [[item]] = await db.query(
-            `SELECT oi.*, sp.seller_id as merchant_seller_id
-             FROM order_items oi
-             JOIN seller_products sp ON oi.seller_product_id = sp.id
-             WHERE oi.id = ? AND oi.order_id = ?`,
-            [orderItemId, orderId]
-        );
-        if (!item) return res.status(404).json({ status: false, message: 'Order item not found.' });
-
         // Get merchant_id from sellers table
         const [[sellerRow]] = await db.query(
             `SELECT sellerable_id FROM sellers WHERE id = ? AND sellerable_type = 'Merchant'`,
@@ -76,19 +119,26 @@ exports.submitReturnRequest = async (req, res) => {
         );
         const merchantId = sellerRow?.sellerable_id || null;
 
+        // Generate OTPs
+        const pickupOtp = Math.floor(1000 + Math.random() * 9000).toString();
+        const deliveryOtp = Math.floor(1000 + Math.random() * 9000).toString();
+
         // 5. Insert request
         const [result] = await db.query(`
             INSERT INTO order_returns
               (order_id, order_item_id, user_id, merchant_id, return_type, request_type,
                reason, evidence_images, refund_amount, status,
-               merchant_action, admin_action, refund_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'PENDING', 'PENDING', 'NOT_INITIATED')
+               merchant_action, admin_action, refund_status, variant_attribute_id, pickup_otp, delivery_otp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'PENDING', 'PENDING', 'NOT_INITIATED', ?, ?, ?)
         `, [
             orderId, orderItemId, userId, merchantId,
             requestType === 'RETURN' ? 'RETURN' : 'REPLACEMENT',
             requestType, reason,
             evidence_images ? JSON.stringify(evidence_images) : null,
-            item.total_price
+            item.total_price,
+            variant_attribute_id || null,
+            pickupOtp,
+            deliveryOtp
         ]);
 
         res.status(201).json({
@@ -380,5 +430,71 @@ exports.adminResolveReturn = async (req, res) => {
         res.status(500).json({ status: false, message: 'Could not resolve request.' });
     } finally {
         conn.release();
+    }
+};
+
+// ─────────────────────────────────────────────────────────────
+// MERCHANT / ADMIN: POST /returns/:id/dispatch-replacement
+// ─────────────────────────────────────────────────────────────
+exports.dispatchReplacementUnit = async (req, res) => {
+    const { id } = req.params;
+    const { replacement_awb_code, replacement_courier_name, notes } = req.body;
+    try {
+        await ensureReturnTableColumns();
+        const [[ret]] = await db.query(`SELECT * FROM order_returns WHERE id = ?`, [id]);
+        if (!ret) return res.status(404).json({ status: false, message: 'Request not found.' });
+
+        await db.query(`
+            UPDATE order_returns 
+            SET status = 'REPLACEMENT_DISPATCHED',
+                replacement_awb_code = ?,
+                replacement_courier_name = ?,
+                admin_notes = COALESCE(?, admin_notes)
+            WHERE id = ?
+        `, [replacement_awb_code || null, replacement_courier_name || 'Express Courier', notes || null, id]);
+
+        res.json({ status: true, message: 'Replacement unit dispatched successfully. Customer tracking updated.' });
+    } catch (err) {
+        console.error('[Return] dispatchReplacementUnit error:', err);
+        res.status(500).json({ status: false, message: 'Could not dispatch replacement unit.' });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────
+// PUBLIC WEBHOOK: POST /returns/shiprocket-webhook
+// ─────────────────────────────────────────────────────────────
+exports.handleShiprocketWebhook = async (req, res) => {
+    try {
+        await ensureReturnTableColumns();
+        const { current_status, awb, order_id } = req.body || {};
+        console.log('[Shiprocket Return Webhook Received]', { current_status, awb, order_id });
+
+        if (!awb && !order_id) return res.status(200).send('OK');
+
+        const statusUpper = (current_status || '').toUpperCase();
+        let newReturnStatus = null;
+
+        if (statusUpper.includes('PICKED UP') || statusUpper.includes('OUT FOR PICKUP')) {
+            newReturnStatus = 'REVERSE_PICKED_UP';
+        } else if (statusUpper.includes('DELIVERED TO MERCHANT') || statusUpper.includes('RETURN DELIVERED')) {
+            newReturnStatus = 'MERCHANT_ACCEPTED';
+        } else if (statusUpper.includes('QC FAILED') || statusUpper.includes('REJECTED')) {
+            newReturnStatus = 'QC_FAILED';
+        } else if (statusUpper.includes('DISPATCHED') || statusUpper.includes('IN TRANSIT')) {
+            newReturnStatus = 'REPLACEMENT_DISPATCHED';
+        }
+
+        if (newReturnStatus) {
+            await db.query(`
+                UPDATE order_returns
+                SET status = ?
+                WHERE reverse_awb_code = ? OR replacement_awb_code = ? OR order_id = ?
+            `, [newReturnStatus, awb, awb, order_id]);
+        }
+
+        res.status(200).json({ status: true, message: 'Webhook processed successfully.' });
+    } catch (err) {
+        console.error('[Shiprocket Return Webhook Error]', err);
+        res.status(200).send('OK'); // Always return 200 OK to Shiprocket
     }
 };
