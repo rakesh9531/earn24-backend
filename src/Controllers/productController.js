@@ -167,7 +167,7 @@ const path = require("path");
 const fs = require("fs");
 
 // Auto-migrate missing warranty columns in seller_products table on MySQL server
-(async () => {
+const ensureWarrantyColumns = async () => {
   try {
     await db.query("ALTER TABLE seller_products ADD COLUMN warranty_type VARCHAR(50) NULL DEFAULT 'no_warranty'").catch(() => {});
     await db.query("ALTER TABLE seller_products ADD COLUMN warranty_months INT NULL DEFAULT 0").catch(() => {});
@@ -176,7 +176,8 @@ const fs = require("fs");
   } catch (e) {
     // Columns exist
   }
-})();
+};
+ensureWarrantyColumns();
 
 // Helper function to safely delete files
 const deleteFile = (filePath) => {
@@ -1607,6 +1608,7 @@ exports.getSearchSuggestions = async (req, res) => {
 exports.getProductForUser = async (req, res) => {
   const { id } = req.params;
   const { pincode } = req.query; // Pincode is optional here
+  await ensureWarrantyColumns();
 
   try {
     const activePincode = (pincode && pincode !== 'null' && pincode !== 'undefined') ? pincode : '';
@@ -1791,6 +1793,7 @@ exports.getProductForUser = async (req, res) => {
  */
 exports.getProductsByCategory = async (req, res) => {
   try {
+    await ensureWarrantyColumns();
     const { categoryId } = req.params;
     const { pincode, page = 1, limit = 40 } = req.query;
     const limitNum = parseInt(limit, 10);
