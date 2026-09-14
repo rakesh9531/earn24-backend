@@ -629,7 +629,7 @@ exports.getAllMasterProducts = async (req, res) => {
 
     const dataWithParsedAttributes = rows.map((product) => ({
       ...product,
-      attributes: product.attributes ? JSON.parse(product.attributes) : [],
+      attributes: safeJsonParse(product.attributes, []),
     }));
 
     const countQuery = `
@@ -1044,10 +1044,8 @@ exports.getMasterProductById = async (req, res) => {
         .status(404)
         .json({ status: false, message: "Product not found." });
     }
-    const product = productRows[0];
-
     // Parse gallery URLs string into a proper array
-    product.gallery_image_urls = JSON.parse(product.gallery_image_urls || "[]");
+    product.gallery_image_urls = safeJsonParse(product.gallery_image_urls, []);
 
     // Fetch associated attributes for the product
     const attributesSql = `
@@ -1552,11 +1550,9 @@ exports.searchProducts = async (req, res) => {
       product_id: p.product_id,
       offer_id: p.offer_id,
       bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
-      gallery_image_urls: p.gallery_image_urls
-        ? (typeof p.gallery_image_urls === 'string' ? JSON.parse(p.gallery_image_urls) : p.gallery_image_urls)
-        : [],
-      attributes: p.attributes ? JSON.parse(p.attributes) : [],
-      variants: p.variants ? (typeof p.variants === 'string' ? JSON.parse(p.variants) : p.variants) : [],
+      gallery_image_urls: safeJsonParse(p.gallery_image_urls, []),
+      attributes: safeJsonParse(p.attributes, []),
+      variants: safeJsonParse(p.variants, []),
     }));
 
     // Get total count
