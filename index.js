@@ -204,6 +204,10 @@ async function testDatabaseConnection() {
     await connection.ping();
     console.log('Connection to the database has been established successfully.');
 
+    // Increase MySQL GROUP_CONCAT limit to prevent truncated JSON string errors
+    await connection.query("SET SESSION group_concat_max_len = 1000000").catch(() => {});
+    await connection.query("SET GLOBAL group_concat_max_len = 1000000").catch(() => {});
+
     // Production Safe Migrations for Order Cancellation
     const [columns] = await connection.query("SHOW COLUMNS FROM orders LIKE 'cancellation_reason'");
     if (columns.length === 0) {
