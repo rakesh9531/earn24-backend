@@ -176,7 +176,7 @@ const safeJsonParse = (input, fallback = []) => {
   }
 };
 
-// Auto-migrate missing warranty & return policy columns in seller_products table on MySQL server
+// Auto-migrate missing warranty & return policy columns in seller_products and product_subcategories tables on MySQL server
 const ensureWarrantyColumns = async () => {
   try {
     await db.query("SET SESSION group_concat_max_len = 100000").catch(() => {});
@@ -184,10 +184,15 @@ const ensureWarrantyColumns = async () => {
     await db.query("ALTER TABLE seller_products ADD COLUMN warranty_months INT NULL DEFAULT 0").catch(() => {});
     await db.query("ALTER TABLE seller_products ADD COLUMN warranty_covered_by VARCHAR(255) NULL").catch(() => {});
     await db.query("ALTER TABLE seller_products ADD COLUMN warranty_period VARCHAR(100) NULL").catch(() => {});
-    await db.query("ALTER TABLE seller_products ADD COLUMN has_return_policy TINYINT(1) NULL DEFAULT 1").catch(() => {});
+    await db.query("ALTER TABLE seller_products ADD COLUMN has_return_policy TINYINT(1) NULL DEFAULT NULL").catch(() => {});
     await db.query("ALTER TABLE seller_products ADD COLUMN return_window_days INT NULL DEFAULT 7").catch(() => {});
-    await db.query("ALTER TABLE seller_products ADD COLUMN is_replacement_available TINYINT(1) NULL DEFAULT 1").catch(() => {});
+    await db.query("ALTER TABLE seller_products ADD COLUMN is_replacement_available TINYINT(1) NULL DEFAULT NULL").catch(() => {});
     await db.query("ALTER TABLE seller_products ADD COLUMN replacement_window_days INT NULL DEFAULT 7").catch(() => {});
+
+    await db.query("ALTER TABLE product_subcategories ADD COLUMN has_return_policy TINYINT(1) NULL DEFAULT 1").catch(() => {});
+    await db.query("ALTER TABLE product_subcategories ADD COLUMN return_window_days INT NULL DEFAULT 7").catch(() => {});
+    await db.query("ALTER TABLE product_subcategories ADD COLUMN is_replacement_available TINYINT(1) NULL DEFAULT 1").catch(() => {});
+    await db.query("ALTER TABLE product_subcategories ADD COLUMN replacement_window_days INT NULL DEFAULT 7").catch(() => {});
   } catch (e) {
     // Columns exist
   }
@@ -1641,6 +1646,8 @@ exports.getProductForUser = async (req, res) => {
                 sp.id as offer_id, sp.seller_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
                 sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
+                psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
+                psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                 COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (${bvGenerationPct} / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (${bvGenerationPct} / 100))) as bv_earned,
                 (
@@ -1663,6 +1670,7 @@ exports.getProductForUser = async (req, res) => {
                 ) AS is_serviceable
             FROM products p
             JOIN seller_products sp ON p.id = sp.product_id
+            LEFT JOIN product_subcategories psc ON p.subcategory_id = psc.id
             JOIN sellers s ON sp.seller_id = s.id
             LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
             LEFT JOIN brands b ON p.brand_id = b.id
@@ -1690,6 +1698,17 @@ exports.getProductForUser = async (req, res) => {
     product.is_serviceable = Boolean(product.is_serviceable);
     product.has_variants = Boolean(product.has_variants);
     product.bv_earned = parseFloat(product.bv_earned || 0).toFixed(2);
+
+    // Resolve Product Level vs Subcategory Fallback Policy (Priority Hierarchy)
+    const rawHasReturn = (product.has_return_policy !== null && product.has_return_policy !== undefined) ? product.has_return_policy : product.subcat_has_return_policy;
+    const rawReturnDays = product.return_window_days || product.subcat_return_window_days || 7;
+    const rawHasReplacement = (product.is_replacement_available !== null && product.is_replacement_available !== undefined) ? product.is_replacement_available : product.subcat_is_replacement_available;
+    const rawReplacementDays = product.replacement_window_days || product.subcat_replacement_window_days || 7;
+
+    product.has_return_policy = (rawHasReturn === 1 || rawHasReturn === true || rawHasReturn === '1' || rawHasReturn === 'true');
+    product.return_window_days = parseInt(rawReturnDays, 10);
+    product.is_replacement_available = (rawHasReplacement === 1 || rawHasReplacement === true || rawHasReplacement === '1' || rawHasReplacement === 'true');
+    product.replacement_window_days = parseInt(rawReplacementDays, 10);
 
     // Parse JSON string fields into arrays safely for the frontend
     product.gallery_image_urls = safeJsonParse(product.gallery_image_urls);
