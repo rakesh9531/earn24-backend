@@ -297,11 +297,12 @@ exports.addMerchantProduct = async (req, res) => {
         // 4. Insert into `seller_products` (is_active = 0 by default for Admin Moderation/Approval)
         const offerQuery = `
             INSERT INTO seller_products 
-              (seller_id, product_id, sku, mrp, merchant_price, admin_margin_percent, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity, is_active) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+              (seller_id, product_id, sku, mrp, merchant_price, admin_margin_percent, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity, is_active, warranty_type, warranty_months, warranty_covered_by) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
         `;
         const [result] = await connection.query(offerQuery, [
-            sellerId, productId, sku, mrp, merchantPrice, adminMarginPercent, sellingPrice, merchantPrice, quantity, body.low_stock_alert || 5, minimumOrderQuantity
+            sellerId, productId, sku, mrp, merchantPrice, adminMarginPercent, sellingPrice, merchantPrice, quantity, body.low_stock_alert || 5, minimumOrderQuantity,
+            body.warranty_type || 'no_warranty', parseInt(body.warranty_months || 0, 10), body.warranty_covered_by || null
         ]);
         const newOfferId = result.insertId;
 

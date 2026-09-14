@@ -307,8 +307,9 @@ exports.completeDelivery = async (req, res) => {
                 WHERE oi.order_id = ?
             `, [orderId]).catch(() => [[{ min_window: 7 }]]);
 
+            let buyerIdForPromotion = null;
             if (winCheck[0] && winCheck[0].min_window === 0) {
-                await commissionService.processOrderForCommissions(connection, orderId).catch(() => {});
+                buyerIdForPromotion = await commissionService.processOrderForCommissions(connection, orderId).catch(() => null);
                 await distributionService.processOrderDistribution(connection, orderId).catch(() => {});
                 await connection.query('UPDATE order_items SET is_mlm_distributed = 1 WHERE order_id = ?', [orderId]).catch(() => {});
                 await connection.query('UPDATE orders SET is_mlm_distributed = 1 WHERE id = ?', [orderId]).catch(() => {});
