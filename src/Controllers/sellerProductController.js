@@ -667,6 +667,21 @@ exports.addSellerOffer = async (req, res) => {
             await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES ?', [pincodeValues]);
         }
 
+        let variantsList = req.body.variants;
+        if (typeof variantsList === 'string') {
+            try { variantsList = JSON.parse(variantsList); } catch(e) { variantsList = []; }
+        }
+        if (Array.isArray(variantsList) && variantsList.length > 0) {
+            for (const v of variantsList) {
+                if (v && (v.title || v.size || v.color || v.price)) {
+                    await connection.query(
+                        `INSERT INTO seller_product_variants (seller_product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [newOfferId, v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant', v.color || null, v.size || null, v.sku || null, parseFloat(v.price || sellingPrice || 0), parseFloat(v.mrp || mrp || 0), parseInt(v.quantity || v.stock_quantity || quantity || 0, 10), v.variant_image_url || null]
+                    ).catch(() => {});
+                }
+            }
+        }
+
         await connection.commit();
         res.status(201).json({ status: true, message: "Product offer added successfully.", offerId: newOfferId });
 
@@ -927,6 +942,24 @@ exports.updateSellerOffer = async (req, res) => {
                 if (pincodeList.length > 0) {
                     const pincodeValues = pincodeList.map(pincode => [id, String(pincode).trim()]);
                     await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES ?', [pincodeValues]);
+                }
+            }
+        }
+
+        if (req.body.variants !== undefined) {
+            let variantsList = req.body.variants;
+            if (typeof variantsList === 'string') {
+                try { variantsList = JSON.parse(variantsList); } catch(e) { variantsList = []; }
+            }
+            if (Array.isArray(variantsList)) {
+                await connection.query('DELETE FROM seller_product_variants WHERE seller_product_id = ?', [id]);
+                for (const v of variantsList) {
+                    if (v && (v.title || v.size || v.color || v.price)) {
+                        await connection.query(
+                            `INSERT INTO seller_product_variants (seller_product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            [id, v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant', v.color || null, v.size || null, v.sku || null, parseFloat(v.price || sellingPrice || 0), parseFloat(v.mrp || mrp || 0), parseInt(v.quantity || v.stock_quantity || quantity || 0, 10), v.variant_image_url || null]
+                        ).catch(() => {});
+                    }
                 }
             }
         }
