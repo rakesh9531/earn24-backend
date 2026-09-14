@@ -870,11 +870,20 @@ exports.updateSellerOffer = async (req, res) => {
         if (is_active !== undefined) { fields.push('is_active = ?'); values.push(Boolean(is_active)); }
         if (low_stock_threshold !== undefined) { fields.push('low_stock_threshold = ?'); values.push(low_stock_threshold); }
 
-        // 2. Add the dynamic update for the new field
         if (minimum_order_quantity !== undefined) { 
             fields.push('minimum_order_quantity = ?'); 
             values.push(minimum_order_quantity); 
         }
+
+        if (req.body.warranty_type !== undefined) { fields.push('warranty_type = ?'); values.push(req.body.warranty_type); }
+        if (req.body.warranty_months !== undefined) { fields.push('warranty_months = ?'); values.push(parseInt(req.body.warranty_months, 10)); }
+        if (req.body.warranty_covered_by !== undefined) { fields.push('warranty_covered_by = ?'); values.push(req.body.warranty_covered_by); }
+        if (req.body.warranty_period !== undefined) { fields.push('warranty_period = ?'); values.push(req.body.warranty_period); }
+
+        if (req.body.has_return_policy !== undefined) { fields.push('has_return_policy = ?'); values.push(req.body.has_return_policy ? 1 : 0); }
+        if (req.body.return_window_days !== undefined) { fields.push('return_window_days = ?'); values.push(parseInt(req.body.return_window_days, 10)); }
+        if (req.body.is_replacement_available !== undefined) { fields.push('is_replacement_available = ?'); values.push(req.body.is_replacement_available ? 1 : 0); }
+        if (req.body.replacement_window_days !== undefined) { fields.push('replacement_window_days = ?'); values.push(parseInt(req.body.replacement_window_days, 10)); }
 
         if (fields.length > 0) {
             const updateQuery = `UPDATE seller_products SET ${fields.join(', ')} WHERE id = ?`;

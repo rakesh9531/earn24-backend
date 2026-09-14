@@ -176,7 +176,7 @@ const safeJsonParse = (input, fallback = []) => {
   }
 };
 
-// Auto-migrate missing warranty columns in seller_products table on MySQL server
+// Auto-migrate missing warranty & return policy columns in seller_products table on MySQL server
 const ensureWarrantyColumns = async () => {
   try {
     await db.query("SET SESSION group_concat_max_len = 100000").catch(() => {});
@@ -184,6 +184,10 @@ const ensureWarrantyColumns = async () => {
     await db.query("ALTER TABLE seller_products ADD COLUMN warranty_months INT NULL DEFAULT 0").catch(() => {});
     await db.query("ALTER TABLE seller_products ADD COLUMN warranty_covered_by VARCHAR(255) NULL").catch(() => {});
     await db.query("ALTER TABLE seller_products ADD COLUMN warranty_period VARCHAR(100) NULL").catch(() => {});
+    await db.query("ALTER TABLE seller_products ADD COLUMN has_return_policy TINYINT(1) NULL DEFAULT 1").catch(() => {});
+    await db.query("ALTER TABLE seller_products ADD COLUMN return_window_days INT NULL DEFAULT 7").catch(() => {});
+    await db.query("ALTER TABLE seller_products ADD COLUMN is_replacement_available TINYINT(1) NULL DEFAULT 1").catch(() => {});
+    await db.query("ALTER TABLE seller_products ADD COLUMN replacement_window_days INT NULL DEFAULT 7").catch(() => {});
   } catch (e) {
     // Columns exist
   }
@@ -1636,6 +1640,7 @@ exports.getProductForUser = async (req, res) => {
                 b.name as brand_name,
                 sp.id as offer_id, sp.seller_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
+                sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
                 COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (${bvGenerationPct} / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (${bvGenerationPct} / 100))) as bv_earned,
                 (

@@ -600,12 +600,29 @@ exports.updateMerchantProduct = async (req, res) => {
         const lowStockThreshold = parseInt(body.low_stock_alert || body.low_stock_threshold || 5, 10);
         const sku = body.sku || '';
 
+        const warrantyType = body.warranty_type || 'no_warranty';
+        const warrantyMonths = parseInt(body.warranty_months || 0, 10);
+        const warrantyCoveredBy = body.warranty_covered_by || body.warranty_covered || '';
+        const warrantyPeriod = body.warranty_period || (warrantyMonths > 0 ? `${warrantyMonths} Months Warranty` : 'No Warranty');
+
+        const hasReturnPolicy = (body.has_return_policy === 1 || body.has_return_policy === '1' || body.has_return_policy === true || body.has_return_policy === 'true' || body.return_policy === 'return' || body.return_policy === 'both' || body.has_return_policy === undefined) ? 1 : 0;
+        const returnWindowDays = parseInt(body.return_window_days || body.return_days || 7, 10);
+        const isReplacementAvailable = (body.is_replacement_available === 1 || body.is_replacement_available === '1' || body.is_replacement_available === true || body.is_replacement_available === 'true' || body.return_policy === 'replacement' || body.return_policy === 'both' || body.is_replacement_available === undefined) ? 1 : 0;
+        const replacementWindowDays = parseInt(body.replacement_window_days || body.replacement_days || 7, 10);
+
         // Update seller_products record
         await connection.query(
             `UPDATE seller_products 
-             SET merchant_price = ?, selling_price = ?, mrp = ?, quantity = ?, minimum_order_quantity = ?, low_stock_threshold = ?, sku = ? 
+             SET merchant_price = ?, selling_price = ?, mrp = ?, quantity = ?, minimum_order_quantity = ?, low_stock_threshold = ?, sku = ?,
+                 warranty_type = ?, warranty_months = ?, warranty_covered_by = ?, warranty_period = ?,
+                 has_return_policy = ?, return_window_days = ?, is_replacement_available = ?, replacement_window_days = ?
              WHERE id = ?`,
-            [merchantPrice, sellingPrice, mrp, quantity, minimumOrderQuantity, lowStockThreshold, sku, offerId]
+            [
+                merchantPrice, sellingPrice, mrp, quantity, minimumOrderQuantity, lowStockThreshold, sku,
+                warrantyType, warrantyMonths, warrantyCoveredBy, warrantyPeriod,
+                hasReturnPolicy, returnWindowDays, isReplacementAvailable, replacementWindowDays,
+                offerId
+            ]
         );
 
         // Update master product if details provided
