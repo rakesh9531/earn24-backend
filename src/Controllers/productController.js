@@ -1667,15 +1667,16 @@ exports.getProductForUser = async (req, res) => {
             LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-            WHERE p.id = ? AND sp.is_active = TRUE
+            WHERE (p.id = ? OR sp.id = ?) AND sp.is_active = TRUE
             -- We get the best offer (e.g., lowest price) available for this product
             ORDER BY sp.selling_price ASC
             LIMIT 1;
         `;
 
-    const [productRows] = await db.query(query, [activePincode, activePincode, id]);
+    const [productRows] = await db.query(query, [activePincode, activePincode, id, id]);
 
     if (productRows.length === 0) {
+      console.log(`[getProductForUser DEBUG WARN] Product/Offer NOT found for ID: ${id}`);
       return res
         .status(404)
         .json({
@@ -1694,6 +1695,8 @@ exports.getProductForUser = async (req, res) => {
     product.gallery_image_urls = safeJsonParse(product.gallery_image_urls);
     product.attributes = safeJsonParse(product.attributes);
     product.variants = safeJsonParse(product.variants);
+
+    console.log(`[getProductForUser DEBUG SUCCESS] fetched product_id=${product.product_id}, offer_id=${product.offer_id}, warranty_type=${product.warranty_type}, warranty_months=${product.warranty_months}, warranty_period=${product.warranty_period}, warranty_covered=${product.warranty_covered_by}, has_return=${product.has_return_policy}, is_replacement=${product.is_replacement_available}`);
 
     res.status(200).json({ status: true, data: product });
   } catch (error) {
