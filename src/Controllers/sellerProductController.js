@@ -641,10 +641,13 @@ exports.addSellerOffer = async (req, res) => {
 
         const offerQuery = `
             INSERT INTO seller_products 
-              (seller_id, product_id, sku, mrp, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (seller_id, product_id, sku, mrp, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity, warranty_type, warranty_months, warranty_covered_by) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
-        const [result] = await connection.query(offerQuery, [sellerId, productId, sku, mrp, sellingPrice, purchasePrice, quantity, low_stock_threshold, minimum_order_quantity]);
+        const [result] = await connection.query(offerQuery, [
+            sellerId, productId, sku, mrp, sellingPrice, purchasePrice, quantity, low_stock_threshold, minimum_order_quantity,
+            req.body.warranty_type || 'no_warranty', parseInt(req.body.warranty_months || 0, 10), req.body.warranty_covered_by || null
+        ]);
         const newOfferId = result.insertId;
 
         if (isPanIndia) {
