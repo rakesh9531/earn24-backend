@@ -953,11 +953,16 @@ exports.addSubCategory = async (req, res) => {
     const image_url = req.file ? `/uploads/category/${req.file.filename}` : null;
     const createdAt = moment().tz("Asia/Kolkata").format("YYYY-MM-DD HH:mm:ss");
 
+    const has_return_policy = (req.body.has_return_policy === '0' || req.body.has_return_policy === 0 || req.body.has_return_policy === false || req.body.has_return_policy === 'false') ? 0 : 1;
+    const return_window_days = parseInt(req.body.return_window_days || 7, 10);
+    const is_replacement_available = (req.body.is_replacement_available === '0' || req.body.is_replacement_available === 0 || req.body.is_replacement_available === false || req.body.is_replacement_available === 'false') ? 0 : 1;
+    const replacement_window_days = parseInt(req.body.replacement_window_days || 7, 10);
+
     // The 'is_deleted' column should be in your table schema, but we ensure it's set here
     const [result] = await db.query(
       `INSERT INTO product_subcategories 
-       (category_id, name, slug, description, image_url, is_active, is_deleted, created_at, updated_at) 
-       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+       (category_id, name, slug, description, image_url, is_active, has_return_policy, return_window_days, is_replacement_available, replacement_window_days, is_deleted, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       [
         category_id,
         name,
@@ -965,6 +970,10 @@ exports.addSubCategory = async (req, res) => {
         description || null,
         image_url,
         is_active, // Use the standardized value
+        has_return_policy,
+        return_window_days,
+        is_replacement_available,
+        replacement_window_days,
         createdAt,
         createdAt
       ]
@@ -1094,6 +1103,22 @@ exports.updateSubCategory = async (req, res) => {
     if (category_id !== undefined) {
       fields.push('category_id = ?');
       values.push(category_id);
+    }
+    if (req.body.has_return_policy !== undefined) {
+      fields.push('has_return_policy = ?');
+      values.push((req.body.has_return_policy === '0' || req.body.has_return_policy === 0 || req.body.has_return_policy === false || req.body.has_return_policy === 'false') ? 0 : 1);
+    }
+    if (req.body.return_window_days !== undefined) {
+      fields.push('return_window_days = ?');
+      values.push(parseInt(req.body.return_window_days || 7, 10));
+    }
+    if (req.body.is_replacement_available !== undefined) {
+      fields.push('is_replacement_available = ?');
+      values.push((req.body.is_replacement_available === '0' || req.body.is_replacement_available === 0 || req.body.is_replacement_available === false || req.body.is_replacement_available === 'false') ? 0 : 1);
+    }
+    if (req.body.replacement_window_days !== undefined) {
+      fields.push('replacement_window_days = ?');
+      values.push(parseInt(req.body.replacement_window_days || 7, 10));
     }
 
     if (req.file) {
