@@ -360,8 +360,87 @@ exports.getAgentStats = async (req, res) => {
             FROM orders 
             WHERE delivery_agent_id = ?
         `;
-        const [stats] = await db.query(query, [agentId]);
-        res.json({ status: true, data: stats[0] });
+        const [earnings] = await db.query(query, [agentId]);
+        res.json({ status: true, data: earnings[0] || {} });
+    } catch (e) {
+        res.status(500).json({ status: false, message: e.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────
+// DELIVERY AGENT: GET REVERSE PICKUP & REPLACEMENT TASKS
+// ─────────────────────────────────────────────────────────────
+exports.getPickupTasks = async (req, res) => {
+    const agentId = req.user.id;
+    try {
+        const query = `
+            SELECT 
+                r.id as request_id,
+                r.order_id,
+                r.order_item_id,
+                r.request_type,
+                r.return_type,
+                r.status as request_status,
+                r.reason,
+                r.evidence_images,
+                r.pickup_otp,
+                r.delivery_otp,
+                o.order_number,
+                u.full_name as customer_name,
+                u.mobile_number as customer_phone,
+                sa.address_line_1, sa.address_line_2, sa.landmark, sa.city, sa.state, sa.pincode,
+                p.name as product_name,
+                p.main_image_url
+            FROM order_returns r
+            JOIN orders o ON r.order_id = o.id
+            JOIN users u ON r.user_id = u.id
+            LEFT JOIN user_addresses sa ON o.shipping_address_id = sa.id
+            LEFT JOIN order_items oi ON r.order_item_id = oi.id
+            LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN products p ON sp.product_id = p.id
+            WHERE (o.delivery_agent_id = ? OR r.merchant_id = ?) 
+              AND r.status IN ('APPROVED', 'MERCHANT_ACCEPTED', 'REVERSE_PICKUP_ASSIGNED', 'REVERSE_PICKED_UP', 'REPLACEMENT_DISPATCHED')
+            ORDER BY r.created_at DESC
+        `;
+        const [rows] = await db.query(query, [agentId, agentId]);
+        res.json({ status: true, data: rows });
+    } catch (e) {
+        console.error("getPickupTasks error:", e.message);
+        res.status(500).json({ status: false, message: "Failed to fetch pickup tasks." });
+    }
+};
+
+// VERIFY PICKUP OTP & COMPLETE REVERSE PICKUP AT DOORSTEP
+exports.completeReversePickup = async (req, res) => {
+    const { requestId, otp } = req.body;
+    try {
+        const [[ret]] = await db.query(`SELECT pickup_otp, status FROM order_returns WHERE id = ?`, [requestId]);
+        if (!ret) return res.status(404).json({ status: false, message: "Request not found." });
+
+        if (ret.pickup_otp && ret.pickup_otp !== otp) {
+            return res.status(400).json({ status: false, message: "Invalid Pickup OTP." });
+        }
+
+        await db.query(`UPDATE order_returns SET status = 'REVERSE_PICKED_UP' WHERE id = ?`, [requestId]);
+        res.json({ status: true, message: "Item picked up & verified successfully!" });
+    } catch (e) {
+        res.status(500).json({ status: false, message: e.message });
+    }
+};
+
+// VERIFY DELIVERY OTP & COMPLETE REPLACEMENT REDELIVERY AT DOORSTEP
+exports.completeReplacementDelivery = async (req, res) => {
+    const { requestId, otp } = req.body;
+    try {
+        const [[ret]] = await db.query(`SELECT delivery_otp, status FROM order_returns WHERE id = ?`, [requestId]);
+        if (!ret) return res.status(404).json({ status: false, message: "Request not found." });
+
+        if (ret.delivery_otp && ret.delivery_otp !== otp) {
+            return res.status(400).json({ status: false, message: "Invalid Delivery OTP." });
+        }
+
+        await db.query(`UPDATE order_returns SET status = 'COMPLETED' WHERE id = ?`, [requestId]);
+        res.json({ status: true, message: "Replacement item delivered successfully!" });
     } catch (e) {
         res.status(500).json({ status: false, message: e.message });
     }

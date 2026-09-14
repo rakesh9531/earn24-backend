@@ -23,4 +23,9 @@ router.post('/cancel-assignment', auth, deliveryAppController.cancelAssignment);
 router.get('/history', auth, deliveryAppController.getHistory);
 router.get('/earnings-summary', auth, deliveryAppController.getEarningsSummary);
 
+// Reverse Pickup & Replacement Delivery Task Routes for Delivery Agent
+router.get('/pickup-tasks', auth, deliveryAppController.getPickupTasks);
+router.post('/complete-pickup', auth, deliveryAppController.completeReversePickup);
+router.post('/complete-replacement-delivery', auth, deliveryAppController.completeReplacementDelivery);
+
 module.exports = router;
