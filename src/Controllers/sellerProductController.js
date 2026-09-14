@@ -802,13 +802,25 @@ exports.getAllSellerOffers = async (req, res) => {
 
         const [rows] = await db.query(dataQuery, [searchPattern, searchPattern, searchPattern, searchPattern, limit, offset]);
 
-        const data = rows.map(offer => ({
-            ...offer,
-            pincodes: offer.pincodes ? offer.pincodes.split(',') : [],
-            attributes: offer.attributes ? JSON.parse(offer.attributes) : [],
-            variants: offer.variants ? (typeof offer.variants === 'string' ? JSON.parse(offer.variants) : offer.variants) : [],
-            gst_percentage: parseFloat(offer.gst_percentage) || 0
-        }));
+        const data = rows.map(offer => {
+            let parsedAttributes = [];
+            try {
+                parsedAttributes = offer.attributes ? (typeof offer.attributes === 'string' ? JSON.parse(offer.attributes) : offer.attributes) : [];
+            } catch (e) { parsedAttributes = []; }
+
+            let parsedVariants = [];
+            try {
+                parsedVariants = offer.variants ? (typeof offer.variants === 'string' ? JSON.parse(offer.variants) : offer.variants) : [];
+            } catch (e) { parsedVariants = []; }
+
+            return {
+                ...offer,
+                pincodes: offer.pincodes ? offer.pincodes.split(',') : [],
+                attributes: parsedAttributes,
+                variants: parsedVariants,
+                gst_percentage: parseFloat(offer.gst_percentage) || 0
+            };
+        });
 
         const countQuery = `SELECT COUNT(DISTINCT sp.id) AS total FROM seller_products sp JOIN products p ON sp.product_id = p.id JOIN sellers s ON sp.seller_id = s.id LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant' WHERE (p.name LIKE ? OR s.display_name LIKE ? OR m.business_name LIKE ? OR m.owner_name LIKE ?)`;
         const [countRows] = await db.query(countQuery, [searchPattern, searchPattern, searchPattern, searchPattern]);

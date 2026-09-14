@@ -431,17 +431,35 @@ exports.getMerchantProducts = async (req, res) => {
             WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant'
             ORDER BY sp.created_at DESC
         `;
-        const [rows] = await db.query(query, [merchantId]);
-        const processedData = rows.map(row => ({
-            ...row,
-            category: row.category_name || row.category || 'General',
-            brand: row.brand_name || row.brand || 'No Brand',
-            attributes: row.attributes ? JSON.parse(row.attributes) : [],
-            variants: row.variants ? JSON.parse(row.variants).map(v => ({
-                ...v,
-                variant_image_urls: typeof v.variant_image_urls === 'string' ? JSON.parse(v.variant_image_urls) : (v.variant_image_urls || [])
-            })) : []
-        }));
+        const processedData = rows.map(row => {
+            let parsedAttributes = [];
+            try {
+                parsedAttributes = row.attributes ? (typeof row.attributes === 'string' ? JSON.parse(row.attributes) : row.attributes) : [];
+            } catch (e) { parsedAttributes = []; }
+
+            let parsedVariants = [];
+            try {
+                const rawV = row.variants ? (typeof row.variants === 'string' ? JSON.parse(row.variants) : row.variants) : [];
+                parsedVariants = (Array.isArray(rawV) ? rawV : []).map(v => {
+                    let parsedImgs = [];
+                    try {
+                        parsedImgs = typeof v.variant_image_urls === 'string' ? JSON.parse(v.variant_image_urls) : (v.variant_image_urls || []);
+                    } catch (e) { parsedImgs = []; }
+                    return {
+                        ...v,
+                        variant_image_urls: parsedImgs
+                    };
+                });
+            } catch (e) { parsedVariants = []; }
+
+            return {
+                ...row,
+                category: row.category_name || row.category || 'General',
+                brand: row.brand_name || row.brand || 'No Brand',
+                attributes: parsedAttributes,
+                variants: parsedVariants
+            };
+        });
         res.status(200).json({ status: true, data: processedData });
     } catch (error) {
         console.error("Error fetching merchant products:", error);

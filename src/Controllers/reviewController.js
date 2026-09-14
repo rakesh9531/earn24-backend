@@ -449,7 +449,10 @@ exports.getAdminReviews = async (req, res) => {
       try { parsedMedia = typeof r.media_urls === 'string' ? JSON.parse(r.media_urls) : (r.media_urls || []); } catch(e){}
       return {
         ...r,
+        title: r.review_title || '',
+        comment: r.review_text || '',
         rating: parseFloat(r.rating),
+        media: parsedMedia,
         media_urls: parsedMedia
       };
     });
