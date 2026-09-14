@@ -431,6 +431,7 @@ exports.getMerchantProducts = async (req, res) => {
             WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant'
             ORDER BY sp.created_at DESC
         `;
+        const [rows] = await db.query(query, [merchantId]);
         const processedData = rows.map(row => {
             let parsedAttributes = [];
             try {
