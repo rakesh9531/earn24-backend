@@ -608,6 +608,16 @@
 const db = require('../../db');
 const SellerProduct = require('../Models/sellerProductModel');
 
+const safeJsonParse = (input, fallback = []) => {
+  if (!input) return fallback;
+  if (typeof input !== 'string') return Array.isArray(input) ? input : fallback;
+  try {
+    return JSON.parse(input);
+  } catch (e) {
+    return fallback;
+  }
+};
+
 exports.addSellerOffer = async (req, res) => {
     const loggedInUser = req.user; 
     const connection = await db.getConnection();
@@ -750,13 +760,14 @@ exports.findProductsByPincode = async (req, res) => {
             queryParams = [searchTerm, searchTerm];
         }
 
+        await db.query("SET SESSION group_concat_max_len = 100000").catch(() => {});
         const [rows] = await db.query(query, queryParams);
 
         const processedData = rows.map(row => ({
             ...row,
-            attributes: row.attributes ? JSON.parse(row.attributes) : [],
-            gallery_image_urls: row.gallery_image_urls ? (typeof row.gallery_image_urls === 'string' ? JSON.parse(row.gallery_image_urls) : row.gallery_image_urls) : [],
-            variants: row.variants ? (typeof row.variants === 'string' ? JSON.parse(row.variants) : row.variants) : []
+            attributes: safeJsonParse(row.attributes, []),
+            gallery_image_urls: safeJsonParse(row.gallery_image_urls, []),
+            variants: safeJsonParse(row.variants, [])
         }));
 
         res.status(200).json({ status: true, data: processedData });
