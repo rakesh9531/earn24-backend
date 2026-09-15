@@ -19,6 +19,14 @@ async function ensureReturnTableColumns() {
         await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS pickup_otp VARCHAR(10) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS delivery_otp VARCHAR(10) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS rejection_reason VARCHAR(255) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS refund_method VARCHAR(20) DEFAULT 'WALLET';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS customer_upi_id VARCHAR(100) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS delivery_agent_id INT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS pickup_scheduled_date DATE NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS qc_status VARCHAR(20) DEFAULT 'PENDING';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS qc_remarks TEXT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS refund_utr VARCHAR(100) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS replacement_order_id INT NULL;`).catch(() => {});
         isMigrationChecked = true;
     } catch (e) {
         console.warn('[returnController] Auto-migration check warning:', e.message);
@@ -37,8 +45,15 @@ exports.submitReturnRequest = async (req, res) => {
         requestType,   // 'RETURN' | 'REPLACEMENT'
         reason,
         evidence_images, // array of image URLs or base64
-        variant_attribute_id
+        variant_attribute_id,
+        refund_method,
+        refundMethod,
+        customer_upi_id,
+        customerUpiId
     } = req.body;
+
+    const chosenRefundMethod = (refund_method || refundMethod || 'WALLET').toUpperCase();
+    const upiId = customer_upi_id || customerUpiId || null;
 
     if (!orderId || !orderItemId || !reason || !requestType) {
         return res.status(400).json({ status: false, message: 'orderId, orderItemId, requestType, and reason are required.' });
@@ -128,8 +143,9 @@ exports.submitReturnRequest = async (req, res) => {
             INSERT INTO order_returns
               (order_id, order_item_id, user_id, merchant_id, return_type, request_type,
                reason, evidence_images, refund_amount, status,
-               merchant_action, admin_action, refund_status, variant_attribute_id, pickup_otp, delivery_otp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'PENDING', 'PENDING', 'NOT_INITIATED', ?, ?, ?)
+               merchant_action, admin_action, refund_status, variant_attribute_id, pickup_otp, delivery_otp,
+               refund_method, customer_upi_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'PENDING', 'PENDING', 'NOT_INITIATED', ?, ?, ?, ?, ?)
         `, [
             orderId, orderItemId, userId, merchantId,
             requestType === 'RETURN' ? 'RETURN' : 'REPLACEMENT',
@@ -138,7 +154,9 @@ exports.submitReturnRequest = async (req, res) => {
             item.total_price,
             variant_attribute_id || null,
             pickupOtp,
-            deliveryOtp
+            deliveryOtp,
+            chosenRefundMethod,
+            upiId
         ]);
 
         res.status(201).json({
@@ -283,15 +301,23 @@ exports.adminGetAllReturnRequests = async (req, res) => {
     try {
         let where = 'WHERE 1=1';
         const params = [];
-        if (status)      { where += ' AND r.status = ?'; params.push(status); }
-        if (requestType) { where += ' AND r.request_type = ?'; params.push(requestType); }
+        if (status) {
+            if (status === 'PENDING_UPI') {
+                where += ' AND r.refund_status = "PENDING_UPI"';
+            } else {
+                where += ' AND r.status = ?';
+                params.push(status);
+            }
+        }
+        if (requestType && requestType !== 'ALL') { where += ' AND r.request_type = ?'; params.push(requestType); }
 
         const [rows] = await db.query(`
             SELECT r.*, COALESCE(r.request_type, r.return_type, 'RETURN') as request_type,
                    o.order_number,
                    u.full_name as customer_name, IFNULL(u.mobile_number,'') as customer_phone,
                    m.business_name as merchant_name,
-                   COALESCE(p.name, 'Product Item') as product_name
+                   COALESCE(p.name, 'Product Item') as product_name,
+                   da.name as agent_name, IFNULL(da.phone_number, '') as agent_phone
             FROM order_returns r
             LEFT JOIN orders o ON r.order_id = o.id
             LEFT JOIN users u ON r.user_id = u.id
@@ -299,6 +325,7 @@ exports.adminGetAllReturnRequests = async (req, res) => {
             LEFT JOIN order_items oi ON r.order_item_id = oi.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
             LEFT JOIN products p ON sp.product_id = p.id
+            LEFT JOIN delivery_agents da ON r.delivery_agent_id = da.id
             ${where}
             ORDER BY r.created_at DESC
             LIMIT ? OFFSET ?
@@ -315,6 +342,184 @@ exports.adminGetAllReturnRequests = async (req, res) => {
         res.status(500).json({ status: false, message: 'Could not fetch return requests.' });
     }
 };
+
+// ─────────────────────────────────────────────────────────────
+// ADMIN: PATCH /admin/returns/:id/assign-agent
+// Assigns or Re-assigns a delivery agent for doorstep reverse pickup
+// ─────────────────────────────────────────────────────────────
+exports.adminAssignPickup = async (req, res) => {
+    const { id } = req.params;
+    const { deliveryAgentId, pickupDate, adminNotes } = req.body;
+
+    if (!deliveryAgentId) {
+        return res.status(400).json({ status: false, message: 'Please select a delivery agent.' });
+    }
+
+    try {
+        await ensureReturnTableColumns();
+        const [[ret]] = await db.query(`SELECT id, status, request_type, order_id, user_id FROM order_returns WHERE id = ?`, [id]);
+        if (!ret) return res.status(404).json({ status: false, message: 'Return request not found.' });
+
+        const dateStr = pickupDate || new Date().toISOString().slice(0, 10);
+        await db.query(`
+            UPDATE order_returns 
+            SET delivery_agent_id = ?,
+                pickup_scheduled_date = ?,
+                admin_notes = COALESCE(?, admin_notes),
+                admin_action = 'APPROVED',
+                status = 'PICKUP_ASSIGNED'
+            WHERE id = ?
+        `, [deliveryAgentId, dateStr, adminNotes || null, id]);
+
+        // Emit realtime socket event if agent is connected
+        try {
+            const io = req.app.get('io');
+            if (io) {
+                io.emit(`agent_${deliveryAgentId}_new_pickup`, {
+                    message: `New Reverse Pickup Assigned for ${dateStr}!`,
+                    requestId: id,
+                    orderId: ret.order_id
+                });
+            }
+        } catch (sErr) {}
+
+        res.json({
+            status: true,
+            message: `Delivery Agent assigned successfully for doorstep pickup on ${dateStr}.`
+        });
+    } catch (err) {
+        console.error('[Admin Return] assign error:', err);
+        res.status(500).json({ status: false, message: 'Failed to assign delivery agent.' });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────
+// ADMIN: PATCH /admin/returns/:id/process-upi-refund
+// Admin enters the transaction UTR after paying customer via UPI/Bank
+// ─────────────────────────────────────────────────────────────
+exports.adminProcessUpiRefund = async (req, res) => {
+    const { id } = req.params;
+    const { utr, adminNotes } = req.body;
+
+    if (!utr || !utr.trim()) {
+        return res.status(400).json({ status: false, message: 'Transaction Reference / UTR is required.' });
+    }
+
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+        await ensureReturnTableColumns();
+
+        const [[ret]] = await conn.query(`SELECT * FROM order_returns WHERE id = ?`, [id]);
+        if (!ret) {
+            await conn.rollback();
+            return res.status(404).json({ status: false, message: 'Return request not found.' });
+        }
+
+        // Deduct returned BV from user
+        const [[itemBvRow]] = await conn.query("SELECT total_bv_earned FROM order_items WHERE id = ?", [ret.order_item_id]);
+        if (itemBvRow && itemBvRow.total_bv_earned > 0) {
+            const returnedBv = parseFloat(itemBvRow.total_bv_earned);
+            await conn.query(`
+                UPDATE users SET 
+                    aggregate_personal_bv = GREATEST(0, aggregate_personal_bv - ?),
+                    total_bv_self = GREATEST(0, total_bv_self - ?)
+                WHERE id = ?
+            `, [returnedBv, returnedBv, ret.user_id]).catch(() => {});
+        }
+
+        // Claw back merchant wallet if applicable
+        if (ret.merchant_id) {
+            const platformFee = ret.refund_amount * 0.10;
+            const netAmount   = ret.refund_amount - platformFee;
+            await conn.query(`
+                UPDATE merchant_wallet
+                SET pending_amount   = GREATEST(0, pending_amount - ?),
+                    available_amount = GREATEST(0, available_amount - ?),
+                    total_earned     = GREATEST(0, total_earned - ?)
+                WHERE merchant_id = ?
+            `, [netAmount, netAmount, netAmount, ret.merchant_id]).catch(() => {});
+
+            await conn.query(`
+                UPDATE merchant_transactions SET status = 'REFUNDED'
+                WHERE order_id = ? AND merchant_id = ?
+            `, [ret.order_id, ret.merchant_id]).catch(() => {});
+        }
+
+        const noteAppend = (ret.admin_notes ? ret.admin_notes + ' | ' : '') + `UPI UTR: ${utr.trim()}` + (adminNotes ? ` (${adminNotes})` : '');
+        await conn.query(`
+            UPDATE order_returns
+            SET refund_utr = ?,
+                refund_status = 'COMPLETED',
+                status = 'REFUNDED',
+                admin_notes = ?
+            WHERE id = ?
+        `, [utr.trim(), noteAppend, id]);
+
+        await conn.commit();
+        res.json({
+            status: true,
+            message: `UPI Refund marked complete with UTR: ${utr.trim()}`
+        });
+    } catch (err) {
+        await conn.rollback();
+        console.error('[Admin Return] process UPI refund error:', err);
+        res.status(500).json({ status: false, message: 'Failed to process UPI refund.' });
+    } finally {
+        conn.release();
+    }
+};
+
+// ─────────────────────────────────────────────────────────────
+// HELPER: Creates a ₹0 linked replacement child order
+// ─────────────────────────────────────────────────────────────
+async function createReplacementChildOrder(returnReq, conn) {
+    try {
+        const [[origOrder]] = await conn.query(`SELECT * FROM orders WHERE id = ?`, [returnReq.order_id]);
+        const [[origItem]] = await conn.query(`SELECT * FROM order_items WHERE id = ?`, [returnReq.order_item_id]);
+        if (!origOrder || !origItem) return null;
+
+        const repOrderNum = `REP-${origOrder.order_number || returnReq.order_id}-${Math.floor(100 + Math.random() * 900)}`;
+        const agentToAssign = returnReq.delivery_agent_id || origOrder.delivery_agent_id || null;
+
+        const [insOrder] = await conn.query(`
+            INSERT INTO orders (
+                user_id, shipping_address_id, order_number, subtotal, delivery_fee, 
+                total_amount, total_bv_earned, payment_method, payment_status, order_status, 
+                delivery_agent_id
+            ) VALUES (?, ?, ?, 0.00, 0.00, 0.00, 0.00, 'REPLACEMENT', 'COMPLETED', 'CONFIRMED', ?)
+        `, [
+            origOrder.user_id, origOrder.shipping_address_id, repOrderNum, agentToAssign
+        ]);
+
+        const repOrderId = insOrder.insertId;
+
+        await conn.query(`
+            INSERT INTO order_items (
+                order_id, product_id, seller_product_id, product_name, 
+                attributes_snapshot, quantity, price_per_unit, purchase_price, gst_percentage, 
+                total_price, bv_earned_per_unit, total_bv_earned
+            ) VALUES (?, ?, ?, ?, ?, 1, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00)
+        `, [
+            repOrderId, origItem.product_id, origItem.seller_product_id, `[Replacement] ${origItem.product_name}`,
+            origItem.attributes_snapshot || '{}'
+        ]);
+
+        if (origItem.seller_product_id) {
+            await conn.query(`
+                UPDATE seller_products 
+                SET quantity = GREATEST(0, quantity - 1) 
+                WHERE id = ?
+            `, [origItem.seller_product_id]).catch(() => {});
+        }
+
+        return repOrderId;
+    } catch (err) {
+        console.error('[createReplacementChildOrder] error:', err);
+        return null;
+    }
+}
+exports.createReplacementChildOrder = createReplacementChildOrder;
 
 // ─────────────────────────────────────────────────────────────
 // ADMIN: PATCH /admin/returns/:id/resolve
@@ -341,58 +546,59 @@ exports.adminResolveReturn = async (req, res) => {
         if (action === 'APPROVED') {
             const reqTypeStr = (ret.request_type || ret.return_type || 'RETURN').toUpperCase();
             if (reqTypeStr === 'RETURN') {
-                // Initiate refund to customer wallet (Dual Schema Compatible)
-                await conn.query(`
-                    INSERT INTO user_wallet_transactions
-                      (user_id, txn_type, amount, source, reference_id, remarks, created_at)
-                    VALUES (?, 'credit', ?, 'return_refund', ?, ?, NOW())
-                `, [ret.user_id, ret.refund_amount, id, `Refund for Return Request #${id}`]).catch(async () => {
+                if (ret.refund_method === 'UPI') {
+                    refundStatus = 'PENDING_UPI';
+                    newStatus    = 'PICKED_UP';
+                } else {
+                    // Initiate refund to customer wallet
                     await conn.query(`
                         INSERT INTO user_wallet_transactions
-                          (user_id, amount, transaction_type, remarks, created_at)
-                        VALUES (?, ?, 'CREDIT', ?, NOW())
-                    `, [ret.user_id, ret.refund_amount, `Refund for Return Request #${id}`]).catch(() => {});
-                });
+                          (user_id, txn_type, amount, source, reference_id, remarks, created_at)
+                        VALUES (?, 'credit', ?, 'return_refund', ?, ?, NOW())
+                    `, [ret.user_id, ret.refund_amount, id, `Refund for Return Request #${id}`]).catch(async () => {
+                        await conn.query(`
+                            INSERT INTO user_wallet_transactions
+                              (user_id, amount, transaction_type, remarks, created_at)
+                            VALUES (?, ?, 'CREDIT', ?, NOW())
+                        `, [ret.user_id, ret.refund_amount, `Refund for Return Request #${id}`]).catch(() => {});
+                    });
 
-                // Update user wallet balance
-                await conn.query(`
-                    UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?
-                `, [ret.refund_amount, ret.user_id]);
-
-                // Deduct returned BV / Cashback from user's personal BV & metrics
-                const [[itemBvRow]] = await conn.query("SELECT total_bv_earned FROM order_items WHERE id = ?", [ret.order_item_id]);
-                if (itemBvRow && itemBvRow.total_bv_earned > 0) {
-                    const returnedBv = parseFloat(itemBvRow.total_bv_earned);
                     await conn.query(`
-                        UPDATE users SET 
-                            aggregate_personal_bv = GREATEST(0, aggregate_personal_bv - ?),
-                            total_bv_self = GREATEST(0, total_bv_self - ?)
-                        WHERE id = ?
-                    `, [returnedBv, returnedBv, ret.user_id]);
+                        UPDATE user_wallets SET balance = balance + ? WHERE user_id = ?
+                    `, [ret.refund_amount, ret.user_id]);
+
+                    const [[itemBvRow]] = await conn.query("SELECT total_bv_earned FROM order_items WHERE id = ?", [ret.order_item_id]);
+                    if (itemBvRow && itemBvRow.total_bv_earned > 0) {
+                        const returnedBv = parseFloat(itemBvRow.total_bv_earned);
+                        await conn.query(`
+                            UPDATE users SET 
+                                aggregate_personal_bv = GREATEST(0, aggregate_personal_bv - ?),
+                                total_bv_self = GREATEST(0, total_bv_self - ?)
+                            WHERE id = ?
+                        `, [returnedBv, returnedBv, ret.user_id]);
+                    }
+
+                    if (ret.merchant_id) {
+                        const platformFee = ret.refund_amount * 0.10;
+                        const netAmount   = ret.refund_amount - platformFee;
+                        await conn.query(`
+                            UPDATE merchant_wallet
+                            SET pending_amount   = GREATEST(0, pending_amount - ?),
+                                available_amount = GREATEST(0, available_amount - ?),
+                                total_earned     = GREATEST(0, total_earned - ?)
+                            WHERE merchant_id = ?
+                        `, [netAmount, netAmount, netAmount, ret.merchant_id]).catch(() => {});
+
+                        await conn.query(`
+                            UPDATE merchant_transactions SET status = 'REFUNDED'
+                            WHERE order_id = ? AND merchant_id = ?
+                        `, [ret.order_id, ret.merchant_id]).catch(() => {});
+                    }
+
+                    refundStatus = 'COMPLETED';
+                    newStatus    = 'REFUNDED';
                 }
-
-                // Deduct from merchant wallet (claw back) if merchant_id is present
-                if (ret.merchant_id) {
-                    const platformFee = ret.refund_amount * 0.10;
-                    const netAmount   = ret.refund_amount - platformFee;
-                    await conn.query(`
-                        UPDATE merchant_wallet
-                        SET pending_amount   = GREATEST(0, pending_amount - ?),
-                            available_amount = GREATEST(0, available_amount - ?),
-                            total_earned     = GREATEST(0, total_earned - ?)
-                        WHERE merchant_id = ?
-                    `, [netAmount, netAmount, netAmount, ret.merchant_id]).catch(() => {});
-
-                    await conn.query(`
-                        UPDATE merchant_transactions SET status = 'REFUNDED'
-                        WHERE order_id = ? AND merchant_id = ?
-                    `, [ret.order_id, ret.merchant_id]).catch(() => {});
-                }
-
-                refundStatus = 'COMPLETED';
-                newStatus    = 'REFUNDED';
             } else {
-                // REPLACEMENT — just mark dispatched (actual dispatch is manual)
                 newStatus = 'REPLACEMENT_INITIATED';
                 refundStatus = 'NOT_INITIATED';
             }
@@ -421,7 +627,7 @@ exports.adminResolveReturn = async (req, res) => {
         res.json({
             status: true,
             message: action === 'APPROVED'
-                ? `${ret.request_type === 'RETURN' ? 'Refund of ₹' + ret.refund_amount + ' credited to customer wallet.' : 'Replacement initiated.'}`
+                ? `${ret.request_type === 'RETURN' ? (ret.refund_method === 'UPI' ? 'Approved! Marked for UPI refund.' : 'Refund of ₹' + ret.refund_amount + ' credited to customer wallet.') : 'Replacement initiated.'}`
                 : 'Request rejected. Customer has been notified.'
         });
     } catch (err) {

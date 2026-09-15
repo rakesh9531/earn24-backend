@@ -607,6 +607,8 @@
 // Controllers/sellerProductController.js
 const db = require('../../db');
 const SellerProduct = require('../Models/sellerProductModel');
+const fs = require('fs');
+const path = require('path');
 
 const safeJsonParse = (input, fallback = []) => {
   if (!input) return fallback;
@@ -617,6 +619,33 @@ const safeJsonParse = (input, fallback = []) => {
     return fallback;
   }
 };
+
+function saveBase64Image(base64Str) {
+    if (!base64Str || typeof base64Str !== 'string') return null;
+    if (!base64Str.startsWith('data:image/')) return base64Str;
+
+    try {
+        const matches = base64Str.match(/^data:image\/([a-zA-Z0-9]+);base64,(.+)$/);
+        if (!matches || matches.length !== 3) return base64Str;
+
+        const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+        const dataBuffer = Buffer.from(matches[2], 'base64');
+        const filename = `variant_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+        const uploadDir = path.join(__dirname, '../../uploads/product-images');
+
+        if (!fs.existsSync(uploadDir)) {
+            fs.mkdirSync(uploadDir, { recursive: true });
+        }
+
+        const filePath = path.join(uploadDir, filename);
+        fs.writeFileSync(filePath, dataBuffer);
+        return `/uploads/product-images/${filename}`;
+    } catch (e) {
+        console.warn("Error saving base64 variant image:", e.message);
+        return base64Str;
+    }
+}
+
 
 exports.addSellerOffer = async (req, res) => {
     const loggedInUser = req.user; 
@@ -674,9 +703,10 @@ exports.addSellerOffer = async (req, res) => {
         if (Array.isArray(variantsList) && variantsList.length > 0) {
             for (const v of variantsList) {
                 if (v && (v.title || v.size || v.color || v.price)) {
+                    const vImg = saveBase64Image(v.variant_image_url || v.image_url) || null;
                     await connection.query(
                         `INSERT INTO seller_product_variants (seller_product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                        [newOfferId, v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant', v.color || null, v.size || null, v.sku || null, parseFloat(v.price || sellingPrice || 0), parseFloat(v.mrp || mrp || 0), parseInt(v.quantity || v.stock_quantity || quantity || 0, 10), v.variant_image_url || null]
+                        [newOfferId, v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant', v.color || null, v.size || null, v.sku || null, parseFloat(v.price || sellingPrice || 0), parseFloat(v.mrp || mrp || 0), parseInt(v.quantity || v.stock_quantity || quantity || 0, 10), vImg]
                     ).catch(() => {});
                 }
             }
@@ -805,6 +835,7 @@ exports.getAllSellerOffers = async (req, res) => {
             SELECT 
                 sp.id, sp.sku, sp.mrp, sp.selling_price, sp.purchase_price, sp.merchant_price, sp.admin_margin_percent, sp.quantity,
                 sp.is_active, sp.low_stock_threshold, sp.minimum_order_quantity, sp.created_at,
+                sp.warranty_type, sp.warranty_months, sp.warranty_covered_by,
                 p.id AS product_id, p.name AS product_name, p.main_image_url, p.description, p.is_universal_pincode,
                 s.display_name AS seller_name, s.sellerable_type, s.sellerable_id,
                 m.business_name AS merchant_business_name, m.owner_name AS merchant_owner_name, m.phone_number AS merchant_phone,
@@ -955,9 +986,10 @@ exports.updateSellerOffer = async (req, res) => {
                 await connection.query('DELETE FROM seller_product_variants WHERE seller_product_id = ?', [id]);
                 for (const v of variantsList) {
                     if (v && (v.title || v.size || v.color || v.price)) {
+                        const vImg = saveBase64Image(v.variant_image_url || v.image_url) || null;
                         await connection.query(
                             `INSERT INTO seller_product_variants (seller_product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                            [id, v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant', v.color || null, v.size || null, v.sku || null, parseFloat(v.price || sellingPrice || 0), parseFloat(v.mrp || mrp || 0), parseInt(v.quantity || v.stock_quantity || quantity || 0, 10), v.variant_image_url || null]
+                            [id, v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant', v.color || null, v.size || null, v.sku || null, parseFloat(v.price || sellingPrice || 0), parseFloat(v.mrp || mrp || 0), parseInt(v.quantity || v.stock_quantity || quantity || 0, 10), vImg]
                         ).catch(() => {});
                     }
                 }

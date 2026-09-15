@@ -16,7 +16,9 @@ router.patch('/merchant/:id/action',   auth, returnCtrl.merchantReturnAction);
 router.post('/:id/dispatch-replacement', auth, returnCtrl.dispatchReplacementUnit);
 
 // Admin Routes
-router.get('/admin/all',           auth, returnCtrl.adminGetAllReturnRequests);
-router.patch('/admin/:id/resolve', auth, returnCtrl.adminResolveReturn);
+router.get('/admin/all',                       auth, returnCtrl.adminGetAllReturnRequests);
+router.patch('/admin/:id/resolve',             auth, returnCtrl.adminResolveReturn);
+router.patch('/admin/:id/assign-agent',        auth, returnCtrl.adminAssignPickup);
+router.patch('/admin/:id/process-upi-refund',  auth, returnCtrl.adminProcessUpiRefund);
 
 module.exports = router;
