@@ -380,6 +380,12 @@ exports.adminAssignPickup = async (req, res) => {
                     requestId: id,
                     orderId: ret.order_id
                 });
+                io.emit('pickup_assigned', {
+                    deliveryAgentId,
+                    message: `New Reverse Pickup Assigned for ${dateStr}!`,
+                    requestId: id,
+                    orderId: ret.order_id
+                });
             }
         } catch (sErr) {}
 
