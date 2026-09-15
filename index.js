@@ -163,6 +163,15 @@ async function ensureTablesExist() {
         await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN refund_status VARCHAR(50) DEFAULT 'NOT_INITIATED';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_otp VARCHAR(20) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN delivery_agent_id INT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_scheduled_date DATE NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN refund_method VARCHAR(20) DEFAULT 'WALLET';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN customer_upi_id VARCHAR(100) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN refund_utr VARCHAR(100) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN replacement_order_id INT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN qc_status VARCHAR(50) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN qc_remarks VARCHAR(255) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_items ADD COLUMN is_mlm_distributed TINYINT(1) DEFAULT 0;`).catch(() => {});
         await db.query(`ALTER TABLE order_items ADD COLUMN delivered_at DATETIME NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_items ADD COLUMN return_window_expiry_date DATETIME NULL;`).catch(() => {});

@@ -1044,8 +1044,18 @@ exports.getMasterProductById = async (req, res) => {
         .status(404)
         .json({ status: false, message: "Product not found." });
     }
+    const product = productRows[0];
+
+    // Helper for safe JSON parsing
+    const safeParse = (val, fallback) => {
+      if (!val) return fallback;
+      if (Array.isArray(val)) return val;
+      if (typeof val === 'object') return val;
+      try { return JSON.parse(val); } catch (e) { return fallback; }
+    };
+
     // Parse gallery URLs string into a proper array
-    product.gallery_image_urls = safeJsonParse(product.gallery_image_urls, []);
+    product.gallery_image_urls = safeParse(product.gallery_image_urls, []);
 
     // Fetch associated attributes for the product
     const attributesSql = `
@@ -1057,6 +1067,36 @@ exports.getMasterProductById = async (req, res) => {
         `;
     const [attributes] = await db.query(attributesSql, [id]);
     product.attributes = attributes;
+
+    // Fetch associated variants for the product
+    try {
+      const [variants] = await db.query(
+        `SELECT id, title, color, size, sku, price, mrp, stock_quantity as quantity, variant_image_url, variant_image_urls
+         FROM seller_product_variants
+         WHERE product_id = ?`,
+        [id]
+      );
+      product.variants = (variants || []).map(v => ({
+        ...v,
+        variant_image_urls: safeParse(v.variant_image_urls, [])
+      }));
+    } catch (varErr) {
+      product.variants = [];
+    }
+
+    // Fetch associated pincodes
+    try {
+      const [pincodes] = await db.query(
+        `SELECT DISTINCT spp.pincode
+         FROM seller_product_pincodes spp
+         JOIN seller_products sp ON spp.seller_product_id = sp.id
+         WHERE sp.product_id = ?`,
+        [id]
+      );
+      product.pincodes = (pincodes || []).map(pin => pin.pincode);
+    } catch (pinErr) {
+      product.pincodes = [];
+    }
 
     res.status(200).json({ status: true, data: product });
   } catch (error) {

@@ -144,7 +144,9 @@ router.patch('/settlements/:id/pay',     auth, walletCtrl.adminMarkSettlementPai
 
 // ── Return & Replacement Management (Admin) ──
 const returnCtrl = require('../Controllers/returnController');
-router.get('/returns/all',              auth, returnCtrl.adminGetAllReturnRequests);
-router.patch('/returns/:id/resolve',    auth, returnCtrl.adminResolveReturn);
+router.get('/returns/all',                     auth, returnCtrl.adminGetAllReturnRequests);
+router.patch('/returns/:id/resolve',           auth, returnCtrl.adminResolveReturn);
+router.patch('/returns/:id/assign-agent',      auth, returnCtrl.adminAssignPickup);
+router.patch('/returns/:id/process-upi-refund', auth, returnCtrl.adminProcessUpiRefund);
 
 module.exports = router;

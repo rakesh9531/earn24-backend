@@ -296,10 +296,18 @@ exports.getOrderHistory = async (req, res) => {
                     }
                 } catch (e) {}
             }
+
+            const [returns] = await db.query(
+                `SELECT id, status, request_type, refund_method, refund_status FROM order_returns WHERE order_id = ? ORDER BY id DESC LIMIT 1`,
+                [order.id]
+            ).catch(() => [[]]);
+
             return {
                 ...order,
                 display_image_url: displayImg,
-                first_item_name: items[0]?.product_name || null
+                first_item_name: items[0]?.product_name || null,
+                return_status: returns && returns[0] ? returns[0].status : null,
+                return_type: returns && returns[0] ? returns[0].request_type : null
             };
         }));
 
@@ -354,7 +362,11 @@ exports.getOrderDetails = async (req, res) => {
         const [itemRows] = await db.query(itemsQuery, [orderId]);
 
         const [returnRows] = await db.query(
-            `SELECT id, status, request_type, reason, admin_remarks, reject_reason, refund_amount, created_at, updated_at FROM order_returns WHERE order_id = ? ORDER BY id DESC LIMIT 1`,
+            `SELECT r.*, da.name as agent_name, da.phone as agent_phone 
+             FROM order_returns r 
+             LEFT JOIN delivery_agents da ON r.delivery_agent_id = da.id 
+             WHERE r.order_id = ? 
+             ORDER BY r.id DESC LIMIT 1`,
             [orderId]
         ).catch(() => [[]]);
 
@@ -1317,10 +1329,13 @@ exports.cancelUserOrder = async (req, res) => {
 exports.requestReturn = async (req, res) => {
   const userId = req.user.id;
   const { orderId } = req.params;
-  const { reason, type, requestType, orderItemId, evidence_images } = req.body;
+  const { reason, type, requestType, orderItemId, evidence_images, refund_method, refundMethod, customer_upi_id, customerUpiId } = req.body;
 
   const reqType = (type || requestType || 'RETURN').toUpperCase();
   const returnReason = reason || 'Return requested by user';
+  const chosenRefundMethod = (refund_method || refundMethod || 'WALLET').toUpperCase();
+  const upiId = customer_upi_id || customerUpiId || null;
+  const pickupOtp = Math.floor(1000 + Math.random() * 9000).toString();
 
   try {
     // 1. Check if order exists and belongs to user
@@ -1368,45 +1383,10 @@ exports.requestReturn = async (req, res) => {
       }
     }
 
-    // 5. Ensure order_returns table exists
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS order_returns (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        order_id INT NOT NULL,
-        order_item_id INT NULL,
-        user_id INT NOT NULL,
-        merchant_id INT NULL,
-        return_type VARCHAR(50) DEFAULT 'RETURN',
-        request_type VARCHAR(50) DEFAULT 'RETURN',
-        reason TEXT NULL,
-        evidence_images LONGTEXT NULL,
-        refund_amount DECIMAL(10,2) DEFAULT 0.00,
-        status VARCHAR(50) DEFAULT 'PENDING',
-        merchant_action VARCHAR(50) DEFAULT 'PENDING',
-        admin_action VARCHAR(50) DEFAULT 'PENDING',
-        refund_status VARCHAR(50) DEFAULT 'NOT_INITIATED',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    `).catch(() => {});
-
-    await db.query(`ALTER TABLE order_returns ADD COLUMN request_type VARCHAR(50) DEFAULT 'RETURN';`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN return_type VARCHAR(50) DEFAULT 'RETURN';`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_id INT NULL;`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN order_item_id INT NULL;`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN evidence_images LONGTEXT NULL;`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns MODIFY COLUMN merchant_id INT NULL DEFAULT NULL;`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns MODIFY COLUMN order_item_id INT NULL DEFAULT NULL;`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN request_type VARCHAR(50) DEFAULT 'RETURN';`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN return_type VARCHAR(50) DEFAULT 'RETURN';`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_id INT NULL DEFAULT NULL;`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN order_item_id INT NULL DEFAULT NULL;`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN evidence_images LONGTEXT NULL;`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
-    await db.query(`ALTER TABLE order_returns ADD COLUMN refund_status VARCHAR(50) DEFAULT 'NOT_INITIATED';`).catch(() => {});
+    // 5. Ensure order_returns columns exist
+    await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_otp VARCHAR(20) NULL;`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN refund_method VARCHAR(20) DEFAULT 'WALLET';`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN customer_upi_id VARCHAR(100) NULL;`).catch(() => {});
 
     // 6. Check if request already submitted
     const [existing] = await db.query(
@@ -1430,8 +1410,8 @@ exports.requestReturn = async (req, res) => {
     try {
       [result] = await db.query(
         `INSERT INTO order_returns 
-          (order_id, order_item_id, user_id, merchant_id, return_type, request_type, reason, evidence_images, refund_amount, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
+          (order_id, order_item_id, user_id, merchant_id, return_type, request_type, reason, evidence_images, refund_amount, status, pickup_otp, refund_method, customer_upi_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
         [
           orderId,
           safeItemId,
@@ -1441,22 +1421,28 @@ exports.requestReturn = async (req, res) => {
           reqType,
           returnReason,
           evidence_images ? JSON.stringify(evidence_images) : null,
-          itemRefundAmount
+          itemRefundAmount,
+          pickupOtp,
+          chosenRefundMethod,
+          upiId
         ]
       );
     } catch (insertErr) {
       console.warn("Primary return insert failed, executing fallback insert:", insertErr.message);
       [result] = await db.query(
         `INSERT INTO order_returns 
-          (order_id, order_item_id, user_id, merchant_id, reason, refund_amount, status)
-         VALUES (?, ?, ?, ?, ?, ?, 'PENDING')`,
+          (order_id, order_item_id, user_id, merchant_id, reason, refund_amount, status, pickup_otp, refund_method, customer_upi_id)
+         VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
         [
           orderId,
           safeItemId,
           userId,
           safeMerchantId,
           returnReason,
-          itemRefundAmount
+          itemRefundAmount,
+          pickupOtp,
+          chosenRefundMethod,
+          upiId
         ]
       );
     }
