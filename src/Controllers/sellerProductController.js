@@ -943,6 +943,15 @@ exports.updateSellerOffer = async (req, res) => {
         if (req.body.replacement_window_days !== undefined) { fields.push('replacement_window_days = ?'); values.push(parseInt(req.body.replacement_window_days, 10)); }
 
         if (fields.length > 0) {
+            // Ensure columns exist on live schema
+            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS warranty_type VARCHAR(50) NULL DEFAULT 'no_warranty'").catch(() => {});
+            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS warranty_months INT NULL DEFAULT 0").catch(() => {});
+            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS warranty_covered_by VARCHAR(255) NULL").catch(() => {});
+            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS warranty_period VARCHAR(100) NULL").catch(() => {});
+            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS low_stock_threshold INT DEFAULT 5").catch(() => {});
+            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS minimum_order_quantity INT DEFAULT 1").catch(() => {});
+            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS has_variants TINYINT(1) DEFAULT 0").catch(() => {});
+
             const updateQuery = `UPDATE seller_products SET ${fields.join(', ')} WHERE id = ?`;
             await connection.query(updateQuery, [...values, id]);
         }
@@ -954,11 +963,13 @@ exports.updateSellerOffer = async (req, res) => {
             try { pincodeList = JSON.parse(pincodeList); } catch (e) { pincodeList = pincodeList.split(',').map(p => p.trim()).filter(Boolean); }
         }
 
+        const [spRow] = await connection.query('SELECT product_id FROM seller_products WHERE id = ?', [id]);
+        const matchedProductId = spRow && spRow[0] ? spRow[0].product_id : null;
+
         if (isUniversalProvided) {
             const isUniversal = (deliveryType === 'universal' || deliveryType === 'pan_india' || req.body.is_pan_india === true || req.body.is_pan_india === 1 || req.body.is_pan_india === 'true' || req.body.is_universal_pincode === 1 || req.body.is_universal_pincode === '1' || req.body.is_universal_pincode === true || req.body.is_universal_pincode === 'true') ? 1 : 0;
-            const [spRow] = await connection.query('SELECT product_id FROM seller_products WHERE id = ?', [id]);
-            if (spRow.length > 0) {
-                await connection.query('UPDATE products SET is_universal_pincode = ? WHERE id = ?', [isUniversal, spRow[0].product_id]);
+            if (matchedProductId) {
+                await connection.query('UPDATE products SET is_universal_pincode = ? WHERE id = ?', [isUniversal, matchedProductId]);
             }
             await connection.query('DELETE FROM seller_product_pincodes WHERE seller_product_id = ?', [id]);
             if (isUniversal === 1) {
@@ -983,16 +994,24 @@ exports.updateSellerOffer = async (req, res) => {
                 try { variantsList = JSON.parse(variantsList); } catch(e) { variantsList = []; }
             }
             if (Array.isArray(variantsList)) {
+                await connection.query('ALTER TABLE seller_product_variants MODIFY COLUMN product_id INT NULL').catch(() => {});
+                await connection.query('ALTER TABLE seller_product_variants MODIFY COLUMN variant_image_url LONGTEXT NULL').catch(() => {});
                 await connection.query('DELETE FROM seller_product_variants WHERE seller_product_id = ?', [id]);
+
                 for (const v of variantsList) {
                     if (v && (v.title || v.size || v.color || v.price)) {
-                        const vImg = saveBase64Image(v.variant_image_url || v.image_url) || null;
+                        let vImg = v.variant_image_url || v.image_url || null;
+                        if (vImg && typeof vImg === 'string' && vImg.startsWith('data:image/')) {
+                            vImg = saveBase64Image(vImg) || null;
+                        }
                         await connection.query(
-                            `INSERT INTO seller_product_variants (seller_product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                            [id, v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant', v.color || null, v.size || null, v.sku || null, parseFloat(v.price || sellingPrice || 0), parseFloat(v.mrp || mrp || 0), parseInt(v.quantity || v.stock_quantity || quantity || 0, 10), vImg]
-                        ).catch(() => {});
+                            `INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            [id, matchedProductId, v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant', v.color || null, v.size || null, v.sku || null, parseFloat(v.price || sellingPrice || 0), parseFloat(v.mrp || mrp || 0), parseInt(v.quantity || v.stock_quantity || quantity || 0, 10), vImg]
+                        ).catch((err) => console.error('[Variant Insert Warning]:', err.message));
                     }
                 }
+                const hasVariants = variantsList.length > 0 ? 1 : 0;
+                await connection.query('UPDATE seller_products SET has_variants = ? WHERE id = ?', [hasVariants, id]).catch(() => {});
             }
         }
 
@@ -1001,7 +1020,8 @@ exports.updateSellerOffer = async (req, res) => {
 
     } catch (error) {
         if (connection) await connection.rollback();
-        res.status(500).json({ status: false, message: "An error occurred during the update." });
+        console.error('[UPDATE OFFER ERROR]:', error);
+        res.status(500).json({ status: false, message: error.message || "An error occurred during the update." });
     } finally {
         if (connection) connection.release();
     }

@@ -931,45 +931,37 @@ exports.initiatePayUPayment = async (req, res) => {
         const deliveryFee = totalBvEarned >= bvThreshold ? specialFee : standardFee;
         const totalAmount = Math.round((subtotal + deliveryFee) * 100) / 100;
 
-        // 4. Check if user already has an unpaid PENDING draft order created in the last 15 mins to REUSE
-        const [existingPending] = await connection.query(
-            `SELECT id, order_number FROM orders WHERE user_id = ? AND payment_status = 'PENDING' AND order_status = 'PENDING' AND created_at > NOW() - INTERVAL 15 MINUTE ORDER BY id DESC LIMIT 1`,
-            [userId]
-        );
+        // Ensure temporary checkout sessions table exists
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS payment_checkout_sessions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                session_id VARCHAR(100) UNIQUE NOT NULL,
+                user_id INT NOT NULL,
+                shipping_address_id INT NOT NULL,
+                order_number VARCHAR(50) NOT NULL,
+                subtotal DECIMAL(10,2) NOT NULL,
+                delivery_fee DECIMAL(10,2) NOT NULL,
+                total_amount DECIMAL(10,2) NOT NULL,
+                total_bv_earned DECIMAL(10,2) NOT NULL,
+                cart_item_ids JSON NULL,
+                session_items JSON NOT NULL,
+                created_order_id INT NULL,
+                status VARCHAR(20) DEFAULT 'PENDING',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+        `).catch(e => console.warn('[Checkout Sessions Table Init]', e.message));
 
-        let orderId;
-        let orderNumber;
-
-        if (existingPending && existingPending.length > 0) {
-            orderId = existingPending[0].id;
-            orderNumber = existingPending[0].order_number;
-
-            await connection.query(
-                `UPDATE orders SET shipping_address_id = ?, subtotal = ?, delivery_fee = ?, total_amount = ?, total_bv_earned = ?, updated_at = NOW() WHERE id = ?`,
-                [shippingAddressId, subtotal, deliveryFee, totalAmount, totalBvEarned, orderId]
-            );
-            await connection.query(`DELETE FROM order_items WHERE order_id = ?`, [orderId]);
-        } else {
-            const date = new Date();
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            const randomPart = Math.random().toString(36).substr(2, 6).toUpperCase();
-            orderNumber = `ORD-${year}${month}${day}-${randomPart}`;
-
-            const [orderResult] = await connection.query(
-                `INSERT INTO orders (
-                    user_id, shipping_address_id, order_number, subtotal, delivery_fee, 
-                    total_amount, total_bv_earned, payment_method, payment_status, order_status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PAYU', 'PENDING', 'PENDING', NOW(), NOW())`,
-                [userId, shippingAddressId, orderNumber, subtotal, deliveryFee, totalAmount, totalBvEarned]
-            );
-            orderId = orderResult.insertId;
-        }
-
+        const date = new Date();
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const randomPart = Math.random().toString(36).substr(2, 6).toUpperCase();
+        const orderNumber = `ORD-${year}${month}${day}-${randomPart}`;
         const txnid = `TXN_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 
-        // 5. Insert Order Items using exact production schema
+        // 4. Build Item Snapshots & Session Data (DO NOT INSERT INTO orders OR order_items until payment is confirmed)
+        const sessionItems = [];
         for (const item of cartItems) {
             const snapshot = {};
             if (item.variant_title) snapshot['Selected Variant'] = item.variant_title;
@@ -994,23 +986,38 @@ exports.initiatePayUPayment = async (req, res) => {
             }
             const bvEarnedPerUnit = itemProfit > 0 ? (itemProfit * (bvGenerationPct / 100)) : 0;
 
-            const orderItemSql = `
-                INSERT INTO order_items (
-                    order_id, product_id, seller_product_id, product_name, 
-                    attributes_snapshot, quantity, price_per_unit, purchase_price, gst_percentage, total_price, 
-                    bv_earned_per_unit, total_bv_earned
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-            await connection.query(orderItemSql, [
-                orderId, item.product_id, item.seller_product_id, effectiveName,
-                JSON.stringify(snapshot),
-                item.quantity, effectivePrice, purchasePrice, gstPercent, effectivePrice * item.quantity,
-                bvEarnedPerUnit, bvEarnedPerUnit * item.quantity
-            ]);
+            sessionItems.push({
+                product_id: item.product_id,
+                seller_product_id: item.seller_product_id,
+                product_name: effectiveName,
+                attributes_snapshot: snapshot,
+                quantity: item.quantity,
+                price_per_unit: effectivePrice,
+                purchase_price: purchasePrice,
+                gst_percentage: gstPercent,
+                total_price: effectivePrice * item.quantity,
+                bv_earned_per_unit: bvEarnedPerUnit,
+                total_bv_earned: bvEarnedPerUnit * item.quantity
+            });
         }
+
+        // Store into temporary checkout session table (Real order will only be created upon verified payment)
+        await connection.query(
+            `INSERT INTO payment_checkout_sessions (
+                session_id, user_id, shipping_address_id, order_number, subtotal, 
+                delivery_fee, total_amount, total_bv_earned, cart_item_ids, session_items, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
+            [
+                txnid, userId, shippingAddressId, orderNumber, subtotal,
+                deliveryFee, totalAmount, totalBvEarned,
+                cartItemIds ? JSON.stringify(cartItemIds) : null,
+                JSON.stringify(sessionItems)
+            ]
+        );
 
         await connection.commit();
 
-        // 6. Get PayU Credentials (Dynamic DB + Env Fallback)
+        // 5. Get PayU Credentials (Dynamic DB + Env Fallback)
         const getPayUCredentials = async () => {
             try {
                 const [rows] = await db.query(
@@ -1047,13 +1054,9 @@ exports.initiatePayUPayment = async (req, res) => {
         const email = user.email || 'customer@earn24.in';
         const phone = user.mobile_number || '9999999999';
 
-        // Format: key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5|udf6|udf7|udf8|udf9|udf10|SALT (11 pipes after email)
-        const hashString = `${payuKey}|${txnid}|${totalAmount.toFixed(2)}|${productInfo}|${firstname}|${email}|${orderId}||||||||||${payuSalt}`;
+        // Format: key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5|udf6|udf7|udf8|udf9|udf10|SALT
+        const hashString = `${payuKey}|${txnid}|${totalAmount.toFixed(2)}|${productInfo}|${firstname}|${email}|${txnid}||||||||||${payuSalt}`;
         const hash = crypto.createHash('sha512').update(hashString).digest('hex');
-
-        console.log(`[PayU Debug] Key: ${payuKey} | Salt: ${payuSalt.slice(0, 4)}...${payuSalt.slice(-4)} | Amount: ${totalAmount.toFixed(2)} | OrderID: ${orderId}`);
-        console.log(`[PayU Debug] HashString: ${hashString}`);
-        console.log(`[PayU Debug] Hash: ${hash}`);
 
         res.status(200).json({
             status: true,
@@ -1068,25 +1071,25 @@ exports.initiatePayUPayment = async (req, res) => {
                 email: email,
                 phone: phone,
                 hash: hash,
-                orderId: orderId,
+                orderId: txnid,
                 orderNumber: orderNumber,
-                udf1: orderId.toString(),
+                udf1: txnid,
                 surl: `${process.env.BASE_URL || 'https://newapi.earn24.in'}/api/orders/payu/verify`,
                 furl: `${process.env.BASE_URL || 'https://newapi.earn24.in'}/api/orders/payu/verify`
             }
         });
 
     } catch (error) {
-        await connection.rollback();
+        if (connection) await connection.rollback();
         console.error("Error initiating PayU payment:", error);
         res.status(500).json({ status: false, message: error.message || 'Failed to initialize PayU payment.' });
     } finally {
-        connection.release();
+        if (connection) connection.release();
     }
 };
 
 /**
- * Verify PayU Response & Complete Order
+ * Verify PayU Response & Complete Order (True E-Commerce Order Placement)
  */
 exports.verifyPayUPayment = async (req, res) => {
     const body = req.body || {};
@@ -1094,53 +1097,175 @@ exports.verifyPayUPayment = async (req, res) => {
     const data = { ...query, ...body };
 
     const { status } = data;
-    const targetOrderId = data.orderId || data.udf1;
+    const identifier = data.txnid || data.udf1 || data.orderId;
 
+    if (!identifier) {
+        return res.status(400).json({ status: false, message: 'Missing transaction identifier.' });
+    }
+
+    const connection = await db.getConnection();
     try {
-        if (status === 'success' || data.status === 'success') {
-            if (targetOrderId) {
-                // Update Order to PAID & CONFIRMED
-                await db.query(
-                    `UPDATE orders SET payment_status = 'PAID', order_status = 'CONFIRMED', updated_at = NOW() WHERE id = ?`,
-                    [targetOrderId]
+        await connection.beginTransaction();
+
+        // 1. Look up temporary checkout session
+        const [sessions] = await connection.query(
+            "SELECT * FROM payment_checkout_sessions WHERE session_id = ? OR order_number = ? LIMIT 1 FOR UPDATE",
+            [identifier, identifier]
+        );
+
+        if (sessions.length > 0) {
+            const session = sessions[0];
+
+            // If already processed into an order, return existing order details (Idempotency)
+            if (session.status === 'COMPLETED' && session.created_order_id) {
+                await connection.commit();
+                return res.status(200).json({
+                    status: true,
+                    message: 'Payment already verified and order confirmed.',
+                    data: {
+                        orderId: session.created_order_id,
+                        orderNumber: session.order_number
+                    }
+                });
+            }
+
+            if (status === 'success' || data.status === 'success') {
+                // Payment was SUCCESSFUL -> NOW create the REAL order in database!
+                const [orderResult] = await connection.query(
+                    `INSERT INTO orders (
+                        user_id, shipping_address_id, order_number, subtotal, delivery_fee, 
+                        total_amount, total_bv_earned, payment_method, payment_status, order_status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PAYU', 'PAID', 'CONFIRMED', NOW(), NOW())`,
+                    [
+                        session.user_id, session.shipping_address_id, session.order_number,
+                        session.subtotal, session.delivery_fee, session.total_amount, session.total_bv_earned
+                    ]
+                );
+                const createdOrderId = orderResult.insertId;
+
+                // Insert items into order_items
+                const items = typeof session.session_items === 'string' 
+                    ? JSON.parse(session.session_items) 
+                    : (session.session_items || []);
+
+                for (const item of items) {
+                    const orderItemSql = `
+                        INSERT INTO order_items (
+                            order_id, product_id, seller_product_id, product_name, 
+                            attributes_snapshot, quantity, price_per_unit, purchase_price, gst_percentage, total_price, 
+                            bv_earned_per_unit, total_bv_earned
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+                    await connection.query(orderItemSql, [
+                        createdOrderId, item.product_id, item.seller_product_id, item.product_name,
+                        typeof item.attributes_snapshot === 'string' ? item.attributes_snapshot : JSON.stringify(item.attributes_snapshot || {}),
+                        item.quantity, item.price_per_unit, item.purchase_price, item.gst_percentage, item.total_price,
+                        item.bv_earned_per_unit, item.total_bv_earned
+                    ]);
+
+                    // Deduct stock if seller_product exists
+                    if (item.seller_product_id) {
+                        await connection.query(
+                            "UPDATE seller_products SET stock = GREATEST(0, stock - ?) WHERE id = ?",
+                            [item.quantity, item.seller_product_id]
+                        ).catch(() => {});
+                    }
+                }
+
+                // Delete ordered items from user's cart
+                const cartItemIds = session.cart_item_ids ? (typeof session.cart_item_ids === 'string' ? JSON.parse(session.cart_item_ids) : session.cart_item_ids) : null;
+                const [cartRows] = await connection.query('SELECT id FROM carts WHERE user_id = ?', [session.user_id]);
+                if (cartRows.length > 0) {
+                    const cartId = cartRows[0].id;
+                    if (cartItemIds && cartItemIds.length > 0) {
+                        await connection.query('DELETE FROM cart_items WHERE cart_id = ? AND id IN (?)', [cartId, cartItemIds]);
+                    } else {
+                        await connection.query('DELETE FROM cart_items WHERE cart_id = ?', [cartId]);
+                    }
+                }
+
+                // Update session to COMPLETED with link to order
+                await connection.query(
+                    "UPDATE payment_checkout_sessions SET status = 'COMPLETED', created_order_id = ?, updated_at = NOW() WHERE id = ?",
+                    [createdOrderId, session.id]
                 );
 
-                // Fetch order info to notify socket rooms & clean orphaned draft orders
-                const [orderRows] = await db.query(`SELECT user_id, order_number FROM orders WHERE id = ?`, [targetOrderId]);
-                if (orderRows.length > 0) {
-                    const userId = orderRows[0].user_id;
+                await connection.commit();
 
-                    // Clean up orphaned unpaid pending orders for this user
-                    await db.query(
-                        `UPDATE orders SET order_status = 'CANCELLED', payment_status = 'FAILED' WHERE user_id = ? AND payment_status = 'PENDING' AND id != ?`,
-                        [userId, targetOrderId]
+                // Trigger Smart Auto-Dispatch Engine
+                const deliveryAppController = require('./deliveryAppController');
+                deliveryAppController.autoDispatchOrder(createdOrderId).catch(err => 
+                    console.error('[Auto-Dispatch Trigger Error]', err.message)
+                );
+
+                // Notify Socket Admin & Merchant of valid placed order
+                const io = req.app.get('socketio') || req.app.get('io');
+                if (io) {
+                    io.to('admins').emit('new_order', {
+                        orderId: createdOrderId,
+                        orderNumber: session.order_number,
+                        totalAmount: session.total_amount,
+                        orderStatus: 'CONFIRMED'
+                    });
+                }
+
+                return res.status(200).json({
+                    status: true,
+                    message: 'Payment verified and order placed successfully.',
+                    data: {
+                        orderId: createdOrderId,
+                        orderNumber: session.order_number
+                    }
+                });
+            } else {
+                // Payment was FAILED or CANCELLED
+                await connection.query(
+                    "UPDATE payment_checkout_sessions SET status = 'FAILED', updated_at = NOW() WHERE id = ?",
+                    [session.id]
+                );
+                await connection.commit();
+                return res.status(400).json({ status: false, message: 'Payment verification failed or payment cancelled.' });
+            }
+        } else {
+            // Fallback for any legacy orders created before this update
+            const [legacyOrderRows] = await connection.query(
+                "SELECT id, user_id, order_number, order_status FROM orders WHERE id = ? OR order_number = ? LIMIT 1",
+                [identifier, identifier]
+            );
+            if (legacyOrderRows.length > 0) {
+                const targetOrderId = legacyOrderRows[0].id;
+                if (status === 'success' || data.status === 'success') {
+                    await connection.query(
+                        "UPDATE orders SET payment_status = 'PAID', order_status = 'CONFIRMED', updated_at = NOW() WHERE id = ?",
+                        [targetOrderId]
                     );
-
-                    // Clear User Cart
-                    const [cartRows] = await db.query('SELECT id FROM carts WHERE user_id = ?', [userId]);
-                    if (cartRows.length > 0) {
-                        await db.query('DELETE FROM cart_items WHERE cart_id = ?', [cartRows[0].id]);
-                    }
-
-                    // Notify Socket Admin & Merchant
-                    const io = req.app.get('io');
-                    if (io) {
-                        io.to('admins').emit('new_order', { orderId: targetOrderId, orderNumber: orderRows[0].order_number });
-                    }
+                    await connection.commit();
+                    return res.status(200).json({
+                        status: true,
+                        message: 'Payment verified and order placed successfully.',
+                        data: {
+                            orderId: targetOrderId,
+                            orderNumber: legacyOrderRows[0].order_number
+                        }
+                    });
+                } else {
+                    await connection.query(
+                        "UPDATE orders SET payment_status = 'FAILED', order_status = 'CANCELLED', updated_at = NOW() WHERE id = ?",
+                        [targetOrderId]
+                    );
+                    await connection.commit();
+                    return res.status(400).json({ status: false, message: 'Payment verification failed or payment cancelled.' });
                 }
             }
 
-            return res.status(200).json({ status: true, message: 'Payment verified and order placed successfully.' });
-        } else {
-            // Update Order to FAILED & CANCELLED
-            if (targetOrderId) {
-                await db.query(`UPDATE orders SET payment_status = 'FAILED', order_status = 'CANCELLED', updated_at = NOW() WHERE id = ?`, [targetOrderId]);
-            }
-            return res.status(400).json({ status: false, message: 'Payment verification failed or payment cancelled.' });
+            await connection.rollback();
+            return res.status(404).json({ status: false, message: 'Payment session or order not found.' });
         }
     } catch (error) {
+        if (connection) await connection.rollback();
         console.error("Error verifying PayU payment:", error);
-        res.status(500).json({ status: false, message: 'Internal server error verifying payment.' });
+        return res.status(500).json({ status: false, message: error.message || 'Internal server error verifying payment.' });
+    } finally {
+        if (connection) connection.release();
     }
 };
 
@@ -1384,6 +1509,10 @@ exports.requestReturn = async (req, res) => {
     }
 
     // 5. Ensure order_returns columns exist
+    await db.query(`ALTER TABLE order_returns MODIFY COLUMN status VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns MODIFY COLUMN merchant_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns MODIFY COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns MODIFY COLUMN evidence_images LONGTEXT NULL;`).catch(() => {});
     await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_otp VARCHAR(20) NULL;`).catch(() => {});
     await db.query(`ALTER TABLE order_returns ADD COLUMN refund_method VARCHAR(20) DEFAULT 'WALLET';`).catch(() => {});
     await db.query(`ALTER TABLE order_returns ADD COLUMN customer_upi_id VARCHAR(100) NULL;`).catch(() => {});

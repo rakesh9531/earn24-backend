@@ -1525,9 +1525,102 @@ exports.payuWebhook = async (req, res) => {
         await connection.beginTransaction();
 
         // 4. Find the internal transaction record
-        const [txn] = await connection.query("SELECT order_id, status FROM payment_transactions WHERE transaction_id = ?", [txnid]);
+        let [txn] = await connection.query("SELECT order_id, status FROM payment_transactions WHERE transaction_id = ?", [txnid]);
 
         if (!txn[0]) {
+            // Check if this txnid belongs to a payment_checkout_sessions
+            const [sessions] = await connection.query(
+                "SELECT * FROM payment_checkout_sessions WHERE session_id = ? LIMIT 1 FOR UPDATE",
+                [txnid]
+            ).catch(() => [[]]);
+
+            if (sessions && sessions.length > 0) {
+                const session = sessions[0];
+                if (session.status === 'COMPLETED') {
+                    await connection.rollback();
+                    return res.status(200).send("OK - Already Processed");
+                }
+
+                if (status === "success") {
+                    const [orderResult] = await connection.query(
+                        `INSERT INTO orders (
+                            user_id, shipping_address_id, order_number, subtotal, delivery_fee, 
+                            total_amount, total_bv_earned, payment_method, payment_status, order_status, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PAYU', 'PAID', 'CONFIRMED', NOW(), NOW())`,
+                        [
+                            session.user_id, session.shipping_address_id, session.order_number,
+                            session.subtotal, session.delivery_fee, session.total_amount, session.total_bv_earned
+                        ]
+                    );
+                    const createdOrderId = orderResult.insertId;
+
+                    const items = typeof session.session_items === 'string' ? JSON.parse(session.session_items) : (session.session_items || []);
+                    for (const item of items) {
+                        const orderItemSql = `
+                            INSERT INTO order_items (
+                                order_id, product_id, seller_product_id, product_name, 
+                                attributes_snapshot, quantity, price_per_unit, purchase_price, gst_percentage, total_price, 
+                                bv_earned_per_unit, total_bv_earned
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+                        await connection.query(orderItemSql, [
+                            createdOrderId, item.product_id, item.seller_product_id, item.product_name,
+                            typeof item.attributes_snapshot === 'string' ? item.attributes_snapshot : JSON.stringify(item.attributes_snapshot || {}),
+                            item.quantity, item.price_per_unit, item.purchase_price, item.gst_percentage, item.total_price,
+                            item.bv_earned_per_unit, item.total_bv_earned
+                        ]);
+
+                        if (item.seller_product_id) {
+                            await connection.query(
+                                "UPDATE seller_products SET stock = GREATEST(0, stock - ?) WHERE id = ?",
+                                [item.quantity, item.seller_product_id]
+                            ).catch(() => {});
+                        }
+                    }
+
+                    const cartItemIds = session.cart_item_ids ? (typeof session.cart_item_ids === 'string' ? JSON.parse(session.cart_item_ids) : session.cart_item_ids) : null;
+                    const [cartRows] = await connection.query('SELECT id FROM carts WHERE user_id = ?', [session.user_id]);
+                    if (cartRows.length > 0) {
+                        const cartId = cartRows[0].id;
+                        if (cartItemIds && cartItemIds.length > 0) {
+                            await connection.query('DELETE FROM cart_items WHERE cart_id = ? AND id IN (?)', [cartId, cartItemIds]);
+                        } else {
+                            await connection.query('DELETE FROM cart_items WHERE cart_id = ?', [cartId]);
+                        }
+                    }
+
+                    await connection.query(
+                        "UPDATE payment_checkout_sessions SET status = 'COMPLETED', created_order_id = ?, updated_at = NOW() WHERE id = ?",
+                        [createdOrderId, session.id]
+                    );
+
+                    await connection.commit();
+
+                    const deliveryAppController = require('./deliveryAppController');
+                    deliveryAppController.autoDispatchOrder(createdOrderId).catch(err => 
+                        console.error('[Auto-Dispatch Trigger Error]', err.message)
+                    );
+
+                    const io = req.app.get('socketio') || req.app.get('io');
+                    if (io) {
+                        io.to('admins').emit('new_order', {
+                            orderId: createdOrderId,
+                            orderNumber: session.order_number,
+                            totalAmount: session.total_amount,
+                            orderStatus: 'CONFIRMED'
+                        });
+                    }
+
+                    return res.status(200).send("OK");
+                } else {
+                    await connection.query(
+                        "UPDATE payment_checkout_sessions SET status = 'FAILED', updated_at = NOW() WHERE id = ?",
+                        [session.id]
+                    );
+                    await connection.commit();
+                    return res.status(200).send("OK - Payment Failed");
+                }
+            }
+
             console.error("[Webhook Error] Transaction ID not found in local DB.");
             await connection.rollback();
             return res.status(200).send("Transaction Not Found");

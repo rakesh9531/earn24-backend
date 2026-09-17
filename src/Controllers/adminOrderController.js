@@ -13,7 +13,10 @@ exports.getOrdersByStatus = async (req, res) => {
 
         if (status === 'CONFIRMED') {
             whereClause = "WHERE o.order_status IN ('CONFIRMED', 'PLACED', 'SHIPPED', 'OUT_FOR_DELIVERY')";
-        } else if (status !== 'ALL') {
+        } else if (status === 'ALL') {
+            // Process New Orders should only include real active orders, not unfinished payment drafts
+            whereClause = "WHERE o.order_status NOT IN ('PENDING', 'PENDING_PAYMENT')";
+        } else {
             whereClause = "WHERE o.order_status = ?";
             params = [status];
         }
@@ -54,12 +57,25 @@ exports.assignOrderForDelivery = async (req, res) => {
     }
 
     try {
-        const [orderRows] = await db.query('SELECT order_status FROM orders WHERE id = ?', [orderId]);
+        const [orderRows] = await db.query('SELECT order_status, payment_method, payment_status FROM orders WHERE id = ?', [orderId]);
         if (orderRows.length === 0) {
             return res.status(404).json({ status: false, message: "Order not found." });
         }
-        if (['DELIVERED', 'CANCELLED'].includes(orderRows[0].order_status)) {
+        if (['DELIVERED', 'CANCELLED', 'PENDING', 'PENDING_PAYMENT'].includes(orderRows[0].order_status)) {
             return res.status(409).json({ status: false, message: `Cannot assign order with status '${orderRows[0].order_status}'.` });
+        }
+
+        // Strict Check: Block assigning orders with unconfirmed online payment
+        const payMethod = (orderRows[0].payment_method || '').toUpperCase();
+        const payStatus = (orderRows[0].payment_status || '').toUpperCase();
+        const isOnline = ['ONLINE', 'PAYU', 'RAZORPAY', 'WALLET'].includes(payMethod);
+        const isPaid = ['PAID', 'COMPLETED', 'SUCCESS'].includes(payStatus);
+
+        if (isOnline && !isPaid) {
+            return res.status(400).json({ 
+                status: false, 
+                message: `Payment is ${orderRows[0].payment_status || 'PENDING'}. Cannot assign delivery agent until online payment is confirmed.` 
+            });
         }
 
         // Update the order status and assign the delivery agent
