@@ -278,8 +278,7 @@ exports.completeDelivery = async (req, res) => {
         const existingOrder = existingOrders[0];
         const isPrepaid = existingOrder && (
             (existingOrder.payment_status || '').toUpperCase() === 'PAID' || 
-            (existingOrder.payment_status || '').toUpperCase() === 'COMPLETED' || 
-            ['WALLET', 'ONLINE', 'RAZORPAY', 'PAYU'].includes((existingOrder.payment_method || '').toUpperCase())
+            (existingOrder.payment_status || '').toUpperCase() === 'COMPLETED'
         );
 
         const finalPaymentMethod = isPrepaid ? existingOrder.payment_method : (paymentMode || 'COD');

@@ -11,6 +11,13 @@ let isMigrationChecked = false;
 async function ensureReturnTableColumns() {
     if (isMigrationChecked) return;
     try {
+        await db.query(`ALTER TABLE order_returns MODIFY COLUMN status VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns MODIFY COLUMN merchant_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns MODIFY COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns MODIFY COLUMN refund_status VARCHAR(50) DEFAULT 'NOT_INITIATED';`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns MODIFY COLUMN evidence_images LONGTEXT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS merchant_notes TEXT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS admin_notes TEXT NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS variant_attribute_id INT NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS reverse_awb_code VARCHAR(100) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS reverse_courier_name VARCHAR(100) NULL;`).catch(() => {});
@@ -254,12 +261,28 @@ exports.merchantReturnAction = async (req, res) => {
     }
 
     try {
-        const [[ret]] = await db.query(
+        await ensureReturnTableColumns();
+
+        let [[ret]] = await db.query(
             `SELECT * FROM order_returns WHERE id = ? AND merchant_id = ?`,
             [id, merchantId]
         );
+
+        if (!ret) {
+            // Check fallback in case sellerable_id or NULL merchant_id
+            const [[checkRet]] = await db.query(
+                `SELECT r.* FROM order_returns r
+                 LEFT JOIN order_items oi ON r.order_item_id = oi.id
+                 LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+                 LEFT JOIN sellers s ON sp.seller_id = s.id
+                 WHERE r.id = ? AND (r.merchant_id = ? OR s.sellerable_id = ? OR r.merchant_id IS NULL)`,
+                [id, merchantId, merchantId]
+            );
+            ret = checkRet;
+        }
+
         if (!ret) return res.status(404).json({ status: false, message: 'Return request not found.' });
-        if (ret.merchant_action !== 'PENDING') {
+        if (ret.merchant_action && ret.merchant_action !== 'PENDING') {
             return res.status(400).json({ status: false, message: 'You have already taken action on this request.' });
         }
 
@@ -287,7 +310,7 @@ exports.merchantReturnAction = async (req, res) => {
         });
     } catch (err) {
         console.error('[Return] merchantReturnAction error:', err);
-        res.status(500).json({ status: false, message: 'Could not process action.' });
+        res.status(500).json({ status: false, message: err.message || 'Could not process action.' });
     }
 };
 
