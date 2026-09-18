@@ -372,13 +372,18 @@ exports.getAgentStats = async (req, res) => {
 exports.getPickupTasks = async (req, res) => {
     const agentId = req.user.id;
     try {
+        await db.query(`ALTER TABLE order_returns ADD COLUMN delivery_otp VARCHAR(20) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_otp VARCHAR(20) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN customer_upi_id VARCHAR(100) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_scheduled_date DATE NULL;`).catch(() => {});
+
         const query = `
             SELECT 
                 r.id as request_id,
                 r.order_id,
                 r.order_item_id,
-                r.request_type,
-                r.return_type,
+                COALESCE(r.request_type, r.return_type, 'RETURN') as request_type,
+                COALESCE(r.return_type, 'RETURN') as return_type,
                 r.status as request_status,
                 r.reason,
                 r.evidence_images,
@@ -392,7 +397,7 @@ exports.getPickupTasks = async (req, res) => {
                 u.full_name as customer_name,
                 u.mobile_number as customer_phone,
                 sa.address_line_1, sa.address_line_2, sa.landmark, sa.city, sa.state, sa.pincode,
-                p.name as product_name,
+                COALESCE(p.name, oi.product_name, 'Product Item') as product_name,
                 p.main_image_url
             FROM order_returns r
             JOIN orders o ON r.order_id = o.id
@@ -409,7 +414,21 @@ exports.getPickupTasks = async (req, res) => {
         res.json({ status: true, data: rows });
     } catch (e) {
         console.error("getPickupTasks error:", e.message);
-        res.status(500).json({ status: false, message: "Failed to fetch pickup tasks." });
+        try {
+            const [fallbackRows] = await db.query(`
+                SELECT r.id as request_id, r.order_id, r.order_item_id, 
+                       COALESCE(r.return_type, 'RETURN') as request_type,
+                       r.status as request_status, r.reason,
+                       o.order_number, u.full_name as customer_name, u.mobile_number as customer_phone
+                FROM order_returns r
+                JOIN orders o ON r.order_id = o.id
+                JOIN users u ON r.user_id = u.id
+                WHERE (r.delivery_agent_id = ? OR o.delivery_agent_id = ?)
+            `, [agentId, agentId]);
+            res.json({ status: true, data: fallbackRows });
+        } catch (err2) {
+            res.status(500).json({ status: false, message: "Failed to fetch pickup tasks." });
+        }
     }
 };
 
