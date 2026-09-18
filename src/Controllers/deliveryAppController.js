@@ -378,6 +378,7 @@ exports.getPickupTasks = async (req, res) => {
         await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_scheduled_date DATE NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_proof_image LONGTEXT NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN picked_up_at DATETIME NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN received_at_hub_at DATETIME NULL;`).catch(() => {});
 
         const query = `
             SELECT 
@@ -396,12 +397,16 @@ exports.getPickupTasks = async (req, res) => {
                 r.customer_upi_id,
                 r.refund_amount,
                 r.pickup_scheduled_date,
+                r.picked_up_at,
+                r.received_at_hub_at,
                 o.order_number,
                 u.full_name as customer_name,
                 u.mobile_number as customer_phone,
                 sa.address_line_1, sa.address_line_2, sa.landmark, sa.city, sa.state, sa.pincode,
                 COALESCE(p.name, oi.product_name, 'Product Item') as product_name,
-                p.main_image_url
+                p.main_image_url,
+                m.business_name as merchant_name,
+                m.address as merchant_address
             FROM order_returns r
             JOIN orders o ON r.order_id = o.id
             JOIN users u ON r.user_id = u.id
@@ -409,9 +414,11 @@ exports.getPickupTasks = async (req, res) => {
             LEFT JOIN order_items oi ON r.order_item_id = oi.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
             LEFT JOIN products p ON sp.product_id = p.id
+            LEFT JOIN merchants m ON r.merchant_id = m.id
             WHERE (r.delivery_agent_id = ? OR o.delivery_agent_id = ?) 
-              AND r.status IN ('PICKUP_ASSIGNED', 'OUT_FOR_PICKUP', 'REVERSE_PICKUP_ASSIGNED', 'APPROVED', 'MERCHANT_ACCEPTED')
-              AND r.status NOT IN ('PICKED_UP', 'REFUNDED', 'COMPLETED', 'REPLACEMENT_INITIATED', 'CANCELLED', 'REJECTED')
+              AND r.received_at_hub_at IS NULL
+              AND r.status IN ('PICKUP_ASSIGNED', 'OUT_FOR_PICKUP', 'REVERSE_PICKUP_ASSIGNED', 'APPROVED', 'MERCHANT_ACCEPTED', 'PICKED_UP', 'IN_TRANSIT_TO_HUB', 'REPLACEMENT_INITIATED')
+              AND r.status NOT IN ('RECEIVED_AT_HUB', 'COMPLETED', 'REPLACEMENT_DISPATCHED', 'CANCELLED', 'REJECTED')
             ORDER BY r.created_at DESC
         `;
         const [rows] = await db.query(query, [agentId, agentId]);
@@ -423,12 +430,14 @@ exports.getPickupTasks = async (req, res) => {
                 SELECT r.id as request_id, r.order_id, r.order_item_id, 
                        COALESCE(r.return_type, 'RETURN') as request_type,
                        r.status as request_status, r.reason,
+                       r.picked_up_at, r.received_at_hub_at,
                        o.order_number, u.full_name as customer_name, u.mobile_number as customer_phone
                 FROM order_returns r
                 JOIN orders o ON r.order_id = o.id
                 JOIN users u ON r.user_id = u.id
                 WHERE (r.delivery_agent_id = ? OR o.delivery_agent_id = ?)
-                  AND r.status NOT IN ('PICKED_UP', 'REFUNDED', 'COMPLETED', 'REPLACEMENT_INITIATED', 'CANCELLED', 'REJECTED')
+                  AND r.received_at_hub_at IS NULL
+                  AND r.status NOT IN ('RECEIVED_AT_HUB', 'COMPLETED', 'REPLACEMENT_DISPATCHED', 'CANCELLED', 'REJECTED')
             `, [agentId, agentId]);
             res.json({ status: true, data: fallbackRows });
         } catch (err2) {

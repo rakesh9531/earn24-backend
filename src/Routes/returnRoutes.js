@@ -13,7 +13,12 @@ router.get('/my-requests',   auth, returnCtrl.getMyReturnRequests);
 // Merchant Routes
 router.get('/merchant/all',           auth, returnCtrl.getMerchantReturnRequests);
 router.patch('/merchant/:id/action',   auth, returnCtrl.merchantReturnAction);
+router.post('/merchant/:id/receive-at-hub', auth, returnCtrl.receiveItemAtHub);
+router.post('/:id/receive-at-hub',     auth, returnCtrl.receiveItemAtHub);
+router.post('/admin/:id/receive-at-hub', auth, returnCtrl.receiveItemAtHub);
+router.post('/merchant/:id/dispatch-replacement', auth, returnCtrl.dispatchReplacementUnit);
 router.post('/:id/dispatch-replacement', auth, returnCtrl.dispatchReplacementUnit);
+router.post('/admin/:id/dispatch-replacement', auth, returnCtrl.dispatchReplacementUnit);
 
 // Admin Routes (Supports both /returns/admin/* and /admin/returns/*)
 router.get('/admin/all',                       auth, returnCtrl.adminGetAllReturnRequests);
