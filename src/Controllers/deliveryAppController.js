@@ -860,3 +860,371 @@ exports.getProfile = async (req, res) => {
         res.status(500).json({ status: false, message: e.message });
     }
 };
+
+// ═════════════════════════════════════════════════════════════
+// 12. PAYU LIVE DOORSTEP PAYMENT INTEGRATION
+// ═════════════════════════════════════════════════════════════
+
+const crypto = require('crypto');
+
+const getPayUCredentials = async () => {
+    try {
+        const [rows] = await db.query(
+            `SELECT encrypted_config, encryption_iv FROM payment_gateway_settings WHERE gateway_name = 'payu' AND is_active = 1 LIMIT 1`
+        );
+        if (rows.length > 0) {
+            const { decryptObject } = require('../utils/encryption.helper');
+            const config = decryptObject({
+                encryptedData: rows[0].encrypted_config,
+                iv: rows[0].encryption_iv,
+            });
+            if (config && (config.merchantKey || config.key) && (config.merchantSalt || config.salt)) {
+                return {
+                    payuKey: config.merchantKey || config.key,
+                    payuSalt: config.merchantSalt || config.salt,
+                    payuBaseUrl: config.isSandBox ? 'https://test.payu.in/_payment' : 'https://secure.payu.in/_payment'
+                };
+            }
+        }
+    } catch (e) {
+        console.warn('[PayU Doorstep] DB PayU Config Read Warning:', e.message);
+    }
+    return {
+        payuKey: process.env.PAYU_MERCHANT_KEY || 'm2uwkj',
+        payuSalt: process.env.PAYU_MERCHANT_SALT || 'PyBf3kWiI6MdwYhrR3geD108F7fcpPI4',
+        payuBaseUrl: process.env.PAYU_BASE_URL || 'https://secure.payu.in/_payment'
+    };
+};
+
+/**
+ * Customer scans QR code -> Opens this PayU Auto-Checkout Page
+ */
+exports.payuDoorstepCheckout = async (req, res) => {
+    const { orderId } = req.params;
+    try {
+        const [orders] = await db.query(`
+            SELECT o.*, u.full_name as customer_name, u.email as customer_email, u.mobile_number as customer_phone
+            FROM orders o
+            LEFT JOIN users u ON o.user_id = u.id
+            WHERE o.id = ?
+        `, [orderId]);
+
+        if (!orders || orders.length === 0) {
+            return res.status(404).send(`<h2 style="font-family:sans-serif;text-align:center;margin-top:40px;">Order not found</h2>`);
+        }
+
+        const order = orders[0];
+        const isAlreadyPaid = (order.payment_status === 'PAID' || order.payment_status === 'COMPLETED' || order.is_paid === 1);
+        if (isAlreadyPaid) {
+            return res.send(`
+                <!DOCTYPE html>
+                <html>
+                <head><title>Earn24 - Order Paid</title><meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <style>body{font-family:sans-serif;background:#f0fdf4;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:20px;text-align:center;}
+                .box{background:#fff;padding:30px;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,0.08);max-width:380px;}
+                h2{color:#15803d;margin-top:0;}p{color:#475569;}</style></head>
+                <body><div class="box"><h2>✅ Order Already Paid!</h2><p>Order #${order.order_number || order.id} has already been paid via ${order.payment_method || 'Online'}. Please collect your parcel.</p></div></body></html>
+            `);
+        }
+
+        const { payuKey, payuSalt, payuBaseUrl } = await getPayUCredentials();
+        const amount = parseFloat(order.total_amount || 0).toFixed(2);
+        const txnid = `DOORSTEP_${order.id}_${Date.now()}`;
+        const productInfo = `Order_${order.order_number || order.id}`;
+        const firstname = (order.customer_name || 'Customer').split(' ')[0].replace(/[^a-zA-Z0-9]/g, '') || 'Customer';
+        const email = order.customer_email || 'customer@earn24.in';
+        const phone = order.customer_phone || '9999999999';
+
+        const baseUrl = process.env.BASE_URL || 'https://newapi.earn24.in';
+        const surl = `${baseUrl}/api/delivery-app/payu-success`;
+        const furl = `${baseUrl}/api/delivery-app/payu-failure`;
+
+        // Hash: key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5|udf6|udf7|udf8|udf9|udf10|SALT
+        const hashString = `${payuKey}|${txnid}|${amount}|${productInfo}|${firstname}|${email}|${order.id}|||||||||${payuSalt}`;
+        const hash = crypto.createHash('sha512').update(hashString).digest('hex');
+
+        // Log transaction
+        await db.query(`
+            INSERT INTO payment_transactions (transaction_id, user_id, order_id, amount, gateway, status, created_at)
+            VALUES (?, ?, ?, ?, 'payu', 'PENDING', NOW())
+        `, [txnid, order.user_id, order.id, amount]).catch(() => {});
+
+        res.send(`
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Earn24 - Pay ₹${amount} via PayU</title>
+                <style>
+                    * { box-sizing: border-box; }
+                    body {
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+                        background: #f8fafc;
+                        margin: 0;
+                        padding: 20px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        min-height: 100vh;
+                    }
+                    .checkout-card {
+                        background: #ffffff;
+                        border-radius: 20px;
+                        padding: 32px 24px;
+                        max-width: 420px;
+                        width: 100%;
+                        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+                        border: 1px solid #e2e8f0;
+                        text-align: center;
+                    }
+                    .brand {
+                        font-size: 22px;
+                        font-weight: 900;
+                        color: #16a34a;
+                        letter-spacing: -0.5px;
+                        margin-bottom: 6px;
+                    }
+                    .order-tag {
+                        display: inline-block;
+                        background: #f1f5f9;
+                        color: #475569;
+                        font-size: 12px;
+                        font-weight: 700;
+                        padding: 4px 10px;
+                        border-radius: 6px;
+                        margin-bottom: 20px;
+                    }
+                    .amount-display {
+                        background: #f0fdf4;
+                        border: 2px solid #bbf7d0;
+                        border-radius: 14px;
+                        padding: 18px;
+                        margin-bottom: 22px;
+                    }
+                    .amount-label {
+                        font-size: 12px;
+                        font-weight: 700;
+                        color: #15803d;
+                        text-transform: uppercase;
+                    }
+                    .amount-value {
+                        font-size: 34px;
+                        font-weight: 900;
+                        color: #166534;
+                        margin-top: 4px;
+                    }
+                    .spinner {
+                        width: 38px;
+                        height: 38px;
+                        border: 4px solid #e2e8f0;
+                        border-top-color: #16a34a;
+                        border-radius: 50%;
+                        animation: spin 0.8s linear infinite;
+                        margin: 16px auto;
+                    }
+                    @keyframes spin { to { transform: rotate(360deg); } }
+                    .loading-text {
+                        font-size: 15px;
+                        font-weight: 700;
+                        color: #1e293b;
+                        margin: 0 0 6px 0;
+                    }
+                    .sub-hint {
+                        font-size: 12px;
+                        color: #64748b;
+                        line-height: 1.4;
+                        margin: 0;
+                    }
+                    .pay-btn {
+                        display: block;
+                        width: 100%;
+                        padding: 14px;
+                        background: #16a34a;
+                        color: #ffffff;
+                        font-size: 16px;
+                        font-weight: 800;
+                        border: none;
+                        border-radius: 12px;
+                        cursor: pointer;
+                        margin-top: 20px;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="checkout-card">
+                    <div class="brand">⚡ EARN24 SECURE PAY</div>
+                    <div class="order-tag">Order #${order.order_number || order.id}</div>
+                    
+                    <div class="amount-display">
+                        <div class="amount-label">Payable to Delivery Partner</div>
+                        <div class="amount-value">₹${amount}</div>
+                    </div>
+
+                    <div class="spinner"></div>
+                    <p class="loading-text">Connecting to PayU Secure Payment...</p>
+                    <p class="sub-hint">Pay securely with Google Pay, PhonePe, Paytm, Any UPI App, Debit/Credit Card or NetBanking.</p>
+
+                    <form id="payuForm" method="POST" action="${payuBaseUrl}">
+                        <input type="hidden" name="key" value="${payuKey}" />
+                        <input type="hidden" name="txnid" value="${txnid}" />
+                        <input type="hidden" name="amount" value="${amount}" />
+                        <input type="hidden" name="productinfo" value="${productInfo}" />
+                        <input type="hidden" name="firstname" value="${firstname}" />
+                        <input type="hidden" name="email" value="${email}" />
+                        <input type="hidden" name="phone" value="${phone}" />
+                        <input type="hidden" name="surl" value="${surl}" />
+                        <input type="hidden" name="furl" value="${furl}" />
+                        <input type="hidden" name="hash" value="${hash}" />
+                        <input type="hidden" name="udf1" value="${order.id}" />
+                        <noscript>
+                            <button type="submit" class="pay-btn">Click here to Pay ₹${amount}</button>
+                        </noscript>
+                    </form>
+                </div>
+
+                <script>
+                    setTimeout(function() {
+                        document.getElementById('payuForm').submit();
+                    }, 600);
+                </script>
+            </body>
+            </html>
+        `);
+    } catch (e) {
+        console.error('[PayU Doorstep Checkout Error]', e);
+        res.status(500).send(`<h2 style="font-family:sans-serif;text-align:center;">Payment Error: ${e.message}</h2>`);
+    }
+};
+
+/**
+ * PayU Callback / Success Handler
+ */
+exports.payuDoorstepCallback = async (req, res) => {
+    const data = { ...req.query, ...req.body };
+    const { status, txnid, amount, key, productinfo, firstname, email, hash, udf1, mihpayid, bank_ref_num } = data;
+    const orderId = udf1;
+
+    try {
+        const { payuSalt } = await getPayUCredentials();
+        if (status === 'success') {
+            if (orderId) {
+                await db.query(`
+                    UPDATE orders 
+                    SET payment_status = 'PAID', 
+                        payment_method = 'PAYU', 
+                        is_paid = 1,
+                        updated_at = NOW() 
+                    WHERE id = ?
+                `, [orderId]);
+
+                await db.query(`
+                    UPDATE payment_transactions 
+                    SET status = 'SUCCESS', 
+                        gateway_payment_id = ? 
+                    WHERE transaction_id = ?
+                `, [mihpayid || bank_ref_num || null, txnid]).catch(() => {});
+
+                // Notify delivery agent via Socket.IO
+                const io = req.app.get('socketio');
+                if (io) {
+                    io.emit('order_payment_received', {
+                        orderId: parseInt(orderId),
+                        amount: amount,
+                        paymentMethod: 'PAYU',
+                        status: 'PAID',
+                        txnid: txnid
+                    });
+                }
+            }
+
+            return res.send(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Earn24 - Payment Successful</title>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <style>
+                        body { font-family: sans-serif; background: #f0fdf4; margin: 0; padding: 20px; display: flex; align-items: center; justify-content: center; min-height: 100vh; text-align: center; }
+                        .card { background: #fff; padding: 36px 24px; border-radius: 20px; max-width: 400px; width: 100%; box-shadow: 0 10px 30px rgba(0,0,0,0.08); border: 2px solid #bbf7d0; }
+                        .icon { font-size: 54px; margin-bottom: 12px; }
+                        h2 { color: #15803d; margin: 0 0 8px 0; }
+                        .amount { font-size: 28px; font-weight: 900; color: #166534; margin: 12px 0; }
+                        p { color: #475569; font-size: 14px; line-height: 1.5; }
+                        .pill { background: #dcfce7; color: #166534; padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 700; display: inline-block; margin-top: 10px; }
+                    </style>
+                </head>
+                <body>
+                    <div class="card">
+                        <div class="icon">✅</div>
+                        <h2>Payment Successful!</h2>
+                        <div class="amount">₹${amount || ''}</div>
+                        <p>Your payment via PayU has been verified successfully. The delivery partner has been notified.</p>
+                        <div class="pill">PayU Ref: ${mihpayid || txnid || 'SUCCESS'}</div>
+                        <p style="margin-top: 20px; font-weight: 700; color: #15803d;">You can now collect your parcel from the delivery partner.</p>
+                    </div>
+                </body>
+                </html>
+            `);
+        } else {
+            return res.send(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Earn24 - Payment Failed</title>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <style>
+                        body { font-family: sans-serif; background: #fff5f5; margin: 0; padding: 20px; display: flex; align-items: center; justify-content: center; min-height: 100vh; text-align: center; }
+                        .card { background: #fff; padding: 36px 24px; border-radius: 20px; max-width: 400px; width: 100%; box-shadow: 0 10px 30px rgba(0,0,0,0.08); border: 2px solid #fecaca; }
+                        .icon { font-size: 54px; margin-bottom: 12px; }
+                        h2 { color: #dc2626; margin: 0 0 8px 0; }
+                        p { color: #475569; font-size: 14px; line-height: 1.5; }
+                        .btn { display: inline-block; padding: 12px 24px; background: #dc2626; color: #fff; text-decoration: none; border-radius: 10px; font-weight: 700; margin-top: 16px; }
+                    </style>
+                </head>
+                <body>
+                    <div class="card">
+                        <div class="icon">❌</div>
+                        <h2>Payment Not Completed</h2>
+                        <p>Your online payment could not be processed or was cancelled.</p>
+                        ${orderId ? `<a href="/api/delivery-app/orders/${orderId}/payu-checkout" class="btn">Try Again</a>` : ''}
+                        <p style="margin-top: 16px; font-size: 13px; color: #64748b;">You can also choose to pay Cash to the delivery partner.</p>
+                    </div>
+                </body>
+                </html>
+            `);
+        }
+    } catch (err) {
+        console.error('[PayU Doorstep Callback Error]', err);
+        res.status(500).send(`<h2>Callback Error: ${err.message}</h2>`);
+    }
+};
+
+exports.payuDoorstepFailure = (req, res) => {
+    exports.payuDoorstepCallback(req, res);
+};
+
+/**
+ * Check if order has been paid online (Polled by Delivery Agent App)
+ */
+exports.getOrderPaymentStatus = async (req, res) => {
+    const { orderId } = req.params;
+    try {
+        const [rows] = await db.query(
+            `SELECT id, order_number, total_amount, payment_status, payment_method, is_paid FROM orders WHERE id = ?`,
+            [orderId]
+        );
+        if (rows.length === 0) return res.status(404).json({ status: false, message: 'Order not found' });
+        const order = rows[0];
+        const isPaid = (order.payment_status === 'PAID' || order.payment_status === 'COMPLETED' || order.is_paid === 1);
+        res.json({
+            status: true,
+            isPaid,
+            paymentStatus: order.payment_status,
+            paymentMethod: order.payment_method,
+            amount: order.total_amount
+        });
+    } catch (e) {
+        res.status(500).json({ status: false, message: e.message });
+    }
+};
