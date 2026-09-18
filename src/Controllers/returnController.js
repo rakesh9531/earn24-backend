@@ -584,12 +584,27 @@ async function createReplacementChildOrder(returnReq, conn) {
             origItem.attributes_snapshot || '{}'
         ]);
 
+        // Deduct replacement product stock
         if (origItem.seller_product_id) {
+            if (returnReq.variant_attribute_id) {
+                await conn.query(`
+                    UPDATE seller_product_variants 
+                    SET stock_quantity = GREATEST(0, stock_quantity - 1) 
+                    WHERE id = ?
+                `, [returnReq.variant_attribute_id]).catch(() => {});
+            }
             await conn.query(`
                 UPDATE seller_products 
                 SET quantity = GREATEST(0, quantity - 1) 
                 WHERE id = ?
             `, [origItem.seller_product_id]).catch(() => {});
+        }
+        if (origItem.product_id) {
+            await conn.query(`
+                UPDATE products 
+                SET stock_quantity = GREATEST(0, stock_quantity - 1) 
+                WHERE id = ?
+            `, [origItem.product_id]).catch(() => {});
         }
 
         return repOrderId;
