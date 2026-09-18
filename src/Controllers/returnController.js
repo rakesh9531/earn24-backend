@@ -25,6 +25,7 @@ async function safeAddColumn(table, column, def) {
 async function ensureReturnTableColumns() {
     if (isMigrationChecked) return;
     try {
+        await db.query(`ALTER TABLE orders MODIFY COLUMN order_number VARCHAR(100);`).catch(() => {});
         await db.query(`ALTER TABLE order_returns MODIFY COLUMN status VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
         await db.query(`ALTER TABLE order_returns MODIFY COLUMN merchant_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
         await db.query(`ALTER TABLE order_returns MODIFY COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
@@ -552,9 +553,12 @@ async function createReplacementChildOrder(returnReq, conn) {
     try {
         const [[origOrder]] = await conn.query(`SELECT * FROM orders WHERE id = ?`, [returnReq.order_id]);
         const [[origItem]] = await conn.query(`SELECT * FROM order_items WHERE id = ?`, [returnReq.order_item_id]);
-        if (!origOrder || !origItem) return null;
+        await conn.query(`ALTER TABLE orders MODIFY COLUMN order_number VARCHAR(100);`).catch(() => {});
 
-        const repOrderNum = `REP-${origOrder.order_number || returnReq.order_id}-${Math.floor(100 + Math.random() * 900)}`;
+        // Keep repOrderNum compact (<= 20 characters) e.g. R-FMMZHG-975
+        const rawNum = String(origOrder.order_number || returnReq.order_id || 'ORD');
+        const cleanSuffix = rawNum.replace(/[^A-Za-z0-9]/g, '').slice(-8);
+        const repOrderNum = `R-${cleanSuffix}-${Math.floor(100 + Math.random() * 900)}`.slice(0, 20);
         const agentToAssign = returnReq.delivery_agent_id || origOrder.delivery_agent_id || null;
 
         const [insOrder] = await conn.query(`
