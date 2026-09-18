@@ -51,6 +51,10 @@ async function ensureReturnTableColumns() {
         await safeAddColumn('order_returns', 'replacement_order_id', 'INT NULL');
         await safeAddColumn('order_returns', 'pickup_proof_image', 'LONGTEXT NULL');
         await safeAddColumn('order_returns', 'picked_up_at', 'DATETIME NULL');
+        await safeAddColumn('order_returns', 'received_at_hub_at', 'DATETIME NULL');
+        await safeAddColumn('order_returns', 'received_by_type', 'VARCHAR(50) NULL');
+        await safeAddColumn('order_returns', 'received_by_id', 'INT NULL');
+        await safeAddColumn('order_returns', 'hub_notes', 'TEXT NULL');
 
         isMigrationChecked = true;
     } catch (e) {
@@ -711,29 +715,129 @@ exports.adminResolveReturn = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────
-// MERCHANT / ADMIN: POST /returns/:id/dispatch-replacement
+// ADMIN / MERCHANT: POST /returns/:id/receive-at-hub
+// Confirms defective item physically handed over at Hub / Store
 // ─────────────────────────────────────────────────────────────
-exports.dispatchReplacementUnit = async (req, res) => {
+exports.receiveItemAtHub = async (req, res) => {
     const { id } = req.params;
-    const { replacement_awb_code, replacement_courier_name, notes } = req.body;
+    const { notes } = req.body;
     try {
         await ensureReturnTableColumns();
         const [[ret]] = await db.query(`SELECT * FROM order_returns WHERE id = ?`, [id]);
-        if (!ret) return res.status(404).json({ status: false, message: 'Request not found.' });
+        if (!ret) return res.status(404).json({ status: false, message: 'Return record not found.' });
+
+        const userRole = (req.user?.role || (req.user?.merchant_id ? 'merchant' : 'admin')).toLowerCase();
+        const isMerchant = userRole.includes('merchant');
+        const receivedByType = isMerchant ? 'MERCHANT' : 'ADMIN';
+        const receivedById = req.user?.id || req.user?.merchant_id || null;
+        const newStatus = 'RECEIVED_AT_HUB';
 
         await db.query(`
             UPDATE order_returns 
-            SET status = 'REPLACEMENT_DISPATCHED',
-                replacement_awb_code = ?,
-                replacement_courier_name = ?,
-                admin_notes = COALESCE(?, admin_notes)
+            SET status = ?,
+                received_at_hub_at = NOW(),
+                received_by_type = ?,
+                received_by_id = ?,
+                hub_notes = COALESCE(?, hub_notes)
             WHERE id = ?
-        `, [replacement_awb_code || null, replacement_courier_name || 'Express Courier', notes || null, id]);
+        `, [newStatus, receivedByType, receivedById, notes || 'Defective item physically received and verified at Hub/Store.', id]);
 
-        res.json({ status: true, message: 'Replacement unit dispatched successfully. Customer tracking updated.' });
+        res.json({
+            status: true,
+            message: `Item marked as safely received at ${isMerchant ? 'Merchant Store' : 'Admin Hub / Warehouse'}. Handover completed!`,
+            statusNow: newStatus
+        });
     } catch (err) {
+        console.error('[Return] receiveItemAtHub error:', err);
+        res.status(500).json({ status: false, message: 'Could not mark item as received at hub.' });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────
+// MERCHANT / ADMIN: POST /returns/:id/dispatch-replacement
+// Dispatches replacement unit via Local Delivery Agent OR Courier / Shiprocket
+// ─────────────────────────────────────────────────────────────
+exports.dispatchReplacementUnit = async (req, res) => {
+    const { id } = req.params;
+    const { mode, delivery_agent_id, replacement_awb_code, replacement_courier_name, notes } = req.body;
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+        await ensureReturnTableColumns();
+
+        const [[ret]] = await conn.query(`SELECT * FROM order_returns WHERE id = ? FOR UPDATE`, [id]);
+        if (!ret) {
+            await conn.rollback();
+            return res.status(404).json({ status: false, message: 'Request not found.' });
+        }
+
+        // Ensure child replacement order exists
+        let repOrderId = ret.replacement_order_id;
+        if (!repOrderId) {
+            repOrderId = await createReplacementChildOrder(ret, conn);
+            if (repOrderId) {
+                await conn.query(`UPDATE order_returns SET replacement_order_id = ? WHERE id = ?`, [repOrderId, id]);
+            }
+        }
+
+        const isLocal = (mode === 'LOCAL' || (!mode && delivery_agent_id));
+
+        if (isLocal && delivery_agent_id) {
+            // Assign local delivery boy to child order
+            if (repOrderId) {
+                await conn.query(`
+                    UPDATE orders 
+                    SET delivery_agent_id = ?, 
+                        order_status = 'CONFIRMED'
+                    WHERE id = ?
+                `, [delivery_agent_id, repOrderId]);
+            }
+
+            await conn.query(`
+                UPDATE order_returns 
+                SET status = 'REPLACEMENT_DISPATCHED',
+                    delivery_agent_id = ?,
+                    admin_notes = COALESCE(?, admin_notes)
+                WHERE id = ?
+            `, [delivery_agent_id, notes || 'Replacement unit assigned to Delivery Partner', id]);
+
+            await conn.commit();
+            return res.json({ 
+                status: true, 
+                message: 'Replacement unit successfully assigned to Delivery Agent! It will now appear in their Active Deliveries.' 
+            });
+        } else {
+            // Pan India Courier / Shiprocket
+            if (repOrderId && replacement_awb_code) {
+                await conn.query(`
+                    UPDATE orders 
+                    SET tracking_number = ?, 
+                        order_status = 'SHIPPED_SHIPROCKET'
+                    WHERE id = ?
+                `, [replacement_awb_code, repOrderId]).catch(() => {});
+            }
+
+            await conn.query(`
+                UPDATE order_returns 
+                SET status = 'REPLACEMENT_DISPATCHED',
+                    replacement_awb_code = ?,
+                    replacement_courier_name = ?,
+                    admin_notes = COALESCE(?, admin_notes)
+                WHERE id = ?
+            `, [replacement_awb_code || null, replacement_courier_name || 'Express Courier / Shiprocket', notes || null, id]);
+
+            await conn.commit();
+            return res.json({ 
+                status: true, 
+                message: 'Replacement unit dispatched via Courier! Customer tracking details updated.' 
+            });
+        }
+    } catch (err) {
+        await conn.rollback();
         console.error('[Return] dispatchReplacementUnit error:', err);
         res.status(500).json({ status: false, message: 'Could not dispatch replacement unit.' });
+    } finally {
+        conn.release();
     }
 };
 
