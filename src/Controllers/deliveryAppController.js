@@ -405,8 +405,8 @@ exports.getPickupTasks = async (req, res) => {
                 sa.address_line_1, sa.address_line_2, sa.landmark, sa.city, sa.state, sa.pincode,
                 COALESCE(p.name, oi.product_name, 'Product Item') as product_name,
                 p.main_image_url,
-                m.business_name as merchant_name,
-                m.address as merchant_address
+                COALESCE(m.business_name, '') as merchant_name,
+                COALESCE(m.business_address, '') as merchant_address
             FROM order_returns r
             JOIN orders o ON r.order_id = o.id
             JOIN users u ON r.user_id = u.id
