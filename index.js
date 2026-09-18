@@ -164,6 +164,9 @@ async function ensureTablesExist() {
         await db.query(`ALTER TABLE order_returns ADD COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN refund_status VARCHAR(50) DEFAULT 'NOT_INITIATED';`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_otp VARCHAR(20) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN delivery_otp VARCHAR(20) NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN merchant_notes TEXT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN admin_notes TEXT NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN delivery_agent_id INT NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_scheduled_date DATE NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN refund_method VARCHAR(20) DEFAULT 'WALLET';`).catch(() => {});
