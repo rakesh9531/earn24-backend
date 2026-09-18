@@ -376,6 +376,8 @@ exports.getPickupTasks = async (req, res) => {
         await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_otp VARCHAR(20) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN customer_upi_id VARCHAR(100) NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_scheduled_date DATE NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_proof_image LONGTEXT NULL;`).catch(() => {});
+        await db.query(`ALTER TABLE order_returns ADD COLUMN picked_up_at DATETIME NULL;`).catch(() => {});
 
         const query = `
             SELECT 
@@ -387,6 +389,7 @@ exports.getPickupTasks = async (req, res) => {
                 r.status as request_status,
                 r.reason,
                 r.evidence_images,
+                r.pickup_proof_image,
                 r.pickup_otp,
                 r.delivery_otp,
                 r.refund_method,
@@ -406,11 +409,12 @@ exports.getPickupTasks = async (req, res) => {
             LEFT JOIN order_items oi ON r.order_item_id = oi.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
             LEFT JOIN products p ON sp.product_id = p.id
-            WHERE (r.delivery_agent_id = ? OR o.delivery_agent_id = ? OR r.merchant_id = ?) 
-              AND r.status IN ('APPROVED', 'PICKUP_ASSIGNED', 'MERCHANT_ACCEPTED', 'REVERSE_PICKUP_ASSIGNED', 'REVERSE_PICKED_UP', 'PICKED_UP', 'REPLACEMENT_DISPATCHED')
+            WHERE (r.delivery_agent_id = ? OR o.delivery_agent_id = ?) 
+              AND r.status IN ('PICKUP_ASSIGNED', 'OUT_FOR_PICKUP', 'REVERSE_PICKUP_ASSIGNED', 'APPROVED', 'MERCHANT_ACCEPTED')
+              AND r.status NOT IN ('PICKED_UP', 'REFUNDED', 'COMPLETED', 'REPLACEMENT_INITIATED', 'CANCELLED', 'REJECTED')
             ORDER BY r.created_at DESC
         `;
-        const [rows] = await db.query(query, [agentId, agentId, agentId]);
+        const [rows] = await db.query(query, [agentId, agentId]);
         res.json({ status: true, data: rows });
     } catch (e) {
         console.error("getPickupTasks error:", e.message);
@@ -424,6 +428,7 @@ exports.getPickupTasks = async (req, res) => {
                 JOIN orders o ON r.order_id = o.id
                 JOIN users u ON r.user_id = u.id
                 WHERE (r.delivery_agent_id = ? OR o.delivery_agent_id = ?)
+                  AND r.status NOT IN ('PICKED_UP', 'REFUNDED', 'COMPLETED', 'REPLACEMENT_INITIATED', 'CANCELLED', 'REJECTED')
             `, [agentId, agentId]);
             res.json({ status: true, data: fallbackRows });
         } catch (err2) {
@@ -432,20 +437,55 @@ exports.getPickupTasks = async (req, res) => {
     }
 };
 
-// VERIFY PICKUP OTP & COMPLETE REVERSE PICKUP AT DOORSTEP
+// CONFIRM DOORSTEP RETURN PICKUP WITH PHOTO PROOF
 exports.completeReversePickup = async (req, res) => {
-    const { requestId, otp, qc_status, qc_remarks } = req.body;
+    const { requestId, qc_status, qc_remarks, pickupProofBase64, pickup_proof_image } = req.body;
     const conn = await db.getConnection();
     try {
         await conn.beginTransaction();
 
-        const [[ret]] = await conn.query(`SELECT * FROM order_returns WHERE id = ?`, [requestId]);
+        const [[ret]] = await conn.query(`SELECT * FROM order_returns WHERE id = ? FOR UPDATE`, [requestId]);
         if (!ret) {
             await conn.rollback();
             return res.status(404).json({ status: false, message: "Request not found." });
         }
 
-        // Return pickups do not require customer OTP (standard e-commerce practice where agent verifies item at doorstep)
+        // Prevent duplicate pickup attempts
+        if (['PICKED_UP', 'REFUNDED', 'REPLACEMENT_INITIATED', 'COMPLETED'].includes((ret.status || '').toUpperCase())) {
+            await conn.rollback();
+            return res.status(400).json({ 
+                status: false, 
+                alreadyCompleted: true,
+                message: "This return item has already been collected and processed successfully." 
+            });
+        }
+
+        // Handle Doorstep Photo Proof (Uploaded file or Base64 string from Delivery Agent camera)
+        let proofImageUrl = null;
+        const rawPhoto = pickupProofBase64 || pickup_proof_image;
+        if (req.file) {
+            proofImageUrl = `/uploads/return-proofs/${req.file.filename}`;
+        } else if (rawPhoto && typeof rawPhoto === 'string') {
+            if (rawPhoto.startsWith('data:image')) {
+                const fs = require('fs');
+                const path = require('path');
+                const uploadsDir = path.join(process.cwd(), 'src/uploads/return-proofs');
+                if (!fs.existsSync(uploadsDir)) {
+                    fs.mkdirSync(uploadsDir, { recursive: true });
+                }
+                const matches = rawPhoto.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+                if (matches && matches.length === 3) {
+                    const mime = matches[1];
+                    const ext = mime.includes('png') ? 'png' : 'jpg';
+                    const buffer = Buffer.from(matches[2], 'base64');
+                    const filename = `pickup-proof-${requestId}-${Date.now()}.${ext}`;
+                    fs.writeFileSync(path.join(uploadsDir, filename), buffer);
+                    proofImageUrl = `/uploads/return-proofs/${filename}`;
+                }
+            } else if (rawPhoto.startsWith('/uploads') || rawPhoto.startsWith('http')) {
+                proofImageUrl = rawPhoto;
+            }
+        }
 
         const reqTypeStr = (ret.request_type || ret.return_type || 'RETURN').toUpperCase();
         let newStatus = 'PICKED_UP';
@@ -520,16 +560,19 @@ exports.completeReversePickup = async (req, res) => {
             SET status = ?,
                 refund_status = ?,
                 qc_status = ?,
-                qc_remarks = ?
+                qc_remarks = ?,
+                pickup_proof_image = COALESCE(?, pickup_proof_image),
+                picked_up_at = NOW()
             WHERE id = ?
-        `, [newStatus, refundStatus, qc_status || 'PASSED', qc_remarks || 'Verified by Delivery Agent at doorstep', requestId]);
+        `, [newStatus, refundStatus, qc_status || 'PASSED', qc_remarks || 'Item inspected and collected at doorstep by Delivery Partner', proofImageUrl, requestId]);
 
         await conn.commit();
         res.json({
             status: true,
             message: reqTypeStr === 'RETURN'
-                ? (ret.refund_method === 'UPI' ? "Item picked up & verified! Return marked for UPI refund." : "Item picked up & verified! ₹" + ret.refund_amount + " credited to customer wallet.")
-                : "Item picked up & verified! Replacement order generated."
+                ? (ret.refund_method === 'UPI' ? "Item picked up with proof! Return marked for UPI refund." : "Item picked up with proof! ₹" + ret.refund_amount + " credited to customer wallet.")
+                : "Item picked up with proof! Replacement order generated.",
+            pickupProofImage: proofImageUrl
         });
     } catch (e) {
         await conn.rollback();
