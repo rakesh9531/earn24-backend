@@ -445,10 +445,7 @@ exports.completeReversePickup = async (req, res) => {
             return res.status(404).json({ status: false, message: "Request not found." });
         }
 
-        if (ret.pickup_otp && ret.pickup_otp !== otp) {
-            await conn.rollback();
-            return res.status(400).json({ status: false, message: "Invalid Pickup OTP." });
-        }
+        // Return pickups do not require customer OTP (standard e-commerce practice where agent verifies item at doorstep)
 
         const reqTypeStr = (ret.request_type || ret.return_type || 'RETURN').toUpperCase();
         let newStatus = 'PICKED_UP';
