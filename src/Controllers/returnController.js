@@ -8,6 +8,20 @@ const RETURN_WINDOW_DAYS      = 7;
 const REPLACEMENT_WINDOW_DAYS = 7;
 
 let isMigrationChecked = false;
+async function safeAddColumn(table, column, def) {
+    try {
+        const [existing] = await db.query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+            [table, column]
+        );
+        if (!existing || existing.length === 0) {
+            await db.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${def}`);
+        }
+    } catch (e) {
+        await db.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${def}`).catch(() => {});
+    }
+}
+
 async function ensureReturnTableColumns() {
     if (isMigrationChecked) return;
     try {
@@ -16,24 +30,26 @@ async function ensureReturnTableColumns() {
         await db.query(`ALTER TABLE order_returns MODIFY COLUMN admin_action VARCHAR(50) DEFAULT 'PENDING';`).catch(() => {});
         await db.query(`ALTER TABLE order_returns MODIFY COLUMN refund_status VARCHAR(50) DEFAULT 'NOT_INITIATED';`).catch(() => {});
         await db.query(`ALTER TABLE order_returns MODIFY COLUMN evidence_images LONGTEXT NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS merchant_notes TEXT NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS admin_notes TEXT NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS variant_attribute_id INT NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS reverse_awb_code VARCHAR(100) NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS reverse_courier_name VARCHAR(100) NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS replacement_awb_code VARCHAR(100) NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS replacement_courier_name VARCHAR(100) NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS pickup_otp VARCHAR(10) NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS delivery_otp VARCHAR(10) NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS rejection_reason VARCHAR(255) NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS refund_method VARCHAR(20) DEFAULT 'WALLET';`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS customer_upi_id VARCHAR(100) NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS delivery_agent_id INT NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS pickup_scheduled_date DATE NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS qc_status VARCHAR(20) DEFAULT 'PENDING';`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS qc_remarks TEXT NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS refund_utr VARCHAR(100) NULL;`).catch(() => {});
-        await db.query(`ALTER TABLE order_returns ADD COLUMN IF NOT EXISTS replacement_order_id INT NULL;`).catch(() => {});
+        
+        await safeAddColumn('order_returns', 'merchant_notes', 'TEXT NULL');
+        await safeAddColumn('order_returns', 'admin_notes', 'TEXT NULL');
+        await safeAddColumn('order_returns', 'variant_attribute_id', 'INT NULL');
+        await safeAddColumn('order_returns', 'reverse_awb_code', 'VARCHAR(100) NULL');
+        await safeAddColumn('order_returns', 'reverse_courier_name', 'VARCHAR(100) NULL');
+        await safeAddColumn('order_returns', 'replacement_awb_code', 'VARCHAR(100) NULL');
+        await safeAddColumn('order_returns', 'replacement_courier_name', 'VARCHAR(100) NULL');
+        await safeAddColumn('order_returns', 'pickup_otp', 'VARCHAR(10) NULL');
+        await safeAddColumn('order_returns', 'delivery_otp', 'VARCHAR(10) NULL');
+        await safeAddColumn('order_returns', 'rejection_reason', 'VARCHAR(255) NULL');
+        await safeAddColumn('order_returns', 'refund_method', 'VARCHAR(20) DEFAULT "WALLET"');
+        await safeAddColumn('order_returns', 'customer_upi_id', 'VARCHAR(100) NULL');
+        await safeAddColumn('order_returns', 'delivery_agent_id', 'INT NULL');
+        await safeAddColumn('order_returns', 'pickup_scheduled_date', 'DATE NULL');
+        await safeAddColumn('order_returns', 'qc_status', 'VARCHAR(20) DEFAULT "PENDING"');
+        await safeAddColumn('order_returns', 'qc_remarks', 'TEXT NULL');
+        await safeAddColumn('order_returns', 'refund_utr', 'VARCHAR(100) NULL');
+        await safeAddColumn('order_returns', 'replacement_order_id', 'INT NULL');
+
         isMigrationChecked = true;
     } catch (e) {
         console.warn('[returnController] Auto-migration check warning:', e.message);
@@ -296,11 +312,28 @@ exports.merchantReturnAction = async (req, res) => {
             newStatus = 'DISPUTED';
         }
 
-        await db.query(`
-            UPDATE order_returns
-            SET merchant_action = ?, merchant_notes = ?, status = ?
-            WHERE id = ?
-        `, [action, merchant_notes || null, newStatus, id]);
+        try {
+            await db.query(`
+                UPDATE order_returns
+                SET merchant_action = ?, merchant_notes = ?, status = ?
+                WHERE id = ?
+            `, [action, merchant_notes || null, newStatus, id]);
+        } catch (updateErr) {
+            await safeAddColumn('order_returns', 'merchant_notes', 'TEXT NULL');
+            try {
+                await db.query(`
+                    UPDATE order_returns
+                    SET merchant_action = ?, merchant_notes = ?, status = ?
+                    WHERE id = ?
+                `, [action, merchant_notes || null, newStatus, id]);
+            } catch (fallbackErr) {
+                await db.query(`
+                    UPDATE order_returns
+                    SET merchant_action = ?, status = ?
+                    WHERE id = ?
+                `, [action, newStatus, id]);
+            }
+        }
 
         res.json({
             status: true,
@@ -318,10 +351,14 @@ exports.merchantReturnAction = async (req, res) => {
 // ADMIN: GET /admin/returns — All return/replacement requests
 // ─────────────────────────────────────────────────────────────
 exports.adminGetAllReturnRequests = async (req, res) => {
-    const { status, requestType, page = 1, limit = 20 } = req.query;
-    const offset = (page - 1) * limit;
+    const { status, requestType, page = 1, limit = 50 } = req.query;
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(200, Math.max(1, parseInt(limit) || 50));
+    const offset = (pageNum - 1) * limitNum;
 
     try {
+        await ensureReturnTableColumns();
+
         let where = 'WHERE 1=1';
         const params = [];
         if (status) {
@@ -332,15 +369,18 @@ exports.adminGetAllReturnRequests = async (req, res) => {
                 params.push(status);
             }
         }
-        if (requestType && requestType !== 'ALL') { where += ' AND r.request_type = ?'; params.push(requestType); }
+        if (requestType && requestType !== 'ALL') { where += ' AND (r.request_type = ? OR r.return_type = ?)'; params.push(requestType, requestType); }
 
         const [rows] = await db.query(`
-            SELECT r.*, COALESCE(r.request_type, r.return_type, 'RETURN') as request_type,
+            SELECT r.*, 
+                   COALESCE(r.request_type, r.return_type, 'RETURN') as request_type,
                    o.order_number,
-                   u.full_name as customer_name, IFNULL(u.mobile_number,'') as customer_phone,
-                   m.business_name as merchant_name,
-                   COALESCE(p.name, 'Product Item') as product_name,
-                   da.name as agent_name, IFNULL(da.phone_number, '') as agent_phone
+                   COALESCE(u.full_name, 'Customer') as customer_name, 
+                   IFNULL(u.mobile_number,'') as customer_phone,
+                   COALESCE(m.business_name, '') as merchant_name,
+                   COALESCE(p.name, oi.product_name, 'Product Item') as product_name,
+                   COALESCE(da.full_name, '') as agent_name, 
+                   IFNULL(da.phone_number, '') as agent_phone
             FROM order_returns r
             LEFT JOIN orders o ON r.order_id = o.id
             LEFT JOIN users u ON r.user_id = u.id
@@ -352,14 +392,14 @@ exports.adminGetAllReturnRequests = async (req, res) => {
             ${where}
             ORDER BY r.created_at DESC
             LIMIT ? OFFSET ?
-        `, [...params, parseInt(limit), offset]);
+        `, [...params, limitNum, offset]);
 
         const [[countRes]] = await db.query(
             `SELECT COUNT(*) as total FROM order_returns r ${where}`,
             params
         ).catch(() => [[{ total: rows.length }]]);
 
-        res.json({ status: true, data: rows, total: countRes ? countRes.total : rows.length, page: parseInt(page) });
+        res.json({ status: true, data: rows, total: countRes ? countRes.total : rows.length, page: pageNum });
     } catch (err) {
         console.error('[Admin Return] getAll error:', err);
         res.status(500).json({ status: false, message: 'Could not fetch return requests.' });

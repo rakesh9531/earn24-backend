@@ -47,6 +47,7 @@ const withdrawalRoutes = require('./src/Routes/withdrawalRoutes');
 const returnRoutes = require('./src/Routes/returnRoutes');
 
 router.use('/returns', returnRoutes);
+router.use('/admin/returns', returnRoutes);
 
 
 router.use('/auth', authRoutes);
