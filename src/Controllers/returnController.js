@@ -49,6 +49,8 @@ async function ensureReturnTableColumns() {
         await safeAddColumn('order_returns', 'qc_remarks', 'TEXT NULL');
         await safeAddColumn('order_returns', 'refund_utr', 'VARCHAR(100) NULL');
         await safeAddColumn('order_returns', 'replacement_order_id', 'INT NULL');
+        await safeAddColumn('order_returns', 'pickup_proof_image', 'LONGTEXT NULL');
+        await safeAddColumn('order_returns', 'picked_up_at', 'DATETIME NULL');
 
         isMigrationChecked = true;
     } catch (e) {
