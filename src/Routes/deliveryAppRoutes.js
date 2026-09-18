@@ -28,4 +28,11 @@ router.get('/pickup-tasks', auth, deliveryAppController.getPickupTasks);
 router.post('/complete-pickup', auth, deliveryAppController.completeReversePickup);
 router.post('/complete-replacement-delivery', auth, deliveryAppController.completeReplacementDelivery);
 
+// 5. PayU Doorstep Payment Integration (Public for Customer Scanner & PayU Webhooks)
+router.get('/orders/:orderId/payu-checkout', deliveryAppController.payuDoorstepCheckout);
+router.post('/payu-callback', deliveryAppController.payuDoorstepCallback);
+router.all('/payu-success', deliveryAppController.payuDoorstepCallback);
+router.all('/payu-failure', deliveryAppController.payuDoorstepFailure);
+router.get('/orders/:orderId/payment-status', deliveryAppController.getOrderPaymentStatus);
+
 module.exports = router;
