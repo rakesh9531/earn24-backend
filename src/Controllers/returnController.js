@@ -573,6 +573,13 @@ async function createReplacementChildOrder(returnReq, conn) {
 
         const repOrderId = insOrder.insertId;
 
+        let snapshotStr = '{}';
+        if (origItem.attributes_snapshot) {
+            snapshotStr = typeof origItem.attributes_snapshot === 'object'
+                ? JSON.stringify(origItem.attributes_snapshot)
+                : String(origItem.attributes_snapshot);
+        }
+
         await conn.query(`
             INSERT INTO order_items (
                 order_id, product_id, seller_product_id, product_name, 
@@ -581,7 +588,7 @@ async function createReplacementChildOrder(returnReq, conn) {
             ) VALUES (?, ?, ?, ?, ?, 1, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00)
         `, [
             repOrderId, origItem.product_id, origItem.seller_product_id, `[Replacement] ${origItem.product_name}`,
-            origItem.attributes_snapshot || '{}'
+            snapshotStr
         ]);
 
         // Deduct replacement product stock
@@ -796,6 +803,9 @@ exports.dispatchReplacementUnit = async (req, res) => {
             repOrderId = await createReplacementChildOrder(ret, conn);
             if (repOrderId) {
                 await conn.query(`UPDATE order_returns SET replacement_order_id = ? WHERE id = ?`, [repOrderId, id]);
+            } else {
+                await conn.rollback();
+                return res.status(500).json({ status: false, message: 'Could not generate replacement order. Please try again.' });
             }
         }
 
