@@ -188,6 +188,7 @@ const ensureWarrantyColumns = async () => {
     await db.query("ALTER TABLE seller_products ADD COLUMN return_window_days INT NULL DEFAULT 7").catch(() => {});
     await db.query("ALTER TABLE seller_products ADD COLUMN is_replacement_available TINYINT(1) NULL DEFAULT NULL").catch(() => {});
     await db.query("ALTER TABLE seller_products ADD COLUMN replacement_window_days INT NULL DEFAULT 7").catch(() => {});
+    await db.query("ALTER TABLE seller_products ADD COLUMN is_cod_available TINYINT(1) DEFAULT 1").catch(() => {});
 
     await db.query("ALTER TABLE product_subcategories ADD COLUMN has_return_policy TINYINT(1) NULL DEFAULT 1").catch(() => {});
     await db.query("ALTER TABLE product_subcategories ADD COLUMN return_window_days INT NULL DEFAULT 7").catch(() => {});
@@ -1686,6 +1687,7 @@ exports.getProductForUser = async (req, res) => {
                 sp.id as offer_id, sp.seller_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
                 sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
+                IFNULL(sp.is_cod_available, 1) as is_cod_available,
                 psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
                 psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                 COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
@@ -1748,6 +1750,7 @@ exports.getProductForUser = async (req, res) => {
     product.return_window_days = parseInt(rawReturnDays, 10);
     product.is_replacement_available = (rawHasReplacement === 1 || rawHasReplacement === true || rawHasReplacement === '1' || rawHasReplacement === 'true');
     product.replacement_window_days = parseInt(rawReplacementDays, 10);
+    product.is_cod_available = (product.is_cod_available !== 0 && product.is_cod_available !== '0' && product.is_cod_available !== false && product.is_cod_available !== 'false');
 
     // Parse JSON string fields into arrays safely for the frontend
     product.gallery_image_urls = safeJsonParse(product.gallery_image_urls);

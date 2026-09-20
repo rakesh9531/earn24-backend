@@ -67,6 +67,7 @@ exports.getCart = async (req, res) => {
                 COALESCE(spv.price, sp.selling_price) as selling_price,
                 COALESCE(spv.mrp, sp.mrp) as mrp,
                 sp.minimum_order_quantity, sp.purchase_price, h.gst_percentage,
+                IFNULL(sp.is_cod_available, 1) as is_cod_available,
                 s.display_name as seller_name,
                 spv.title as variant_title, spv.color as variant_color, spv.size as variant_size, spv.sku as variant_sku,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (COALESCE(spv.price, sp.selling_price) * (sp.admin_margin_percent / 100)) * (? / 100), ((COALESCE(spv.price, sp.selling_price) - IFNULL(sp.purchase_price, 0)) - ((COALESCE(spv.price, sp.selling_price) * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
@@ -291,6 +292,7 @@ exports.validateCartForCheckout = async (req, res) => {
             `SELECT 
                 sp.id as offer_id,
                 p.is_universal_pincode,
+                IFNULL(sp.is_cod_available, 1) as is_cod_available,
                 (SELECT COUNT(*) FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode != 'ALL') as restriction_count,
                 EXISTS(SELECT 1 FROM seller_product_pincodes spp WHERE spp.seller_product_id = sp.id AND (spp.pincode = ? OR spp.pincode = 'ALL')) as is_matched
             FROM seller_products sp
@@ -307,16 +309,19 @@ exports.validateCartForCheckout = async (req, res) => {
         const validatedItems = items.map(item => {
             const info = infoMap[item.offer_id];
             let isAvailable = true;
+            let isCodAvailable = true;
             if (info) {
                 if (info.is_universal_pincode === 1 || info.restriction_count === 0) {
                     isAvailable = true;
                 } else {
                     isAvailable = info.is_matched === 1;
                 }
+                isCodAvailable = Number(info.is_cod_available) !== 0;
             }
             return {
                 ...item, 
-                is_available: isAvailable 
+                is_available: isAvailable,
+                is_cod_available: isCodAvailable
             };
         });
 

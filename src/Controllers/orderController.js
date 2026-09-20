@@ -54,6 +54,7 @@ exports.createOrder = async (req, res) => {
                 ci.id as cart_item_id, ci.quantity, ci.seller_product_variant_id,
                 sp.id as seller_product_id, p.id as product_id, p.name as product_name,
                 sp.selling_price, sp.purchase_price, sp.admin_margin_percent, h.gst_percentage, u.sponsor_id, sp.quantity as stock_available,
+                IFNULL(sp.is_cod_available, 1) as is_cod_available,
                 spv.id as variant_id, spv.title as variant_title, spv.color as variant_color,
                 spv.size as variant_size, spv.sku as variant_sku, spv.price as variant_price,
                 spv.variant_image_url as variant_image_url
@@ -92,8 +93,14 @@ exports.createOrder = async (req, res) => {
         const specialFee = settings.delivery_fee_special || 0.0;
         const isCodActive = settings.is_cod_active !== undefined ? settings.is_cod_active : 1;
 
-        if (paymentMethod === 'COD' && isCodActive === 0) {
-            throw new Error('Cash on Delivery (COD) is currently disabled by the administrator.');
+        if (paymentMethod === 'COD') {
+            if (isCodActive === 0) {
+                throw new Error('Cash on Delivery (COD) is currently disabled by the administrator.');
+            }
+            const nonCodItem = items.find(item => Number(item.is_cod_available) === 0);
+            if (nonCodItem) {
+                throw new Error(`Cash on Delivery (COD) is not available for "${nonCodItem.product_name}". Please choose an online payment method.`);
+            }
         }
 
         const computeItemBv = (item, price) => {
@@ -444,6 +451,21 @@ exports.updatePaymentMethod = async (req, res) => {
 
         let newStatus = 'PENDING';
         if (paymentMethod === 'COD') {
+            const [orderItems] = await db.query(`
+                SELECT p.name as product_name, IFNULL(sp.is_cod_available, 1) as is_cod_available
+                FROM order_items oi
+                JOIN seller_products sp ON oi.seller_product_id = sp.id
+                JOIN products p ON oi.product_id = p.id
+                WHERE oi.order_id = ?
+            `, [orderId]);
+
+            const nonCodItem = (orderItems || []).find(item => Number(item.is_cod_available) === 0);
+            if (nonCodItem) {
+                return res.status(400).json({
+                    status: false,
+                    message: `Cash on Delivery (COD) is not available for "${nonCodItem.product_name}". Please choose an online payment method.`
+                });
+            }
             newStatus = 'CONFIRMED';
         }
 
