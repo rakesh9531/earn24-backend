@@ -1336,10 +1336,10 @@ exports.getSettlementOverview = async (req, res) => {
                    o.payment_method, o.delivery_payment_mode, o.delivery_amount_collected,
                    o.is_settlement_requested, o.settlement_requested_at,
                    u.full_name as customer_name, u.mobile_number as customer_phone,
-                   CONCAT_WS(', ', ua.address_line1, ua.city, ua.state, ua.pincode) as delivery_address
+                   CONCAT_WS(', ', sa.address_line_1, sa.city, sa.state, sa.pincode) as delivery_address
             FROM orders o
             LEFT JOIN users u ON o.user_id = u.id
-            LEFT JOIN user_addresses ua ON o.delivery_address_id = ua.id
+            LEFT JOIN user_addresses sa ON o.shipping_address_id = sa.id
             WHERE o.delivery_agent_id = ? 
               AND o.order_status = 'DELIVERED'
               AND (o.is_cash_settled = 0 OR o.is_cash_settled IS NULL)
