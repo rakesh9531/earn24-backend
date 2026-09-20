@@ -20,7 +20,8 @@ class OrderItem {
     cancellation_reason,
     brand_name,
     variant_title,
-    sku
+    sku,
+    return_request
   }) {
     const timeZone = 'Asia/Kolkata';
 
@@ -42,6 +43,8 @@ class OrderItem {
     this.brandName = brand_name || '';
     this.variantTitle = variant_title || '';
     this.sku = sku || '';
+    this.return_request = return_request || null;
+    this.returnRequest = return_request || null;
 
     let parsedAttributes = null;
     let finalImageUrl = main_image_url || null;

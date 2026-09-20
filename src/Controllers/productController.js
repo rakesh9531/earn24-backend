@@ -1675,6 +1675,10 @@ exports.getProductForUser = async (req, res) => {
     );
     const bvGenerationPct = settingsRows[0] ? parseFloat(settingsRows[0].setting_value) : 80.0;
 
+    const isSellerProd = req.query.is_seller_product === '1' || req.query.is_seller_product === 'true';
+    const whereClause = isSellerProd ? "sp.id = ?" : "(p.id = ? OR sp.id = ?)";
+    const orderParams = isSellerProd ? [activePincode, activePincode, id] : [activePincode, activePincode, id, id, id];
+
     const query = `
             SELECT 
                 p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls, p.is_universal_pincode,
@@ -1711,13 +1715,12 @@ exports.getProductForUser = async (req, res) => {
             LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-            WHERE (p.id = ? OR sp.id = ?) AND sp.is_active = TRUE
-            -- We get the best offer (e.g., lowest price) available for this product
-            ORDER BY sp.selling_price ASC
+            WHERE ${whereClause} AND sp.is_active = TRUE
+            ORDER BY ${isSellerProd ? 'sp.selling_price ASC' : '(CASE WHEN p.id = ? THEN 0 ELSE 1 END), sp.selling_price ASC'}
             LIMIT 1;
         `;
 
-    const [productRows] = await db.query(query, [activePincode, activePincode, id, id]);
+    const [productRows] = await db.query(query, orderParams);
 
     if (productRows.length === 0) {
       console.log(`[getProductForUser DEBUG WARN] Product/Offer NOT found for ID: ${id}`);
