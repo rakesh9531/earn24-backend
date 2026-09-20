@@ -200,19 +200,29 @@ exports.getAdminOrderDetails = async (req, res) => {
             if (rawRet.evidence_images) {
                 try {
                     evidenceImages = typeof rawRet.evidence_images === 'string' ? JSON.parse(rawRet.evidence_images) : rawRet.evidence_images;
+                    if (typeof evidenceImages === 'string') {
+                        try { evidenceImages = JSON.parse(evidenceImages); } catch(e) {}
+                    }
                 } catch(e) {
                     evidenceImages = rawRet.evidence_images ? [rawRet.evidence_images] : [];
                 }
             } else if (rawRet.images_json) {
                 try {
                     evidenceImages = typeof rawRet.images_json === 'string' ? JSON.parse(rawRet.images_json) : rawRet.images_json;
+                    if (typeof evidenceImages === 'string') {
+                        try { evidenceImages = JSON.parse(evidenceImages); } catch(e) {}
+                    }
                 } catch(e) {
                     evidenceImages = [];
                 }
             }
+            const cleanEvidence = (Array.isArray(evidenceImages) ? evidenceImages : (evidenceImages ? [evidenceImages] : []))
+                .map(img => typeof img === 'string' ? img.replace(/^["']|["']$/g, '').trim() : img)
+                .filter(Boolean);
+
             returnDetails = {
                 ...rawRet,
-                evidence_images: Array.isArray(evidenceImages) ? evidenceImages : []
+                evidence_images: cleanEvidence
             };
         }
 
