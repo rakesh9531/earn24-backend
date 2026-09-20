@@ -1266,12 +1266,87 @@ exports.getHomeScreenData = async (req, res) => {
                 };
             });
             return {
-                id: category.id, title: `Best in ${category.name}`,
-                parent_category_id: category.id, products: productsParsed
+                id: category.id,
+                title: `Best in ${category.name}`,
+                parent_category_id: category.id,
+                products: productsParsed
             };
         }).filter(section => section.products.length > 0);
 
-        res.status(200).json({ status: true, data: { banners, categories: categoryTree, productSections: categorizedProducts } });
+        // --- 7. DATABASE-DRIVEN TOP BV & SUPER DEALS ACROSS WHOLE STORE ---
+        let topBvQuery = '';
+        let topBvParams = [];
+
+        if (isPincodeProvided) {
+            topBvQuery = `
+                SELECT 
+                    p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
+                    sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
+                    sp.purchase_price, sp.minimum_order_quantity,
+                    COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                    (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
+                    (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
+                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned
+                FROM seller_products sp
+                JOIN sellers s ON sp.seller_id = s.id
+                LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
+                LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
+                JOIN products p ON sp.product_id = p.id
+                LEFT JOIN brands b ON p.brand_id = b.id
+                LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
+                WHERE (
+                    p.is_universal_pincode = 1 
+                    OR spp.pincode = ? 
+                    OR spp.pincode = 'ALL'
+                    OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id)
+                ) AND p.is_active = TRUE AND p.is_deleted = FALSE AND sp.is_active = TRUE AND sp.selling_price > 0
+                GROUP BY sp.id 
+                ORDER BY bv_earned DESC, ((sp.mrp - sp.selling_price) / sp.mrp) DESC 
+                LIMIT 10
+            `;
+            topBvParams = [bvGenerationPct, bvGenerationPct, pincode];
+        } else {
+            topBvQuery = `
+                SELECT 
+                    p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
+                    sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
+                    sp.purchase_price, sp.minimum_order_quantity,
+                    COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                    (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
+                    (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
+                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned
+                FROM seller_products sp
+                JOIN sellers s ON sp.seller_id = s.id
+                LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
+                JOIN products p ON sp.product_id = p.id
+                LEFT JOIN brands b ON p.brand_id = b.id
+                LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
+                WHERE (
+                    p.is_universal_pincode = 1 
+                    OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id)
+                ) AND p.is_active = TRUE AND p.is_deleted = FALSE AND sp.is_active = TRUE AND sp.selling_price > 0
+                GROUP BY sp.id 
+                ORDER BY bv_earned DESC, ((sp.mrp - sp.selling_price) / sp.mrp) DESC 
+                LIMIT 10
+            `;
+            topBvParams = [bvGenerationPct, bvGenerationPct];
+        }
+
+        const [rawTopBv] = await db.query(topBvQuery, topBvParams);
+        const topBvDeals = (rawTopBv || []).map(p => ({
+            ...p,
+            id: p.product_id,
+        }));
+
+        res.status(200).json({
+            status: true,
+            data: {
+                banners,
+                categories: categoryTree,
+                topBvDeals,
+                productSections: categorizedProducts
+            }
+        });
 
     } catch (error) {
         console.error("Error fetching home screen data:", error);
