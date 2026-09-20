@@ -360,10 +360,14 @@ exports.getOrderDetails = async (req, res) => {
         const itemsQuery = `
             SELECT oi.*, p.name as master_product_name, p.main_image_url, b.name as brand_name,
                    ${hasVariantCol ? "spv.sku as variant_sku, spv.color, spv.size, spv.title as variant_title," : "'' as variant_sku, '' as color, '' as size, '' as variant_title,"}
-                   IFNULL(sp.return_window_days, 7) as return_window_days, 
+                   IFNULL(sp.return_window_days, IFNULL(psc.return_window_days, 7)) as return_window_days, 
+                   IFNULL(sp.has_return_policy, IFNULL(psc.has_return_policy, 1)) as has_return_policy,
+                   IFNULL(sp.is_replacement_available, IFNULL(psc.is_replacement_available, 1)) as is_replacement_available,
+                   IFNULL(sp.replacement_window_days, IFNULL(psc.replacement_window_days, 7)) as replacement_window_days,
                    IFNULL(sp.is_returnable, 1) as is_returnable
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
+            LEFT JOIN product_subcategories psc ON p.sub_category_id = psc.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
             ${hasVariantCol ? 'LEFT JOIN seller_product_variants spv ON oi.seller_product_variant_id = spv.id' : ''}
@@ -384,7 +388,10 @@ exports.getOrderDetails = async (req, res) => {
         });
 
         const returnWindowDays = itemRows.length > 0 ? Math.max(...itemRows.map(i => parseInt(i.return_window_days || 7))) : 7;
-        const isReturnable = itemRows.length > 0 ? itemRows.some(i => i.is_returnable !== 0) : true;
+        const isReturnable = itemRows.length > 0 ? itemRows.some(i => (
+            (i.has_return_policy === 1 || i.has_return_policy === '1' || i.has_return_policy === true) ||
+            (i.is_replacement_available === 1 || i.is_replacement_available === '1' || i.is_replacement_available === true)
+        )) : true;
 
         const orderData = new Order({
             ...orderRows[0],
@@ -421,15 +428,27 @@ exports.getOrderDetails = async (req, res) => {
                     brand_name: item.brand_name || '',
                     variant_title: vTitle || (vColor ? `${vColor} ${vSize || ''}`.trim() : ''),
                     sku: vSku,
-                    return_request: itemReturn
+                    return_request: itemReturn,
+                    has_return_policy: item.has_return_policy,
+                    is_replacement_available: item.is_replacement_available,
+                    return_window_days: item.return_window_days,
+                    replacement_window_days: item.replacement_window_days
                 });
             }),
             return_request: returnRows && returnRows[0] ? {
                 ...returnRows[0],
-                admin_remarks: returnRows[0].admin_remarks || returnRows[0].reject_reason || '',
-                reject_reason: returnRows[0].reject_reason || returnRows[0].admin_remarks || ''
+                admin_remarks: returnRows[0].admin_remarks || returnRows[0].reject_reason || returnRows[0].rejection_reason || '',
+                reject_reason: returnRows[0].reject_reason || returnRows[0].admin_remarks || returnRows[0].rejection_reason || '',
+                rejection_reason: returnRows[0].rejection_reason || returnRows[0].admin_remarks || returnRows[0].reject_reason || '',
+                merchant_notes: returnRows[0].merchant_notes || ''
             } : null,
-            return_requests: returnRows || []
+            return_requests: (returnRows || []).map(r => ({
+                ...r,
+                admin_remarks: r.admin_remarks || r.reject_reason || r.rejection_reason || '',
+                reject_reason: r.reject_reason || r.admin_remarks || r.rejection_reason || '',
+                rejection_reason: r.rejection_reason || r.admin_remarks || r.reject_reason || '',
+                merchant_notes: r.merchant_notes || ''
+            }))
         });
 
         res.status(200).json({ status: true, data: orderData });
@@ -1512,10 +1531,16 @@ exports.requestReturn = async (req, res) => {
       return res.status(400).json({ status: false, message: 'Return or replacement can only be requested for DELIVERED orders.' });
     }
 
-    // 3. Find order items
+    // 3. Find order items with return & replacement policies
     const [items] = await db.query(
-      `SELECT oi.*, sp.seller_id as merchant_seller_id
+      `SELECT oi.*, sp.seller_id as merchant_seller_id,
+              IFNULL(sp.has_return_policy, IFNULL(psc.has_return_policy, 1)) as has_return_policy,
+              IFNULL(sp.return_window_days, IFNULL(psc.return_window_days, 7)) as return_window_days,
+              IFNULL(sp.is_replacement_available, IFNULL(psc.is_replacement_available, 1)) as is_replacement_available,
+              IFNULL(sp.replacement_window_days, IFNULL(psc.replacement_window_days, 7)) as replacement_window_days
        FROM order_items oi
+       JOIN products p ON oi.product_id = p.id
+       LEFT JOIN product_subcategories psc ON p.sub_category_id = psc.id
        LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
        WHERE oi.order_id = ?`,
       [orderId]
@@ -1527,6 +1552,35 @@ exports.requestReturn = async (req, res) => {
 
     // Choose target item (specific orderItemId or first item)
     const targetItem = orderItemId ? items.find(i => i.id == orderItemId) || items[0] : items[0];
+
+    // Policy Validation Guard (Enforce Non-Returnable / Non-Replaceable Offers)
+    const canReturn = (targetItem.has_return_policy === 1 || targetItem.has_return_policy === '1' || targetItem.has_return_policy === true);
+    const canReplace = (targetItem.is_replacement_available === 1 || targetItem.is_replacement_available === '1' || targetItem.is_replacement_available === true);
+
+    if (reqType === 'RETURN' && !canReturn) {
+      return res.status(400).json({
+        status: false,
+        message: 'Returns / Refunds are not available for this product offer.'
+      });
+    }
+
+    if (reqType === 'REPLACEMENT' && !canReplace) {
+      return res.status(400).json({
+        status: false,
+        message: 'Replacements are not available for this product offer.'
+      });
+    }
+
+    // Check delivery window
+    const deliveryDate = order.delivered_at || order.created_at;
+    const windowDays = reqType === 'RETURN' ? parseInt(targetItem.return_window_days || 7, 10) : parseInt(targetItem.replacement_window_days || 7, 10);
+    const daysDiff = (Date.now() - new Date(deliveryDate).getTime()) / (1000 * 3600 * 24);
+    if (daysDiff > windowDays) {
+      return res.status(400).json({
+        status: false,
+        message: `${reqType === 'RETURN' ? 'Return' : 'Replacement'} window (${windowDays} days) has expired.`
+      });
+    }
 
     // 4. Get merchant_id if available
     let merchantId = null;
@@ -1549,6 +1603,9 @@ exports.requestReturn = async (req, res) => {
     await db.query(`ALTER TABLE order_returns ADD COLUMN refund_method VARCHAR(20) DEFAULT 'WALLET';`).catch(() => {});
     await db.query(`ALTER TABLE order_returns ADD COLUMN customer_upi_id VARCHAR(100) NULL;`).catch(() => {});
     await db.query(`ALTER TABLE order_returns ADD COLUMN return_quantity INT DEFAULT 1;`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN reject_reason VARCHAR(255) NULL;`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN admin_remarks TEXT NULL;`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN rejection_reason VARCHAR(255) NULL;`).catch(() => {});
 
     const safeItemId = (targetItem && targetItem.id) ? targetItem.id : 0;
     const safeMerchantId = merchantId || null;

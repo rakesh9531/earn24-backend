@@ -1741,15 +1741,34 @@ exports.getProductForUser = async (req, res) => {
     product.bv_earned = parseFloat(product.bv_earned || 0).toFixed(2);
 
     // Resolve Product Level vs Subcategory Fallback Policy (Priority Hierarchy)
-    const rawHasReturn = (product.has_return_policy !== null && product.has_return_policy !== undefined) ? product.has_return_policy : product.subcat_has_return_policy;
+    let rawHasReturn;
+    if (product.has_return_policy !== null && product.has_return_policy !== undefined) {
+      rawHasReturn = (product.has_return_policy === 1 || product.has_return_policy === true || product.has_return_policy === '1' || product.has_return_policy === 'true');
+    } else if (product.subcat_has_return_policy !== null && product.subcat_has_return_policy !== undefined) {
+      rawHasReturn = (product.subcat_has_return_policy === 1 || product.subcat_has_return_policy === true || product.subcat_has_return_policy === '1' || product.subcat_has_return_policy === 'true');
+    } else {
+      rawHasReturn = true;
+    }
+
+    let rawHasReplacement;
+    if (product.is_replacement_available !== null && product.is_replacement_available !== undefined) {
+      rawHasReplacement = (product.is_replacement_available === 1 || product.is_replacement_available === true || product.is_replacement_available === '1' || product.is_replacement_available === 'true');
+    } else if (product.subcat_is_replacement_available !== null && product.subcat_is_replacement_available !== undefined) {
+      rawHasReplacement = (product.subcat_is_replacement_available === 1 || product.subcat_is_replacement_available === true || product.subcat_is_replacement_available === '1' || product.subcat_is_replacement_available === 'true');
+    } else {
+      rawHasReplacement = true;
+    }
+
     const rawReturnDays = product.return_window_days || product.subcat_return_window_days || 7;
-    const rawHasReplacement = (product.is_replacement_available !== null && product.is_replacement_available !== undefined) ? product.is_replacement_available : product.subcat_is_replacement_available;
     const rawReplacementDays = product.replacement_window_days || product.subcat_replacement_window_days || 7;
 
-    product.has_return_policy = (rawHasReturn === 1 || rawHasReturn === true || rawHasReturn === '1' || rawHasReturn === 'true');
+    product.has_return_policy = rawHasReturn ? 1 : 0;
+    product.is_returnable = rawHasReturn ? 1 : 0;
     product.return_window_days = parseInt(rawReturnDays, 10);
-    product.is_replacement_available = (rawHasReplacement === 1 || rawHasReplacement === true || rawHasReplacement === '1' || rawHasReplacement === 'true');
+    product.is_replacement_available = rawHasReplacement ? 1 : 0;
     product.replacement_window_days = parseInt(rawReplacementDays, 10);
+    product.hasReturnPolicy = rawHasReturn;
+    product.isReplacementAvailable = rawHasReplacement;
     product.is_cod_available = (product.is_cod_available !== 0 && product.is_cod_available !== '0' && product.is_cod_available !== false && product.is_cod_available !== 'false');
 
     // Parse JSON string fields into arrays safely for the frontend

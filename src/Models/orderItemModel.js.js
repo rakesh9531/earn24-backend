@@ -21,7 +21,11 @@ class OrderItem {
     brand_name,
     variant_title,
     sku,
-    return_request
+    return_request,
+    has_return_policy,
+    is_replacement_available,
+    return_window_days,
+    replacement_window_days
   }) {
     const timeZone = 'Asia/Kolkata';
 
@@ -45,6 +49,12 @@ class OrderItem {
     this.sku = sku || '';
     this.return_request = return_request || null;
     this.returnRequest = return_request || null;
+    this.has_return_policy = (has_return_policy === 1 || has_return_policy === true || has_return_policy === '1' || has_return_policy === 'true') ? 1 : 0;
+    this.is_replacement_available = (is_replacement_available === 1 || is_replacement_available === true || is_replacement_available === '1' || is_replacement_available === 'true') ? 1 : 0;
+    this.hasReturnPolicy = this.has_return_policy === 1;
+    this.isReplacementAvailable = this.is_replacement_available === 1;
+    this.returnWindowDays = parseInt(return_window_days || 7, 10);
+    this.replacementWindowDays = parseInt(replacement_window_days || 7, 10);
 
     let parsedAttributes = null;
     let finalImageUrl = main_image_url || null;
