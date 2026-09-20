@@ -366,7 +366,7 @@ exports.getOrderDetails = async (req, res) => {
              FROM order_returns r 
              LEFT JOIN delivery_agents da ON r.delivery_agent_id = da.id 
              WHERE r.order_id = ? 
-             ORDER BY r.id DESC LIMIT 1`,
+             ORDER BY r.id DESC`,
             [orderId]
         ).catch(() => [[]]);
 
@@ -401,18 +401,22 @@ exports.getOrderDetails = async (req, res) => {
                     } catch(e) {}
                 }
                 
+                const itemReturn = (returnRows || []).find(r => r.order_item_id == item.id && !['REJECTED', 'CLOSED'].includes(r.status)) || (returnRows || []).find(r => r.order_item_id == item.id) || null;
+
                 return new OrderItem({
                     ...item,
                     brand_name: item.brand_name || '',
                     variant_title: vTitle || (vColor ? `${vColor} ${vSize || ''}`.trim() : ''),
-                    sku: vSku
+                    sku: vSku,
+                    return_request: itemReturn
                 });
             }),
             return_request: returnRows && returnRows[0] ? {
                 ...returnRows[0],
                 admin_remarks: returnRows[0].admin_remarks || returnRows[0].reject_reason || '',
                 reject_reason: returnRows[0].reject_reason || returnRows[0].admin_remarks || ''
-            } : null
+            } : null,
+            return_requests: returnRows || []
         });
 
         res.status(200).json({ status: true, data: orderData });
@@ -1516,31 +1520,37 @@ exports.requestReturn = async (req, res) => {
     await db.query(`ALTER TABLE order_returns ADD COLUMN pickup_otp VARCHAR(20) NULL;`).catch(() => {});
     await db.query(`ALTER TABLE order_returns ADD COLUMN refund_method VARCHAR(20) DEFAULT 'WALLET';`).catch(() => {});
     await db.query(`ALTER TABLE order_returns ADD COLUMN customer_upi_id VARCHAR(100) NULL;`).catch(() => {});
+    await db.query(`ALTER TABLE order_returns ADD COLUMN return_quantity INT DEFAULT 1;`).catch(() => {});
 
-    // 6. Check if request already submitted
+    const safeItemId = (targetItem && targetItem.id) ? targetItem.id : 0;
+    const safeMerchantId = merchantId || null;
+
+    // 6. Check if request already submitted FOR THIS SPECIFIC ITEM
     const [existing] = await db.query(
-      `SELECT id FROM order_returns WHERE order_id = ? AND status NOT IN ('REJECTED', 'CLOSED')`,
-      [orderId]
+      `SELECT id FROM order_returns WHERE order_id = ? AND order_item_id = ? AND status NOT IN ('REJECTED', 'CLOSED')`,
+      [orderId, safeItemId]
     ).catch(() => [[]]);
 
     if (existing && existing.length > 0) {
       return res.status(400).json({
         status: false,
-        message: `A ${reqType.toLowerCase()} request for this order is already in progress.`
+        message: `A ${reqType.toLowerCase()} request for this item is already in progress.`
       });
     }
 
-    const safeItemId = (targetItem && targetItem.id) ? targetItem.id : 0;
-    const safeMerchantId = merchantId || null;
-    const itemRefundAmount = (targetItem && (targetItem.total_price || targetItem.price)) ? (targetItem.total_price || targetItem.price) : 0;
+    // Support requested return quantity and proportionate refund
+    const orderedQty = parseInt(targetItem.quantity) || 1;
+    const returnQty = Math.min(Math.max(1, parseInt(req.body.quantity || req.body.return_quantity || 1)), orderedQty);
+    const unitPrice = (parseFloat(targetItem.total_price || targetItem.price || 0) / orderedQty) || 0;
+    const itemRefundAmount = (unitPrice * returnQty).toFixed(2);
 
     // 7. Insert Return / Replacement Request with Primary & Fallback
     let result;
     try {
       [result] = await db.query(
         `INSERT INTO order_returns 
-          (order_id, order_item_id, user_id, merchant_id, return_type, request_type, reason, evidence_images, refund_amount, status, pickup_otp, refund_method, customer_upi_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
+          (order_id, order_item_id, user_id, merchant_id, return_type, request_type, reason, evidence_images, refund_amount, return_quantity, status, pickup_otp, refund_method, customer_upi_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
         [
           orderId,
           safeItemId,
@@ -1551,6 +1561,7 @@ exports.requestReturn = async (req, res) => {
           returnReason,
           evidence_images ? JSON.stringify(evidence_images) : null,
           itemRefundAmount,
+          returnQty,
           pickupOtp,
           chosenRefundMethod,
           upiId
@@ -1560,8 +1571,8 @@ exports.requestReturn = async (req, res) => {
       console.warn("Primary return insert failed, executing fallback insert:", insertErr.message);
       [result] = await db.query(
         `INSERT INTO order_returns 
-          (order_id, order_item_id, user_id, merchant_id, reason, refund_amount, status, pickup_otp, refund_method, customer_upi_id)
-         VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
+          (order_id, order_item_id, user_id, merchant_id, reason, refund_amount, return_quantity, status, pickup_otp, refund_method, customer_upi_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
         [
           orderId,
           safeItemId,
@@ -1569,6 +1580,7 @@ exports.requestReturn = async (req, res) => {
           safeMerchantId,
           returnReason,
           itemRefundAmount,
+          returnQty,
           pickupOtp,
           chosenRefundMethod,
           upiId
