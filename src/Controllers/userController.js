@@ -10,6 +10,7 @@ const {
   loginUserValidator,
 } = require("../Validator/userValidation");
 const { sendSms } = require("../utils/smsHelper");
+const { sendOtpEmail } = require("../Services/emailService");
 const rankService = require("../Services/rankService");
 const binaryService = require("../Services/binaryService");
 
@@ -1323,12 +1324,17 @@ exports.sendEmailOtp = async (req, res) => {
             ON DUPLICATE KEY UPDATE otp_code = VALUES(otp_code), last_sent_at = NOW()
         `, [key, otp]);
 
-        console.log(`[EMAIL OTP] Generated OTP for ${email}: ${otp}`);
+        console.log(`[EMAIL OTP] Sending real OTP email to ${email}`);
+        try {
+            await sendOtpEmail(email.trim(), otp);
+        } catch (mailErr) {
+            console.error("[EMAIL OTP] Failed to send via SMTP:", mailErr.message);
+            return res.status(500).json({ status: false, message: "Could not send verification email. Please check the email address and try again." });
+        }
 
         res.json({
             status: true,
-            message: `OTP sent successfully to ${email}.`,
-            mockOtp: otp
+            message: `Verification code sent successfully to ${email}. Please check your inbox.`
         });
     } catch (e) {
         console.error("sendEmailOtp error:", e);
