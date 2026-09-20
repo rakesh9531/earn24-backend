@@ -264,7 +264,7 @@ exports.createOrder = async (req, res) => {
 exports.getOrderHistory = async (req, res) => {
     const userId = req.user.id;
     const page = parseInt(req.query.page, 10) || 1;
-    const limit = parseInt(req.query.limit, 10) || 10;
+    const limit = parseInt(req.query.limit, 10) || 20;
     const offset = (page - 1) * limit;
 
     try {
@@ -1462,8 +1462,8 @@ exports.requestReturn = async (req, res) => {
 
   const reqType = (type || requestType || 'RETURN').toUpperCase();
   const returnReason = reason || 'Return requested by user';
-  const chosenRefundMethod = (refund_method || refundMethod || 'WALLET').toUpperCase();
-  const upiId = customer_upi_id || customerUpiId || null;
+  const chosenRefundMethod = 'WALLET'; // 100% Policy: all returns credit to user Earn24 Wallet
+  const upiId = null;
   const pickupOtp = Math.floor(1000 + Math.random() * 9000).toString();
 
   try {

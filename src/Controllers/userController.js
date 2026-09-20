@@ -1245,18 +1245,30 @@ exports.getWalletHistory = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
 
-    // 1. Fetch Data
+    // 1. Fetch Data with Order and Product details for Returns
     const sql = `
-            SELECT id, amount, 
+            SELECT t.id, t.amount, 
                    CASE 
-                     WHEN remarks LIKE 'Payment for Order%' THEN 'debit'
-                     WHEN remarks LIKE 'Refund%' OR remarks LIKE 'Cashback%' THEN 'credit'
-                     ELSE LOWER(COALESCE(txn_type, transaction_type, 'debit'))
+                     WHEN t.remarks LIKE 'Payment for Order%' THEN 'debit'
+                     WHEN t.remarks LIKE 'Refund%' OR t.remarks LIKE 'Cashback%' THEN 'credit'
+                     ELSE LOWER(COALESCE(t.txn_type, t.transaction_type, 'debit'))
                    END as txn_type, 
-                   source, remarks, reference_id, created_at 
-            FROM user_wallet_transactions 
-            WHERE user_id = ? 
-            ORDER BY created_at DESC 
+                   t.source, 
+                   CASE
+                     WHEN (t.remarks LIKE 'Refund for Return Request #%' OR t.source = 'return_refund') AND ret.id IS NOT NULL THEN
+                       CONCAT('Refund for Order #', COALESCE(o.order_number, ret.order_id), ' (', COALESCE(oi.product_name, 'Item'), IF(COALESCE(ret.return_quantity, 1) > 1, CONCAT(' x ', ret.return_quantity), ''), ')')
+                     ELSE t.remarks
+                   END as remarks,
+                   t.reference_id, t.created_at,
+                   COALESCE(o.order_number, ret.order_id) as order_number,
+                   oi.product_name,
+                   COALESCE(ret.return_quantity, 1) as return_quantity
+            FROM user_wallet_transactions t
+            LEFT JOIN order_returns ret ON (t.source = 'return_refund' OR t.remarks LIKE 'Refund for Return Request #%') AND (ret.id = CAST(t.reference_id AS UNSIGNED) OR t.remarks LIKE CONCAT('%#', ret.id))
+            LEFT JOIN orders o ON o.id = ret.order_id
+            LEFT JOIN order_items oi ON oi.id = ret.order_item_id
+            WHERE t.user_id = ? 
+            ORDER BY t.created_at DESC 
             LIMIT ? OFFSET ?
         `;
     const [rows] = await db.query(sql, [userId, limit, offset]);
