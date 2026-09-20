@@ -788,9 +788,14 @@ exports.requestMerchantPasswordOtp = async (req, res) => {
         const smsService = require('../utils/smsHelper');
         await smsService.sendSms(merchant.phone_number, otp);
 
+        if (merchant.email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(merchant.email)) {
+            const { sendOtpEmail } = require('../Services/emailService');
+            sendOtpEmail(merchant.email, otp).catch(err => console.warn("Merchant email OTP send failed:", err.message));
+        }
+
         res.status(200).json({
             status: true,
-            message: `OTP sent successfully to registered mobile ${merchant.phone_number.slice(0, 3)}****${merchant.phone_number.slice(-3)}.`,
+            message: `OTP sent successfully to registered mobile and email.`,
             phone: merchant.phone_number
         });
     } catch (e) {
