@@ -399,6 +399,7 @@ exports.getPickupTasks = async (req, res) => {
                 r.pickup_scheduled_date,
                 r.picked_up_at,
                 r.received_at_hub_at,
+                COALESCE(r.return_quantity, 1) as quantity,
                 o.order_number,
                 u.full_name as customer_name,
                 u.mobile_number as customer_phone,
@@ -417,7 +418,10 @@ exports.getPickupTasks = async (req, res) => {
             LEFT JOIN merchants m ON r.merchant_id = m.id
             WHERE (r.delivery_agent_id = ? OR o.delivery_agent_id = ?) 
               AND r.received_at_hub_at IS NULL
-              AND r.status IN ('PICKUP_ASSIGNED', 'OUT_FOR_PICKUP', 'REVERSE_PICKUP_ASSIGNED', 'APPROVED', 'MERCHANT_ACCEPTED', 'PICKED_UP', 'IN_TRANSIT_TO_HUB', 'REPLACEMENT_INITIATED')
+              AND (
+                  r.status IN ('PICKUP_ASSIGNED', 'OUT_FOR_PICKUP', 'REVERSE_PICKUP_ASSIGNED', 'APPROVED', 'MERCHANT_ACCEPTED', 'PICKED_UP', 'IN_TRANSIT_TO_HUB', 'REPLACEMENT_INITIATED')
+                  OR (r.picked_up_at IS NOT NULL AND r.status = 'REFUNDED')
+              )
               AND r.status NOT IN ('RECEIVED_AT_HUB', 'COMPLETED', 'REPLACEMENT_DISPATCHED', 'CANCELLED', 'REJECTED')
             ORDER BY r.created_at DESC
         `;
@@ -431,12 +435,17 @@ exports.getPickupTasks = async (req, res) => {
                        COALESCE(r.return_type, 'RETURN') as request_type,
                        r.status as request_status, r.reason,
                        r.picked_up_at, r.received_at_hub_at,
+                       COALESCE(r.return_quantity, 1) as quantity,
                        o.order_number, u.full_name as customer_name, u.mobile_number as customer_phone
                 FROM order_returns r
                 JOIN orders o ON r.order_id = o.id
                 JOIN users u ON r.user_id = u.id
                 WHERE (r.delivery_agent_id = ? OR o.delivery_agent_id = ?)
                   AND r.received_at_hub_at IS NULL
+                  AND (
+                      r.status IN ('PICKUP_ASSIGNED', 'OUT_FOR_PICKUP', 'REVERSE_PICKUP_ASSIGNED', 'APPROVED', 'MERCHANT_ACCEPTED', 'PICKED_UP', 'IN_TRANSIT_TO_HUB', 'REPLACEMENT_INITIATED')
+                      OR (r.picked_up_at IS NOT NULL AND r.status = 'REFUNDED')
+                  )
                   AND r.status NOT IN ('RECEIVED_AT_HUB', 'COMPLETED', 'REPLACEMENT_DISPATCHED', 'CANCELLED', 'REJECTED')
             `, [agentId, agentId]);
             res.json({ status: true, data: fallbackRows });

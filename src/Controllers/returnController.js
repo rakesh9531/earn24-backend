@@ -56,6 +56,7 @@ async function ensureReturnTableColumns() {
         await safeAddColumn('order_returns', 'received_by_type', 'VARCHAR(50) NULL');
         await safeAddColumn('order_returns', 'received_by_id', 'INT NULL');
         await safeAddColumn('order_returns', 'hub_notes', 'TEXT NULL');
+        await safeAddColumn('order_returns', 'return_quantity', 'INT DEFAULT 1');
 
         isMigrationChecked = true;
     } catch (e) {
@@ -157,6 +158,12 @@ exports.submitReturnRequest = async (req, res) => {
             return res.status(400).json({ status: false, message: `A ${requestType.toLowerCase()} request for this item is already in progress.` });
         }
 
+        // Calculate requested quantity and proportionate refund amount
+        const orderedQty = parseInt(item.quantity) || 1;
+        const requestedQty = Math.min(Math.max(1, parseInt(req.body.quantity || req.body.return_quantity || 1)), orderedQty);
+        const unitPrice = (parseFloat(item.total_price || 0) / orderedQty) || parseFloat(item.price_per_unit || item.price || 0);
+        const calculatedRefundAmount = (unitPrice * requestedQty).toFixed(2);
+
         // Get merchant_id from sellers table
         const [[sellerRow]] = await db.query(
             `SELECT sellerable_id FROM sellers WHERE id = ? AND sellerable_type = 'Merchant'`,
@@ -172,16 +179,17 @@ exports.submitReturnRequest = async (req, res) => {
         const [result] = await db.query(`
             INSERT INTO order_returns
               (order_id, order_item_id, user_id, merchant_id, return_type, request_type,
-               reason, evidence_images, refund_amount, status,
+               reason, evidence_images, refund_amount, return_quantity, status,
                merchant_action, admin_action, refund_status, variant_attribute_id, pickup_otp, delivery_otp,
                refund_method, customer_upi_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'PENDING', 'PENDING', 'NOT_INITIATED', ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'PENDING', 'PENDING', 'NOT_INITIATED', ?, ?, ?, ?, ?)
         `, [
             orderId, orderItemId, userId, merchantId,
             requestType === 'RETURN' ? 'RETURN' : 'REPLACEMENT',
             requestType, reason,
             evidence_images ? JSON.stringify(evidence_images) : null,
-            item.total_price,
+            calculatedRefundAmount,
+            requestedQty,
             variant_attribute_id || null,
             pickupOtp,
             deliveryOtp,
@@ -427,8 +435,15 @@ exports.adminAssignPickup = async (req, res) => {
 
     try {
         await ensureReturnTableColumns();
-        const [[ret]] = await db.query(`SELECT id, status, request_type, order_id, user_id FROM order_returns WHERE id = ?`, [id]);
+        const [[ret]] = await db.query(`SELECT id, status, request_type, order_id, user_id, merchant_id, merchant_action FROM order_returns WHERE id = ?`, [id]);
         if (!ret) return res.status(404).json({ status: false, message: 'Return request not found.' });
+
+        if (ret.merchant_id && ret.merchant_action !== 'ACCEPTED') {
+            return res.status(400).json({
+                status: false,
+                message: `This product is sold by a Merchant and requires Merchant approval before assigning pickup. Current status: ${ret.merchant_action || 'PENDING'}.`
+            });
+        }
 
         const dateStr = pickupDate || new Date().toISOString().slice(0, 10);
         await db.query(`
@@ -573,6 +588,8 @@ async function createReplacementChildOrder(returnReq, conn) {
 
         const repOrderId = insOrder.insertId;
 
+        const repQty = Math.max(1, parseInt(returnReq.return_quantity || 1));
+
         let snapshotStr = '{}';
         if (origItem.attributes_snapshot) {
             snapshotStr = typeof origItem.attributes_snapshot === 'object'
@@ -585,10 +602,10 @@ async function createReplacementChildOrder(returnReq, conn) {
                 order_id, product_id, seller_product_id, product_name, 
                 attributes_snapshot, quantity, price_per_unit, purchase_price, gst_percentage, 
                 total_price, bv_earned_per_unit, total_bv_earned
-            ) VALUES (?, ?, ?, ?, ?, 1, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00)
+            ) VALUES (?, ?, ?, ?, ?, ?, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00)
         `, [
             repOrderId, origItem.product_id, origItem.seller_product_id, `[Replacement] ${origItem.product_name}`,
-            snapshotStr
+            snapshotStr, repQty
         ]);
 
         // Deduct replacement product stock
@@ -596,22 +613,22 @@ async function createReplacementChildOrder(returnReq, conn) {
             if (returnReq.variant_attribute_id) {
                 await conn.query(`
                     UPDATE seller_product_variants 
-                    SET stock_quantity = GREATEST(0, stock_quantity - 1) 
+                    SET stock_quantity = GREATEST(0, stock_quantity - ?) 
                     WHERE id = ?
-                `, [returnReq.variant_attribute_id]).catch(() => {});
+                `, [repQty, returnReq.variant_attribute_id]).catch(() => {});
             }
             await conn.query(`
                 UPDATE seller_products 
-                SET quantity = GREATEST(0, quantity - 1) 
+                SET quantity = GREATEST(0, quantity - ?) 
                 WHERE id = ?
-            `, [origItem.seller_product_id]).catch(() => {});
+            `, [repQty, origItem.seller_product_id]).catch(() => {});
         }
         if (origItem.product_id) {
             await conn.query(`
                 UPDATE products 
-                SET stock_quantity = GREATEST(0, stock_quantity - 1) 
+                SET stock_quantity = GREATEST(0, stock_quantity - ?) 
                 WHERE id = ?
-            `, [origItem.product_id]).catch(() => {});
+            `, [repQty, origItem.product_id]).catch(() => {});
         }
 
         return repOrderId;
