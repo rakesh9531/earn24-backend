@@ -220,8 +220,29 @@ exports.getAdminOrderDetails = async (req, res) => {
                 .map(img => typeof img === 'string' ? img.replace(/^["']|["']$/g, '').trim() : img)
                 .filter(Boolean);
 
+            let returnedItem = null;
+            if (rawRet.order_item_id) {
+                returnedItem = processedItems.find(it => it.order_item_id == rawRet.order_item_id) || null;
+            }
+            if (!returnedItem && processedItems.length > 0) {
+                returnedItem = processedItems[0];
+            }
+
+            let childOrder = null;
+            if (rawRet.replacement_order_id) {
+                const [childRows] = await db.query(
+                    `SELECT id, order_number, order_status, created_at FROM orders WHERE id = ? OR order_number = ? LIMIT 1`,
+                    [rawRet.replacement_order_id, rawRet.replacement_order_id]
+                ).catch(() => [[]]);
+                if (childRows && childRows.length > 0) {
+                    childOrder = childRows[0];
+                }
+            }
+
             returnDetails = {
                 ...rawRet,
+                returned_item: returnedItem,
+                child_order: childOrder,
                 evidence_images: cleanEvidence
             };
         }
