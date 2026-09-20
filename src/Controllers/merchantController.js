@@ -294,15 +294,29 @@ exports.addMerchantProduct = async (req, res) => {
 
         const minimumOrderQuantity = parseInt(body.minimum_order_quantity || body.moq || 1, 10);
 
+        const hasReturnPolicy = (body.has_return_policy === 1 || body.has_return_policy === '1' || body.has_return_policy === true || body.has_return_policy === 'true') ? 1 : 0;
+        const returnWindowDays = hasReturnPolicy ? parseInt(body.return_window || body.return_window_days || 7, 10) : 0;
+        const isReplacementAvailable = (body.is_replacement_available === 1 || body.is_replacement_available === '1' || body.is_replacement_available === true || body.is_replacement_available === 'true') ? 1 : 0;
+        const replacementWindowDays = isReplacementAvailable ? parseInt(body.replacement_window || body.replacement_window_days || 7, 10) : 0;
+        const isCodAvailable = (body.is_cod_available === 0 || body.is_cod_available === '0' || body.is_cod_available === false || body.is_cod_available === 'false') ? 0 : 1;
+
+        // Ensure columns exist on live schema
+        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS has_return_policy TINYINT(1) DEFAULT 1").catch(() => {});
+        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS return_window_days INT DEFAULT 7").catch(() => {});
+        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS is_replacement_available TINYINT(1) DEFAULT 1").catch(() => {});
+        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS replacement_window_days INT DEFAULT 7").catch(() => {});
+        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS is_cod_available TINYINT(1) DEFAULT 1").catch(() => {});
+
         // 4. Insert into `seller_products` (is_active = 0 by default for Admin Moderation/Approval)
         const offerQuery = `
             INSERT INTO seller_products 
-              (seller_id, product_id, sku, mrp, merchant_price, admin_margin_percent, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity, is_active, warranty_type, warranty_months, warranty_covered_by) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+              (seller_id, product_id, sku, mrp, merchant_price, admin_margin_percent, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity, is_active, warranty_type, warranty_months, warranty_covered_by, has_return_policy, return_window_days, is_replacement_available, replacement_window_days, is_cod_available) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         const [result] = await connection.query(offerQuery, [
             sellerId, productId, sku, mrp, merchantPrice, adminMarginPercent, sellingPrice, merchantPrice, quantity, body.low_stock_alert || 5, minimumOrderQuantity,
-            body.warranty_type || 'no_warranty', parseInt(body.warranty_months || 0, 10), body.warranty_covered_by || null
+            body.warranty_type || 'no_warranty', parseInt(body.warranty_months || 0, 10), body.warranty_covered_by || null,
+            hasReturnPolicy, returnWindowDays, isReplacementAvailable, replacementWindowDays, isCodAvailable
         ]);
         const newOfferId = result.insertId;
 
@@ -644,9 +658,26 @@ exports.updateMerchantProduct = async (req, res) => {
         const warrantyCoveredBy = body.warranty_covered_by || body.warranty_covered || '';
         const warrantyPeriod = body.warranty_period || (warrantyMonths > 0 ? `${warrantyMonths} Months Warranty` : 'No Warranty');
 
-        const hasReturnPolicy = (body.has_return_policy === 1 || body.has_return_policy === '1' || body.has_return_policy === true || body.has_return_policy === 'true' || body.return_policy === 'return' || body.return_policy === 'both' || body.has_return_policy === undefined) ? 1 : 0;
+        let hasReturnPolicy = undefined;
+        if (body.has_return_policy !== undefined) {
+            hasReturnPolicy = (body.has_return_policy === 1 || body.has_return_policy === '1' || body.has_return_policy === true || body.has_return_policy === 'true') ? 1 : 0;
+        } else if (body.return_policy !== undefined) {
+            hasReturnPolicy = (body.return_policy === 'return' || body.return_policy === 'both') ? 1 : 0;
+        }
+
+        let isReplacementAvailable = undefined;
+        if (body.is_replacement_available !== undefined) {
+            isReplacementAvailable = (body.is_replacement_available === 1 || body.is_replacement_available === '1' || body.is_replacement_available === true || body.is_replacement_available === 'true') ? 1 : 0;
+        } else if (body.return_policy !== undefined) {
+            isReplacementAvailable = (body.return_policy === 'replacement' || body.return_policy === 'both') ? 1 : 0;
+        }
+
+        let isCodAvailable = undefined;
+        if (body.is_cod_available !== undefined) {
+            isCodAvailable = (body.is_cod_available === 1 || body.is_cod_available === '1' || body.is_cod_available === true || body.is_cod_available === 'true') ? 1 : 0;
+        }
+
         const returnWindowDays = parseInt(body.return_window_days || body.return_days || 7, 10);
-        const isReplacementAvailable = (body.is_replacement_available === 1 || body.is_replacement_available === '1' || body.is_replacement_available === true || body.is_replacement_available === 'true' || body.return_policy === 'replacement' || body.return_policy === 'both' || body.is_replacement_available === undefined) ? 1 : 0;
         const replacementWindowDays = parseInt(body.replacement_window_days || body.replacement_days || 7, 10);
 
         // Update seller_products record
@@ -654,12 +685,14 @@ exports.updateMerchantProduct = async (req, res) => {
             `UPDATE seller_products 
              SET merchant_price = ?, selling_price = ?, mrp = ?, quantity = ?, minimum_order_quantity = ?, low_stock_threshold = ?, sku = ?,
                  warranty_type = ?, warranty_months = ?, warranty_covered_by = ?, warranty_period = ?,
-                 has_return_policy = ?, return_window_days = ?, is_replacement_available = ?, replacement_window_days = ?
+                 has_return_policy = COALESCE(?, has_return_policy, 0), return_window_days = ?, 
+                 is_replacement_available = COALESCE(?, is_replacement_available, 0), replacement_window_days = ?,
+                 is_cod_available = COALESCE(?, is_cod_available, 1)
              WHERE id = ?`,
             [
                 merchantPrice, sellingPrice, mrp, quantity, minimumOrderQuantity, lowStockThreshold, sku,
                 warrantyType, warrantyMonths, warrantyCoveredBy, warrantyPeriod,
-                hasReturnPolicy, returnWindowDays, isReplacementAvailable, replacementWindowDays,
+                hasReturnPolicy, returnWindowDays, isReplacementAvailable, replacementWindowDays, isCodAvailable,
                 offerId
             ]
         );
