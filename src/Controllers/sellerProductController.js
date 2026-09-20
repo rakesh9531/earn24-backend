@@ -607,8 +607,47 @@
 // Controllers/sellerProductController.js
 const db = require('../../db');
 const SellerProduct = require('../Models/sellerProductModel');
-const fs = require('fs');
 const path = require('path');
+const fs = require('fs');
+
+const ensureSellerProductColumns = async (targetDb = db) => {
+    try {
+        const [existing] = await targetDb.query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'seller_products'`
+        );
+        const colMap = new Set((existing || []).map(r => r.COLUMN_NAME));
+
+        const colDefs = [
+            { col: 'has_return_policy', def: 'TINYINT(1) DEFAULT 1' },
+            { col: 'return_window_days', def: 'INT DEFAULT 7' },
+            { col: 'is_replacement_available', def: 'TINYINT(1) DEFAULT 1' },
+            { col: 'replacement_window_days', def: 'INT DEFAULT 7' },
+            { col: 'is_cod_available', def: 'TINYINT(1) DEFAULT 1' },
+            { col: 'warranty_type', def: "VARCHAR(50) NULL DEFAULT 'no_warranty'" },
+            { col: 'warranty_months', def: 'INT NULL DEFAULT 0' },
+            { col: 'warranty_covered_by', def: 'VARCHAR(255) NULL' },
+            { col: 'warranty_period', def: 'VARCHAR(100) NULL' },
+            { col: 'low_stock_threshold', def: 'INT DEFAULT 5' },
+            { col: 'minimum_order_quantity', def: 'INT DEFAULT 1' },
+            { col: 'has_variants', def: 'TINYINT(1) DEFAULT 0' }
+        ];
+
+        for (const item of colDefs) {
+            if (!colMap.has(item.col)) {
+                await targetDb.query(`ALTER TABLE \`seller_products\` ADD COLUMN \`${item.col}\` ${item.def}`).catch(err => {
+                    if (err.errno !== 1060 && err.code !== 'ER_DUP_FIELDNAME') {
+                        console.warn(`[MIGRATION] Note adding column ${item.col}:`, err.message);
+                    }
+                });
+            }
+        }
+    } catch (err) {
+        console.warn("[MIGRATION] ensureSellerProductColumns check error:", err.message);
+    }
+};
+
+// Immediate background execution on module load
+ensureSellerProductColumns().catch(() => {});
 
 const safeJsonParse = (input, fallback = []) => {
   if (!input) return fallback;
@@ -685,11 +724,7 @@ exports.addSellerOffer = async (req, res) => {
         const isCodAvailable = (req.body.is_cod_available === 0 || req.body.is_cod_available === '0' || req.body.is_cod_available === false || req.body.is_cod_available === 'false') ? 0 : 1;
 
         // Ensure columns exist on live schema
-        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS has_return_policy TINYINT(1) DEFAULT 1").catch(() => {});
-        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS return_window_days INT DEFAULT 7").catch(() => {});
-        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS is_replacement_available TINYINT(1) DEFAULT 1").catch(() => {});
-        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS replacement_window_days INT DEFAULT 7").catch(() => {});
-        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS is_cod_available TINYINT(1) DEFAULT 1").catch(() => {});
+        await ensureSellerProductColumns(connection);
 
         const offerQuery = `
             INSERT INTO seller_products 
@@ -839,6 +874,7 @@ exports.findProductsByPincode = async (req, res) => {
 
 exports.getAllSellerOffers = async (req, res) => {
     try {
+        await ensureSellerProductColumns();
         const page = parseInt(req.query.page, 10) || 1;
         const limit = parseInt(req.query.limit, 10) || 10;
         const search = req.query.search || '';
@@ -960,18 +996,7 @@ exports.updateSellerOffer = async (req, res) => {
 
         if (fields.length > 0) {
             // Ensure columns exist on live schema
-            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS warranty_type VARCHAR(50) NULL DEFAULT 'no_warranty'").catch(() => {});
-            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS warranty_months INT NULL DEFAULT 0").catch(() => {});
-            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS warranty_covered_by VARCHAR(255) NULL").catch(() => {});
-            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS warranty_period VARCHAR(100) NULL").catch(() => {});
-            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS low_stock_threshold INT DEFAULT 5").catch(() => {});
-            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS minimum_order_quantity INT DEFAULT 1").catch(() => {});
-            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS has_variants TINYINT(1) DEFAULT 0").catch(() => {});
-            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS has_return_policy TINYINT(1) DEFAULT 1").catch(() => {});
-            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS return_window_days INT DEFAULT 7").catch(() => {});
-            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS is_replacement_available TINYINT(1) DEFAULT 1").catch(() => {});
-            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS replacement_window_days INT DEFAULT 7").catch(() => {});
-            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS is_cod_available TINYINT(1) DEFAULT 1").catch(() => {});
+            await ensureSellerProductColumns(connection);
 
             const updateQuery = `UPDATE seller_products SET ${fields.join(', ')} WHERE id = ?`;
             await connection.query(updateQuery, [...values, id]);

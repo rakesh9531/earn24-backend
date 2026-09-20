@@ -5,6 +5,45 @@ const moment = require('moment-timezone');
 const fs = require('fs');
 const path = require('path');
 
+const ensureSellerProductColumns = async (targetDb = db) => {
+    try {
+        const [existing] = await targetDb.query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'seller_products'`
+        );
+        const colMap = new Set((existing || []).map(r => r.COLUMN_NAME));
+
+        const colDefs = [
+            { col: 'has_return_policy', def: 'TINYINT(1) DEFAULT 1' },
+            { col: 'return_window_days', def: 'INT DEFAULT 7' },
+            { col: 'is_replacement_available', def: 'TINYINT(1) DEFAULT 1' },
+            { col: 'replacement_window_days', def: 'INT DEFAULT 7' },
+            { col: 'is_cod_available', def: 'TINYINT(1) DEFAULT 1' },
+            { col: 'warranty_type', def: "VARCHAR(50) NULL DEFAULT 'no_warranty'" },
+            { col: 'warranty_months', def: 'INT NULL DEFAULT 0' },
+            { col: 'warranty_covered_by', def: 'VARCHAR(255) NULL' },
+            { col: 'warranty_period', def: 'VARCHAR(100) NULL' },
+            { col: 'low_stock_threshold', def: 'INT DEFAULT 5' },
+            { col: 'minimum_order_quantity', def: 'INT DEFAULT 1' },
+            { col: 'has_variants', def: 'TINYINT(1) DEFAULT 0' }
+        ];
+
+        for (const item of colDefs) {
+            if (!colMap.has(item.col)) {
+                await targetDb.query(`ALTER TABLE \`seller_products\` ADD COLUMN \`${item.col}\` ${item.def}`).catch(err => {
+                    if (err.errno !== 1060 && err.code !== 'ER_DUP_FIELDNAME') {
+                        console.warn(`[MIGRATION] Note adding column ${item.col}:`, err.message);
+                    }
+                });
+            }
+        }
+    } catch (err) {
+        console.warn("[MIGRATION] merchantController ensureSellerProductColumns error:", err.message);
+    }
+};
+
+// Immediate background execution on module load
+ensureSellerProductColumns().catch(() => {});
+
 function saveBase64Image(base64Str) {
     if (!base64Str || typeof base64Str !== 'string') return null;
     if (!base64Str.startsWith('data:image/')) return base64Str;
@@ -301,11 +340,7 @@ exports.addMerchantProduct = async (req, res) => {
         const isCodAvailable = (body.is_cod_available === 0 || body.is_cod_available === '0' || body.is_cod_available === false || body.is_cod_available === 'false') ? 0 : 1;
 
         // Ensure columns exist on live schema
-        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS has_return_policy TINYINT(1) DEFAULT 1").catch(() => {});
-        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS return_window_days INT DEFAULT 7").catch(() => {});
-        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS is_replacement_available TINYINT(1) DEFAULT 1").catch(() => {});
-        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS replacement_window_days INT DEFAULT 7").catch(() => {});
-        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS is_cod_available TINYINT(1) DEFAULT 1").catch(() => {});
+        await ensureSellerProductColumns(connection);
 
         // 4. Insert into `seller_products` (is_active = 0 by default for Admin Moderation/Approval)
         const offerQuery = `
