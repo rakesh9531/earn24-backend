@@ -83,8 +83,8 @@ exports.submitReturnRequest = async (req, res) => {
         customerUpiId
     } = req.body;
 
-    const chosenRefundMethod = (refund_method || refundMethod || 'WALLET').toUpperCase();
-    const upiId = customer_upi_id || customerUpiId || null;
+    const chosenRefundMethod = 'WALLET'; // 100% Policy: all returns credit to user Earn24 Wallet
+    const upiId = null;
 
     if (!orderId || !orderItemId || !reason || !requestType) {
         return res.status(400).json({ status: false, message: 'orderId, orderItemId, requestType, and reason are required.' });
@@ -668,17 +668,31 @@ exports.adminResolveReturn = async (req, res) => {
                     refundStatus = 'PENDING_UPI';
                     newStatus    = 'PICKED_UP';
                 } else {
+                    // Fetch order and product info for clear passbook description
+                    const [[orderInfo]] = await conn.query(
+                        `SELECT o.order_number, oi.product_name 
+                         FROM orders o 
+                         LEFT JOIN order_items oi ON oi.id = ? 
+                         WHERE o.id = ?`,
+                        [ret.order_item_id, ret.order_id]
+                    ).catch(() => [[null]]);
+
+                    const orderNum = orderInfo?.order_number || ret.order_id;
+                    const prodName = orderInfo?.product_name || 'Item';
+                    const retQty = ret.return_quantity || 1;
+                    const refundRemarks = `Refund for Order #${orderNum} (${prodName}${retQty > 1 ? ' x ' + retQty : ''})`;
+
                     // Initiate refund to customer wallet
                     await conn.query(`
                         INSERT INTO user_wallet_transactions
                           (user_id, txn_type, amount, source, reference_id, remarks, created_at)
                         VALUES (?, 'credit', ?, 'return_refund', ?, ?, NOW())
-                    `, [ret.user_id, ret.refund_amount, id, `Refund for Return Request #${id}`]).catch(async () => {
+                    `, [ret.user_id, ret.refund_amount, id, refundRemarks]).catch(async () => {
                         await conn.query(`
                             INSERT INTO user_wallet_transactions
                               (user_id, amount, transaction_type, remarks, created_at)
                             VALUES (?, ?, 'CREDIT', ?, NOW())
-                        `, [ret.user_id, ret.refund_amount, `Refund for Return Request #${id}`]).catch(() => {});
+                        `, [ret.user_id, ret.refund_amount, refundRemarks]).catch(() => {});
                     });
 
                     await conn.query(`
