@@ -1302,7 +1302,7 @@ exports.getHomeScreenData = async (req, res) => {
                 ) AND p.is_active = TRUE AND p.is_deleted = FALSE AND sp.is_active = TRUE AND sp.selling_price > 0
                 GROUP BY sp.id 
                 ORDER BY bv_earned DESC, ((sp.mrp - sp.selling_price) / sp.mrp) DESC 
-                LIMIT 10
+                LIMIT 25
             `;
             topBvParams = [bvGenerationPct, bvGenerationPct, pincode];
         } else {
@@ -1327,7 +1327,7 @@ exports.getHomeScreenData = async (req, res) => {
                 ) AND p.is_active = TRUE AND p.is_deleted = FALSE AND sp.is_active = TRUE AND sp.selling_price > 0
                 GROUP BY sp.id 
                 ORDER BY bv_earned DESC, ((sp.mrp - sp.selling_price) / sp.mrp) DESC 
-                LIMIT 10
+                LIMIT 25
             `;
             topBvParams = [bvGenerationPct, bvGenerationPct];
         }
