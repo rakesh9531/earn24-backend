@@ -52,6 +52,7 @@ router.patch('/toggle-status/:id', auth, can('inventory:update'), sellerProductC
 // --- Public Routes for Mobile App (No auth needed) ---
 router.get('/search', sellerProductController.findProductsByPincode);
 router.get('/data', sellerProductController.getHomeScreenData);
+router.get('/top-bv-deals', sellerProductController.getPaginatedTopBvDeals);
 router.get('/related-products/:productId', sellerProductController.getRelatedProducts);
 
 module.exports = router;

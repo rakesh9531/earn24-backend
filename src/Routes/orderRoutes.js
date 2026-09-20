@@ -39,6 +39,7 @@ router.use(auth);
 
 router.post('/create', orderController.createOrder);
 router.get('/', orderController.getOrderHistory);
+router.get('/previously-purchased-items', orderController.getPreviouslyPurchasedItems);
 router.get('/:orderId', orderController.getOrderDetails);
 
 // ✅ ADD THIS NEW ROUTE

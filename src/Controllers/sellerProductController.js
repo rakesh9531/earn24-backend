@@ -1460,3 +1460,129 @@ exports.getRelatedProducts = async (req, res) => {
         res.status(500).json({ status: false, message: "An error occurred while fetching related products.", error: error.message });
     }
 };
+
+/**
+ * GET /api/inventory/top-bv-deals
+ * Paginated endpoint for unlimited infinite scrolling of Top BV & Super Deals
+ */
+exports.getPaginatedTopBvDeals = async (req, res) => {
+    const { pincode } = req.query;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const offset = (page - 1) * limit;
+    const isPincodeProvided = pincode && pincode !== 'ALL' && pincode !== 'null' && pincode !== 'undefined';
+
+    try {
+        const [settingsRows] = await db.query("SELECT setting_key, setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'");
+        const bvGenerationPct = settingsRows[0] ? parseFloat(settingsRows[0].setting_value) : 80.0;
+
+        let query = '';
+        let countQuery = '';
+        let params = [];
+        let countParams = [];
+
+        if (isPincodeProvided) {
+            query = `
+                SELECT 
+                    p.id as product_id, p.id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
+                    sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
+                    sp.purchase_price, sp.minimum_order_quantity,
+                    COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                    (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
+                    (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
+                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned
+                FROM seller_products sp
+                JOIN sellers s ON sp.seller_id = s.id
+                LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
+                LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
+                JOIN products p ON sp.product_id = p.id
+                LEFT JOIN brands b ON p.brand_id = b.id
+                LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
+                WHERE (
+                    p.is_universal_pincode = 1 
+                    OR spp.pincode = ? 
+                    OR spp.pincode = 'ALL'
+                    OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id)
+                ) AND p.is_active = TRUE AND p.is_deleted = FALSE AND sp.is_active = TRUE AND sp.selling_price > 0
+                GROUP BY sp.id 
+                ORDER BY bv_earned DESC, ((sp.mrp - sp.selling_price) / sp.mrp) DESC 
+                LIMIT ? OFFSET ?
+            `;
+            params = [bvGenerationPct, bvGenerationPct, pincode, limit, offset];
+
+            countQuery = `
+                SELECT COUNT(DISTINCT sp.id) as total
+                FROM seller_products sp
+                LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
+                JOIN products p ON sp.product_id = p.id
+                WHERE (
+                    p.is_universal_pincode = 1 
+                    OR spp.pincode = ? 
+                    OR spp.pincode = 'ALL'
+                    OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id)
+                ) AND p.is_active = TRUE AND p.is_deleted = FALSE AND sp.is_active = TRUE AND sp.selling_price > 0
+            `;
+            countParams = [pincode];
+        } else {
+            query = `
+                SELECT 
+                    p.id as product_id, p.id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
+                    sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
+                    sp.purchase_price, sp.minimum_order_quantity,
+                    COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                    (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
+                    (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
+                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned
+                FROM seller_products sp
+                JOIN sellers s ON sp.seller_id = s.id
+                LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
+                JOIN products p ON sp.product_id = p.id
+                LEFT JOIN brands b ON p.brand_id = b.id
+                LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
+                WHERE (
+                    p.is_universal_pincode = 1 
+                    OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id)
+                ) AND p.is_active = TRUE AND p.is_deleted = FALSE AND sp.is_active = TRUE AND sp.selling_price > 0
+                GROUP BY sp.id 
+                ORDER BY bv_earned DESC, ((sp.mrp - sp.selling_price) / sp.mrp) DESC 
+                LIMIT ? OFFSET ?
+            `;
+            params = [bvGenerationPct, bvGenerationPct, limit, offset];
+
+            countQuery = `
+                SELECT COUNT(DISTINCT sp.id) as total
+                FROM seller_products sp
+                JOIN products p ON sp.product_id = p.id
+                WHERE (
+                    p.is_universal_pincode = 1 
+                    OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id)
+                ) AND p.is_active = TRUE AND p.is_deleted = FALSE AND sp.is_active = TRUE AND sp.selling_price > 0
+            `;
+            countParams = [];
+        }
+
+        const [rows] = await db.query(query, params);
+        const [countRows] = await db.query(countQuery, countParams);
+        const total = countRows[0]?.total || 0;
+        const totalPages = Math.ceil(total / limit) || 1;
+
+        const products = rows.map(p => ({
+            ...p,
+            id: p.product_id,
+        }));
+
+        res.status(200).json({
+            status: true,
+            data: products,
+            pagination: {
+                page,
+                limit,
+                totalProducts: total,
+                totalPages
+            }
+        });
+    } catch (error) {
+        console.error("Error in getPaginatedTopBvDeals:", error);
+        res.status(500).json({ status: false, message: "Failed to fetch top BV deals.", error: error.message });
+    }
+};

@@ -335,6 +335,72 @@ exports.getOrderHistory = async (req, res) => {
 };
 
 // ==========================================================
+// === GET /previously-purchased-items - User's bought items
+// ==========================================================
+exports.getPreviouslyPurchasedItems = async (req, res) => {
+    const userId = req.user.id;
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 20;
+    const offset = (page - 1) * limit;
+
+    try {
+        const query = `
+            SELECT 
+                oi.product_id,
+                COALESCE(sp.id, oi.seller_product_id) as offer_id,
+                COALESCE(sp.id, oi.seller_product_id) as seller_product_id,
+                oi.product_id as id,
+                COALESCE(p.name, oi.product_name) as product_name,
+                COALESCE(p.name, oi.product_name) as name,
+                COALESCE(p.main_image_url, (SELECT main_image_url FROM products WHERE id = oi.product_id)) as main_image_url,
+                COALESCE(p.main_image_url, (SELECT main_image_url FROM products WHERE id = oi.product_id)) as image_url,
+                COALESCE(sp.selling_price, oi.price_per_unit) as selling_price,
+                COALESCE(sp.selling_price, oi.price_per_unit) as price,
+                COALESCE(sp.mrp, oi.price_per_unit) as mrp,
+                COALESCE(sp.quantity, 10) as stock,
+                COALESCE(sp.minimum_order_quantity, 1) as minimum_order_quantity,
+                COALESCE(oi.bv_earned_per_unit, 0) as bv_earned,
+                MAX(o.created_at) as last_ordered_at,
+                COUNT(oi.id) as order_count
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.id
+            LEFT JOIN products p ON oi.product_id = p.id
+            LEFT JOIN seller_products sp ON (oi.seller_product_id = sp.id AND sp.is_active = 1)
+            WHERE o.user_id = ?
+            GROUP BY oi.product_id, COALESCE(sp.id, oi.seller_product_id)
+            ORDER BY last_ordered_at DESC
+            LIMIT ? OFFSET ?
+        `;
+
+        const countQuery = `
+            SELECT COUNT(DISTINCT oi.product_id) as total
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.id
+            WHERE o.user_id = ?
+        `;
+
+        const [rows] = await db.query(query, [userId, limit, offset]);
+        const [countRows] = await db.query(countQuery, [userId]);
+        const total = countRows[0]?.total || 0;
+        const totalPages = Math.ceil(total / limit) || 1;
+
+        res.status(200).json({
+            status: true,
+            data: rows,
+            pagination: {
+                page,
+                limit,
+                totalProducts: total,
+                totalPages
+            }
+        });
+    } catch (error) {
+        console.error("Error in getPreviouslyPurchasedItems:", error);
+        res.status(500).json({ status: false, message: "Failed to fetch previously purchased items.", error: error.message });
+    }
+};
+
+// ==========================================================
 // === GET /:orderId - Fetches details of a single order  ===
 // ==========================================================
 exports.getOrderDetails = async (req, res) => {
