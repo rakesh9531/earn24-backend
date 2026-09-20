@@ -367,7 +367,7 @@ exports.getOrderDetails = async (req, res) => {
                    IFNULL(sp.is_returnable, 1) as is_returnable
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
-            LEFT JOIN product_subcategories psc ON p.sub_category_id = psc.id
+            LEFT JOIN product_subcategories psc ON p.subcategory_id = psc.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
             ${hasVariantCol ? 'LEFT JOIN seller_product_variants spv ON oi.seller_product_variant_id = spv.id' : ''}
@@ -1540,7 +1540,7 @@ exports.requestReturn = async (req, res) => {
               IFNULL(sp.replacement_window_days, IFNULL(psc.replacement_window_days, 7)) as replacement_window_days
        FROM order_items oi
        JOIN products p ON oi.product_id = p.id
-       LEFT JOIN product_subcategories psc ON p.sub_category_id = psc.id
+       LEFT JOIN product_subcategories psc ON p.subcategory_id = psc.id
        LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
        WHERE oi.order_id = ?`,
       [orderId]

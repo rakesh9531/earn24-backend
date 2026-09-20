@@ -274,7 +274,7 @@ exports.completeDelivery = async (req, res) => {
         }
 
         // Check if order was already prepaid / wallet paid
-        const [existingOrders] = await connection.query(`SELECT payment_method, payment_status FROM orders WHERE id = ?`, [orderId]);
+        const [existingOrders] = await connection.query(`SELECT total_amount, payment_method, payment_status FROM orders WHERE id = ?`, [orderId]);
         const existingOrder = existingOrders[0];
         const isPrepaid = existingOrder && (
             (existingOrder.payment_status || '').toUpperCase() === 'PAID' || 
@@ -282,6 +282,8 @@ exports.completeDelivery = async (req, res) => {
         );
 
         const finalPaymentMethod = isPrepaid ? existingOrder.payment_method : (paymentMode || 'COD');
+        const recordedCollectionMode = isPrepaid ? null : (paymentMode || 'COD');
+        const recordedCollectionAmount = isPrepaid ? 0 : (existingOrder ? existingOrder.total_amount : 0);
 
         // 1. Update Order & Order Items Status with Return Window Expiry Date
         await connection.query(`
@@ -294,8 +296,8 @@ exports.completeDelivery = async (req, res) => {
         `, [orderId]).catch(() => {});
 
         const [updateResult] = await connection.query(
-            "UPDATE orders SET order_status='DELIVERED', payment_status='COMPLETED', payment_method=?, delivery_otp=NULL, delivered_at=NOW() WHERE id=? AND order_status != 'DELIVERED'", 
-            [finalPaymentMethod, orderId]
+            "UPDATE orders SET order_status='DELIVERED', payment_status='COMPLETED', payment_method=?, delivery_payment_mode=?, delivery_amount_collected=?, delivery_otp=NULL, delivered_at=NOW() WHERE id=? AND order_status != 'DELIVERED'", 
+            [finalPaymentMethod, recordedCollectionMode, recordedCollectionAmount, orderId]
         );
 
         if (updateResult.affectedRows > 0) {
@@ -1297,6 +1299,137 @@ exports.getOrderPaymentStatus = async (req, res) => {
             amount: order.total_amount
         });
     } catch (e) {
+        res.status(500).json({ status: false, message: e.message });
+    }
+};
+
+let isDeliveryMigrationDone = false;
+async function ensureDeliverySettlementColumns() {
+    if (isDeliveryMigrationDone) return;
+    try {
+        await db.query("ALTER TABLE orders ADD COLUMN is_settlement_requested TINYINT(1) DEFAULT 0").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN settlement_requested_at TIMESTAMP NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN delivery_payment_mode VARCHAR(20) NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN delivery_amount_collected DECIMAL(10,2) DEFAULT 0.00").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN is_cash_settled TINYINT(1) DEFAULT 0").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN cash_settled_at TIMESTAMP NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN settled_by_admin_id INT NULL").catch(() => {});
+        isDeliveryMigrationDone = true;
+    } catch (e) {
+        // ignore
+    }
+}
+
+/**
+ * 6. DELIVERY AGENT COD SETTLEMENT DASHBOARD OVERVIEW
+ * Top: Cash Collection | Online Collection | Total
+ * Tabs: Settlement Pending | Settlement Done
+ */
+exports.getSettlementOverview = async (req, res) => {
+    const agentId = req.user.id;
+    await ensureDeliverySettlementColumns();
+
+    try {
+        // 1. Pending orders (is_cash_settled = 0)
+        const [pendingOrders] = await db.query(`
+            SELECT o.id, o.order_number, o.total_amount, o.delivered_at, 
+                   o.payment_method, o.delivery_payment_mode, o.delivery_amount_collected,
+                   o.is_settlement_requested, o.settlement_requested_at,
+                   u.full_name as customer_name, u.mobile_number as customer_phone,
+                   CONCAT_WS(', ', ua.address_line1, ua.city, ua.state, ua.pincode) as delivery_address
+            FROM orders o
+            LEFT JOIN users u ON o.user_id = u.id
+            LEFT JOIN user_addresses ua ON o.delivery_address_id = ua.id
+            WHERE o.delivery_agent_id = ? 
+              AND o.order_status = 'DELIVERED'
+              AND (o.is_cash_settled = 0 OR o.is_cash_settled IS NULL)
+              AND (o.payment_method = 'COD' OR o.delivery_payment_mode IN ('COD', 'CASH', 'ONLINE') OR o.delivery_amount_collected > 0)
+            ORDER BY o.is_settlement_requested DESC, o.delivered_at DESC
+        `, [agentId]);
+
+        // Calculate Cash Collection vs Online Collection
+        let cashCollection = 0;
+        let onlineCollection = 0;
+
+        pendingOrders.forEach(o => {
+            const amount = parseFloat(o.delivery_amount_collected || o.total_amount || 0);
+            const mode = (o.delivery_payment_mode || o.payment_method || 'COD').toUpperCase();
+            if (mode === 'ONLINE' || mode === 'RAZORPAY' || mode === 'PAYU' || mode === 'UPI') {
+                onlineCollection += amount;
+            } else {
+                cashCollection += amount;
+            }
+        });
+
+        const totalCollection = cashCollection + onlineCollection;
+
+        // 2. Settled orders (is_cash_settled = 1)
+        const [settledOrders] = await db.query(`
+            SELECT o.id, o.order_number, o.total_amount, o.delivered_at, o.cash_settled_at,
+                   o.payment_method, o.delivery_payment_mode, o.delivery_amount_collected,
+                   u.full_name as customer_name,
+                   admin_u.full_name as settled_by_admin_name
+            FROM orders o
+            LEFT JOIN users u ON o.user_id = u.id
+            LEFT JOIN users admin_u ON o.settled_by_admin_id = admin_u.id
+            WHERE o.delivery_agent_id = ? 
+              AND o.order_status = 'DELIVERED'
+              AND o.is_cash_settled = 1
+            ORDER BY o.cash_settled_at DESC, o.delivered_at DESC
+            LIMIT 50
+        `, [agentId]);
+
+        res.json({
+            status: true,
+            summary: {
+                cash_collection: parseFloat(cashCollection.toFixed(2)),
+                online_collection: parseFloat(onlineCollection.toFixed(2)),
+                total_collection: parseFloat(totalCollection.toFixed(2)),
+                pending_count: pendingOrders.length,
+                settled_count: settledOrders.length
+            },
+            pendingOrders,
+            settledOrders
+        });
+    } catch (e) {
+        console.error("getSettlementOverview error:", e);
+        res.status(500).json({ status: false, message: e.message });
+    }
+};
+
+/**
+ * 7. REQUEST SETTLEMENT FOR DELIVERED COD ORDERS
+ */
+exports.requestSettlement = async (req, res) => {
+    const agentId = req.user.id;
+    const { orderIds } = req.body;
+    await ensureDeliverySettlementColumns();
+
+    try {
+        let query = `
+            UPDATE orders 
+            SET is_settlement_requested = 1, 
+                settlement_requested_at = NOW() 
+            WHERE delivery_agent_id = ? 
+              AND order_status = 'DELIVERED' 
+              AND (is_cash_settled = 0 OR is_cash_settled IS NULL)
+        `;
+        const params = [agentId];
+
+        if (Array.isArray(orderIds) && orderIds.length > 0) {
+            query += ` AND id IN (?)`;
+            params.push(orderIds);
+        }
+
+        const [result] = await db.query(query, params);
+
+        res.json({
+            status: true,
+            message: `Settlement request submitted successfully for ${result.affectedRows} order(s). Admin will verify and settle.`,
+            affectedRows: result.affectedRows
+        });
+    } catch (e) {
+        console.error("requestSettlement error:", e);
         res.status(500).json({ status: false, message: e.message });
     }
 };

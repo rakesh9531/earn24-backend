@@ -116,7 +116,7 @@ exports.submitReturnRequest = async (req, res) => {
              FROM order_items oi
              JOIN seller_products sp ON oi.seller_product_id = sp.id
              LEFT JOIN products p ON sp.product_id = p.id
-             LEFT JOIN product_subcategories psc ON p.sub_category_id = psc.id
+             LEFT JOIN product_subcategories psc ON p.subcategory_id = psc.id
              WHERE oi.id = ? AND oi.order_id = ?`,
             [orderItemId, orderId]
         );

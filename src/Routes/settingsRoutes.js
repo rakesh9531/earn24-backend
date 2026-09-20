@@ -52,5 +52,8 @@ router.put(
 
 router.get('/delivery-rules', settingsController.getDeliveryRules);
 
+// Security PIN for Payment Settings & Gateways
+router.post('/verify-payment-pin', auth, settingsController.verifyPaymentPin);
+router.post('/change-payment-pin', auth, can('settings:manage'), settingsController.changePaymentPin);
 
 module.exports = router;
