@@ -1,4 +1,5 @@
 const db = require('../../db');
+const moment = require('moment-timezone');
 
 /**
  * Fetches orders for the admin panel, filterable by status.
@@ -139,6 +140,9 @@ exports.getAdminOrderDetails = async (req, res) => {
         if (orderRows.length === 0) {
             return res.status(404).json({ status: false, message: 'Order not found.' });
         }
+
+        const realOrderId = orderRows[0].id;
+        const realOrderNum = orderRows[0].order_number;
         
         // 2. Fetch all line items for this order with Attributes and Brand
         const itemsQuery = `
@@ -148,7 +152,10 @@ exports.getAdminOrderDetails = async (req, res) => {
                 oi.quantity, 
                 oi.price_per_unit, 
                 oi.total_price,
-                oi.attributes_snapshot, -- This stores the 'Weight/Size/Color' snapshot
+                oi.bv_earned_per_unit,
+                oi.total_bv_earned,
+                oi.item_status,
+                oi.attributes_snapshot,
                 p.main_image_url,
                 b.name as brand_name
             FROM order_items oi
@@ -156,9 +163,9 @@ exports.getAdminOrderDetails = async (req, res) => {
             LEFT JOIN brands b ON p.brand_id = b.id
             WHERE oi.order_id = ?
         `;
-        const [itemRows] = await db.query(itemsQuery, [orderId]);
+        const [itemRows] = await db.query(itemsQuery, [realOrderId]);
 
-        // 3. Process the items to parse the JSON attributes snapshot & prioritize variant image
+        // 3. Process the items to parse JSON attributes & variant image
         const processedItems = itemRows.map(item => {
             let attributes = {};
             if (item.attributes_snapshot) {
@@ -175,10 +182,64 @@ exports.getAdminOrderDetails = async (req, res) => {
             };
         });
 
-        // 4. Combine results into a single clean object
+        // 4. Fetch Return / Replacement info linked to this order
+        const [returnRows] = await db.query(`
+            SELECT r.*, 
+                   COALESCE(da.full_name, '') as return_agent_name, 
+                   IFNULL(da.phone_number, '') as return_agent_phone 
+            FROM order_returns r 
+            LEFT JOIN delivery_agents da ON r.delivery_agent_id = da.id 
+            WHERE r.order_id = ?
+            ORDER BY r.id DESC
+        `, [realOrderId]).catch(() => [[]]);
+
+        let returnDetails = null;
+        if (returnRows && returnRows.length > 0) {
+            const rawRet = returnRows[0];
+            let evidenceImages = [];
+            if (rawRet.evidence_images) {
+                try {
+                    evidenceImages = typeof rawRet.evidence_images === 'string' ? JSON.parse(rawRet.evidence_images) : rawRet.evidence_images;
+                } catch(e) {
+                    evidenceImages = rawRet.evidence_images ? [rawRet.evidence_images] : [];
+                }
+            } else if (rawRet.images_json) {
+                try {
+                    evidenceImages = typeof rawRet.images_json === 'string' ? JSON.parse(rawRet.images_json) : rawRet.images_json;
+                } catch(e) {
+                    evidenceImages = [];
+                }
+            }
+            returnDetails = {
+                ...rawRet,
+                evidence_images: Array.isArray(evidenceImages) ? evidenceImages : []
+            };
+        }
+
+        // 5. If this is a child replacement order (starts with R-), find the original parent order
+        let parentOrder = null;
+        if (realOrderNum.startsWith('R-') || orderRows[0].payment_method === 'REPLACEMENT') {
+            const [parentRows] = await db.query(`
+                SELECT o.id, o.order_number, o.created_at, o.total_amount, o.order_status,
+                       r.id as return_id, r.reason as replacement_reason, r.status as return_status, r.created_at as return_date
+                FROM order_returns r
+                JOIN orders o ON r.order_id = o.id
+                WHERE r.replacement_order_id = ? OR r.replacement_order_id = ?
+                LIMIT 1
+            `, [realOrderId, realOrderNum]).catch(() => [[]]);
+
+            if (parentRows && parentRows.length > 0) {
+                parentOrder = parentRows[0];
+            }
+        }
+
+        // 6. Combine results into a single rich object
         const orderDetails = {
             ...orderRows[0], 
-            items: processedItems
+            items: processedItems,
+            return_request: returnDetails,
+            parent_order: parentOrder,
+            unlock_date: orderRows[0].delivered_at ? moment(orderRows[0].delivered_at).add(7, 'days').format('YYYY-MM-DD') : null
         };
         
         res.status(200).json({ status: true, data: orderDetails });
@@ -261,36 +322,101 @@ exports.verifySettlement = async (req, res) => {
 exports.getAllOrdersHistory = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-    const search = req.query.search || '';
+    const search = (req.query.search || '').trim();
+    const status = (req.query.status || 'ALL').toUpperCase();
     const offset = (page - 1) * limit;
     const searchPattern = `%${search}%`;
 
     try {
+        let whereClauses = [];
+        let params = [];
+
+        if (search) {
+            whereClauses.push(`(o.order_number LIKE ? OR u.full_name LIKE ? OR u.mobile_number LIKE ? OR da.full_name LIKE ?)`);
+            params.push(searchPattern, searchPattern, searchPattern, searchPattern);
+        }
+
+        if (status === 'RETURNS') {
+            whereClauses.push(`(ret.id IS NOT NULL AND ret.status NOT IN ('CLOSED', 'REJECTED'))`);
+        } else if (status === 'REPLACEMENTS') {
+            whereClauses.push(`(o.order_number LIKE 'R-%' OR ret.request_type = 'REPLACEMENT')`);
+        } else if (status === 'PENDING') {
+            whereClauses.push(`o.order_status IN ('PENDING', 'PENDING_PAYMENT', 'CONFIRMED')`);
+        } else if (status === 'SHIPPED') {
+            whereClauses.push(`o.order_status IN ('SHIPPED', 'OUT_FOR_DELIVERY')`);
+        } else if (status !== 'ALL') {
+            whereClauses.push(`o.order_status = ?`);
+            params.push(status);
+        }
+
+        const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
         const query = `
-            SELECT o.*, u.full_name as customer_name, u.mobile_number as customer_phone
+            SELECT o.*, 
+                   u.full_name as customer_name, u.mobile_number as customer_phone,
+                   da.full_name as agent_name, da.phone_number as agent_phone,
+                   ret.id as return_id, ret.status as return_status, ret.request_type as return_type,
+                   ret.refund_amount as return_refund_amount, ret.refund_status as return_refund_status,
+                   (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,
+                   (SELECT product_name FROM order_items WHERE order_id = o.id LIMIT 1) as first_item_name,
+                   (SELECT p.main_image_url FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = o.id LIMIT 1) as first_item_image,
+                   (SELECT attributes_snapshot FROM order_items WHERE order_id = o.id LIMIT 1) as first_item_attributes
             FROM orders o
             JOIN users u ON o.user_id = u.id
-            WHERE (o.order_number LIKE ? OR u.full_name LIKE ? OR u.mobile_number LIKE ?)
+            LEFT JOIN delivery_agents da ON o.delivery_agent_id = da.id
+            LEFT JOIN order_returns ret ON ret.id = (
+                SELECT r2.id FROM order_returns r2 
+                WHERE r2.order_id = o.id 
+                ORDER BY r2.id DESC LIMIT 1
+            )
+            ${whereSql}
             ORDER BY o.created_at DESC
             LIMIT ? OFFSET ?`;
 
-        const [rows] = await db.query(query, [searchPattern, searchPattern, searchPattern, limit, offset]);
+        const queryParams = [...params, limit, offset];
+        const [rows] = await db.query(query, queryParams);
 
-        const [countRows] = await db.query(
-            "SELECT COUNT(*) as total FROM orders o JOIN users u ON o.user_id = u.id WHERE (o.order_number LIKE ? OR u.full_name LIKE ?)",
-            [searchPattern, searchPattern]
-        );
+        const countQuery = `
+            SELECT COUNT(*) as total 
+            FROM orders o 
+            JOIN users u ON o.user_id = u.id 
+            LEFT JOIN delivery_agents da ON o.delivery_agent_id = da.id
+            LEFT JOIN order_returns ret ON ret.id = (
+                SELECT r2.id FROM order_returns r2 
+                WHERE r2.order_id = o.id 
+                ORDER BY r2.id DESC LIMIT 1
+            )
+            ${whereSql}
+        `;
+        const [countRows] = await db.query(countQuery, params);
+
+        const processedRows = rows.map(r => {
+            let img = r.first_item_image;
+            if (r.first_item_attributes) {
+                try {
+                    const snap = typeof r.first_item_attributes === 'string' ? JSON.parse(r.first_item_attributes) : r.first_item_attributes;
+                    if (snap && snap['Variant Image']) {
+                        img = snap['Variant Image'];
+                    }
+                } catch(e) {}
+            }
+            return {
+                ...r,
+                display_image_url: img
+            };
+        });
 
         res.status(200).json({
             status: true,
-            data: rows,
+            data: processedRows,
             pagination: {
                 currentPage: page,
-                totalPages: Math.ceil(countRows[0].total / limit),
+                totalPages: Math.ceil(countRows[0].total / limit) || 1,
                 totalRecords: countRows[0].total
             }
         });
     } catch (e) {
+        console.error('[getAllOrdersHistory Error]', e);
         res.status(500).json({ status: false, message: e.message });
     }
 };
