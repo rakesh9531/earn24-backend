@@ -260,18 +260,40 @@ exports.getMerchantReturnRequests = async (req, res) => {
             SELECT r.*, o.order_number,
                    u.full_name as customer_name,
                    IFNULL(u.mobile_number,'') as customer_phone,
-                   p.name as product_name
+                   p.name as product_name,
+                   p.main_image_url as product_image,
+                   COALESCE(da.full_name, '') as return_agent_name,
+                   IFNULL(da.phone_number, '') as return_agent_phone,
+                   oi.attributes_snapshot, oi.price_per_unit, oi.total_price,
+                   rep_o.order_number as replacement_child_order_number,
+                   rep_o.order_status as replacement_child_order_status
             FROM order_returns r
             JOIN orders o ON r.order_id = o.id
             JOIN users u ON r.user_id = u.id
             LEFT JOIN order_items oi ON r.order_item_id = oi.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
             LEFT JOIN products p ON sp.product_id = p.id
+            LEFT JOIN delivery_agents da ON r.delivery_agent_id = da.id
+            LEFT JOIN orders rep_o ON (r.replacement_order_id = rep_o.id OR r.replacement_order_id = rep_o.order_number)
             ${where}
             ORDER BY r.created_at DESC
         `, params);
 
-        res.json({ status: true, data: rows });
+        const processed = rows.map(r => {
+            let ev = [];
+            if (r.evidence_images) {
+                try {
+                    ev = typeof r.evidence_images === 'string' ? JSON.parse(r.evidence_images) : r.evidence_images;
+                    if (typeof ev === 'string') { try { ev = JSON.parse(ev); } catch(e) {} }
+                } catch(e) { ev = [r.evidence_images]; }
+            }
+            return {
+                ...r,
+                evidence_images: Array.isArray(ev) ? ev : (ev ? [ev] : [])
+            };
+        });
+
+        res.json({ status: true, data: processed });
     } catch (err) {
         console.error('[Return] getMerchantReturnRequests error:', err);
         res.status(500).json({ status: false, message: 'Could not fetch requests.' });
@@ -777,7 +799,7 @@ exports.adminResolveReturn = async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 exports.receiveItemAtHub = async (req, res) => {
     const { id } = req.params;
-    const { notes } = req.body;
+    const { notes, qc_status, restock } = req.body;
     try {
         await ensureReturnTableColumns();
         const [[ret]] = await db.query(`SELECT * FROM order_returns WHERE id = ?`, [id]);
@@ -789,19 +811,35 @@ exports.receiveItemAtHub = async (req, res) => {
         const receivedById = req.user?.id || req.user?.merchant_id || null;
         const newStatus = 'RECEIVED_AT_HUB';
 
+        const finalQcStatus = (qc_status || 'PASSED').toUpperCase();
+        const qcRemarks = notes || (finalQcStatus === 'PASSED' ? 'Physical QC passed at store.' : 'Physical QC issue reported at store.');
+
         await db.query(`
             UPDATE order_returns 
             SET status = ?,
                 received_at_hub_at = NOW(),
                 received_by_type = ?,
                 received_by_id = ?,
-                hub_notes = COALESCE(?, hub_notes)
+                hub_notes = COALESCE(?, hub_notes),
+                qc_status = ?,
+                qc_remarks = ?
             WHERE id = ?
-        `, [newStatus, receivedByType, receivedById, notes || 'Defective item physically received and verified at Hub/Store.', id]);
+        `, [newStatus, receivedByType, receivedById, qcRemarks, finalQcStatus, qcRemarks, id]);
+
+        // Auto restock to inventory if QC Passed and restock requested
+        let restockedMsg = '';
+        if (finalQcStatus === 'PASSED' && restock && ret.order_item_id) {
+            const [[oi]] = await db.query(`SELECT seller_product_id, quantity FROM order_items WHERE id = ?`, [ret.order_item_id]).catch(() => [[]]);
+            const returnQty = ret.return_quantity || 1;
+            if (oi && oi.seller_product_id) {
+                await db.query(`UPDATE seller_products SET stock_quantity = stock_quantity + ? WHERE id = ?`, [returnQty, oi.seller_product_id]).catch(() => {});
+                restockedMsg = ` and ${returnQty} unit(s) restocked to inventory`;
+            }
+        }
 
         res.json({
             status: true,
-            message: `Item marked as safely received at ${isMerchant ? 'Merchant Store' : 'Admin Hub / Warehouse'}. Handover completed!`,
+            message: `Item received with QC ${finalQcStatus}${restockedMsg}!`,
             statusNow: newStatus
         });
     } catch (err) {
