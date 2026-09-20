@@ -477,9 +477,14 @@ exports.getMerchantOrders = async (req, res) => {
     try {
         const query = `
             SELECT o.id as order_id, o.order_number, o.order_status, o.payment_method, o.payment_status, o.subtotal, o.delivery_fee, o.total_amount, o.created_at,
+                   o.delivered_at, o.cancelled_at, o.updated_at,
+                   da.full_name as delivery_agent_name, da.phone_number as delivery_agent_phone,
                    oi.id as item_id, IFNULL(oi.item_status, o.order_status) as item_status, oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price, oi.attributes_snapshot, p.main_image_url,
                    u.full_name as customer_name, IFNULL(u.mobile_number, '') as customer_phone,
-                   ua.address_line_1, ua.address_line_2, ua.city, ua.state, ua.pincode, ua.landmark
+                   ua.address_line_1, ua.address_line_2, ua.city, ua.state, ua.pincode, ua.landmark,
+                   parent_o.id as parent_order_id, parent_o.order_number as parent_order_number,
+                   parent_ret.id as parent_return_id, parent_ret.reason as parent_replacement_reason, parent_ret.created_at as parent_return_date,
+                   active_ret.id as active_return_id, active_ret.request_type as active_return_type, active_ret.status as active_return_status, active_ret.reason as active_return_reason, active_ret.replacement_order_id as active_replacement_order_id, active_ret.created_at as active_return_date
             FROM orders o
             JOIN order_items oi ON o.id = oi.order_id
             JOIN seller_products sp ON oi.seller_product_id = sp.id
@@ -487,6 +492,10 @@ exports.getMerchantOrders = async (req, res) => {
             JOIN users u ON o.user_id = u.id
             LEFT JOIN products p ON oi.product_id = p.id
             LEFT JOIN user_addresses ua ON o.shipping_address_id = ua.id
+            LEFT JOIN delivery_agents da ON o.delivery_agent_id = da.id
+            LEFT JOIN order_returns parent_ret ON (parent_ret.replacement_order_id = o.id OR parent_ret.replacement_order_id = o.order_number)
+            LEFT JOIN orders parent_o ON parent_ret.order_id = parent_o.id
+            LEFT JOIN order_returns active_ret ON (active_ret.order_id = o.id AND active_ret.status NOT IN ('CANCELLED', 'REJECTED'))
             WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant'
             ORDER BY o.created_at DESC, oi.id ASC
         `;
@@ -500,6 +509,8 @@ exports.getMerchantOrders = async (req, res) => {
             const fullPaymentDisplay = `${r.payment_method || 'COD'} (${displayPaymentStatus})`;
 
             if (!ordersMap.has(r.order_id)) {
+                const isReplacement = Boolean((r.order_number && r.order_number.startsWith('R-')) || r.payment_method === 'REPLACEMENT' || r.parent_order_number);
+
                 ordersMap.set(r.order_id, {
                     order_id: r.order_id,
                     order_number: r.order_number,
@@ -513,6 +524,9 @@ exports.getMerchantOrders = async (req, res) => {
                     delivery_fee: parseFloat(r.delivery_fee || 0),
                     total_amount: parseFloat(r.total_amount || 0),
                     created_at: r.created_at,
+                    delivered_at: r.delivered_at,
+                    cancelled_at: r.cancelled_at,
+                    updated_at: r.updated_at,
                     customer_name: r.customer_name,
                     customer_phone: r.customer_phone,
                     shipping_address: {
@@ -523,6 +537,27 @@ exports.getMerchantOrders = async (req, res) => {
                         pincode: r.pincode,
                         landmark: r.landmark
                     },
+                    delivery_agent: r.delivery_agent_name ? {
+                        name: r.delivery_agent_name,
+                        phone: r.delivery_agent_phone
+                    } : null,
+                    is_replacement: isReplacement,
+                    parent_order: r.parent_order_number ? {
+                        order_id: r.parent_order_id,
+                        order_number: r.parent_order_number,
+                        reason: r.parent_replacement_reason,
+                        return_id: r.parent_return_id,
+                        created_at: r.parent_return_date
+                    } : null,
+                    has_active_return: Boolean(r.active_return_id),
+                    return_claim: r.active_return_id ? {
+                        id: r.active_return_id,
+                        request_type: r.active_return_type,
+                        status: r.active_return_status,
+                        reason: r.active_return_reason,
+                        replacement_order_id: r.active_replacement_order_id,
+                        created_at: r.active_return_date
+                    } : null,
                     total_quantity: 0,
                     items: []
                 });
@@ -533,18 +568,22 @@ exports.getMerchantOrders = async (req, res) => {
                 try { snap = typeof r.attributes_snapshot === 'string' ? JSON.parse(r.attributes_snapshot) : r.attributes_snapshot; } catch (e) {}
             }
             const variantImg = snap['Variant Image'] || r.main_image_url;
-            ord.total_quantity += (r.quantity || 1);
-            ord.items.push({
-                item_id: r.item_id,
-                product_name: r.product_name,
-                quantity: r.quantity,
-                price_per_unit: r.price_per_unit,
-                total_price: r.total_price,
-                item_status: r.item_status,
-                image_url: variantImg,
-                main_image_url: variantImg,
-                attributes: snap
-            });
+
+            // Check if item already exists in items array to avoid duplicates
+            if (!ord.items.some(it => it.item_id === r.item_id)) {
+                ord.total_quantity += (r.quantity || 1);
+                ord.items.push({
+                    item_id: r.item_id,
+                    product_name: r.product_name,
+                    quantity: r.quantity,
+                    price_per_unit: r.price_per_unit,
+                    total_price: r.total_price,
+                    item_status: r.item_status,
+                    image_url: variantImg,
+                    main_image_url: variantImg,
+                    attributes: snap
+                });
+            }
         }
 
         const groupedOrders = Array.from(ordersMap.values()).map(ord => {
