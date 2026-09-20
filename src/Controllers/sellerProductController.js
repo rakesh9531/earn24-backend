@@ -678,14 +678,28 @@ exports.addSellerOffer = async (req, res) => {
 
         await connection.beginTransaction();
 
+        const hasReturnPolicy = (req.body.has_return_policy === 1 || req.body.has_return_policy === '1' || req.body.has_return_policy === true || req.body.has_return_policy === 'true') ? 1 : 0;
+        const returnWindowDays = hasReturnPolicy ? parseInt(req.body.return_window_days || req.body.return_window || 7, 10) : 0;
+        const isReplacementAvailable = (req.body.is_replacement_available === 1 || req.body.is_replacement_available === '1' || req.body.is_replacement_available === true || req.body.is_replacement_available === 'true') ? 1 : 0;
+        const replacementWindowDays = isReplacementAvailable ? parseInt(req.body.replacement_window_days || req.body.replacement_window || 7, 10) : 0;
+        const isCodAvailable = (req.body.is_cod_available === 0 || req.body.is_cod_available === '0' || req.body.is_cod_available === false || req.body.is_cod_available === 'false') ? 0 : 1;
+
+        // Ensure columns exist on live schema
+        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS has_return_policy TINYINT(1) DEFAULT 1").catch(() => {});
+        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS return_window_days INT DEFAULT 7").catch(() => {});
+        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS is_replacement_available TINYINT(1) DEFAULT 1").catch(() => {});
+        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS replacement_window_days INT DEFAULT 7").catch(() => {});
+        await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS is_cod_available TINYINT(1) DEFAULT 1").catch(() => {});
+
         const offerQuery = `
             INSERT INTO seller_products 
-              (seller_id, product_id, sku, mrp, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity, warranty_type, warranty_months, warranty_covered_by) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (seller_id, product_id, sku, mrp, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity, warranty_type, warranty_months, warranty_covered_by, has_return_policy, return_window_days, is_replacement_available, replacement_window_days, is_cod_available) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         const [result] = await connection.query(offerQuery, [
             sellerId, productId, sku, mrp, sellingPrice, purchasePrice, quantity, low_stock_threshold, minimum_order_quantity,
-            req.body.warranty_type || 'no_warranty', parseInt(req.body.warranty_months || 0, 10), req.body.warranty_covered_by || null
+            req.body.warranty_type || 'no_warranty', parseInt(req.body.warranty_months || 0, 10), req.body.warranty_covered_by || null,
+            hasReturnPolicy, returnWindowDays, isReplacementAvailable, replacementWindowDays, isCodAvailable
         ]);
         const newOfferId = result.insertId;
 
@@ -836,6 +850,7 @@ exports.getAllSellerOffers = async (req, res) => {
                 sp.id, sp.sku, sp.mrp, sp.selling_price, sp.purchase_price, sp.merchant_price, sp.admin_margin_percent, sp.quantity,
                 sp.is_active, sp.low_stock_threshold, sp.minimum_order_quantity, sp.created_at,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by,
+                sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days, sp.is_cod_available,
                 p.id AS product_id, p.name AS product_name, p.main_image_url, p.description, p.is_universal_pincode,
                 s.display_name AS seller_name, s.sellerable_type, s.sellerable_id,
                 m.business_name AS merchant_business_name, m.owner_name AS merchant_owner_name, m.phone_number AS merchant_phone,
@@ -937,10 +952,11 @@ exports.updateSellerOffer = async (req, res) => {
         if (req.body.warranty_covered_by !== undefined) { fields.push('warranty_covered_by = ?'); values.push(req.body.warranty_covered_by); }
         if (req.body.warranty_period !== undefined) { fields.push('warranty_period = ?'); values.push(req.body.warranty_period); }
 
-        if (req.body.has_return_policy !== undefined) { fields.push('has_return_policy = ?'); values.push(req.body.has_return_policy ? 1 : 0); }
+        if (req.body.has_return_policy !== undefined) { fields.push('has_return_policy = ?'); values.push((req.body.has_return_policy === 1 || req.body.has_return_policy === '1' || req.body.has_return_policy === true || req.body.has_return_policy === 'true') ? 1 : 0); }
         if (req.body.return_window_days !== undefined) { fields.push('return_window_days = ?'); values.push(parseInt(req.body.return_window_days, 10)); }
-        if (req.body.is_replacement_available !== undefined) { fields.push('is_replacement_available = ?'); values.push(req.body.is_replacement_available ? 1 : 0); }
+        if (req.body.is_replacement_available !== undefined) { fields.push('is_replacement_available = ?'); values.push((req.body.is_replacement_available === 1 || req.body.is_replacement_available === '1' || req.body.is_replacement_available === true || req.body.is_replacement_available === 'true') ? 1 : 0); }
         if (req.body.replacement_window_days !== undefined) { fields.push('replacement_window_days = ?'); values.push(parseInt(req.body.replacement_window_days, 10)); }
+        if (req.body.is_cod_available !== undefined) { fields.push('is_cod_available = ?'); values.push((req.body.is_cod_available === 1 || req.body.is_cod_available === '1' || req.body.is_cod_available === true || req.body.is_cod_available === 'true') ? 1 : 0); }
 
         if (fields.length > 0) {
             // Ensure columns exist on live schema
@@ -951,6 +967,11 @@ exports.updateSellerOffer = async (req, res) => {
             await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS low_stock_threshold INT DEFAULT 5").catch(() => {});
             await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS minimum_order_quantity INT DEFAULT 1").catch(() => {});
             await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS has_variants TINYINT(1) DEFAULT 0").catch(() => {});
+            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS has_return_policy TINYINT(1) DEFAULT 1").catch(() => {});
+            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS return_window_days INT DEFAULT 7").catch(() => {});
+            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS is_replacement_available TINYINT(1) DEFAULT 1").catch(() => {});
+            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS replacement_window_days INT DEFAULT 7").catch(() => {});
+            await connection.query("ALTER TABLE seller_products ADD COLUMN IF NOT EXISTS is_cod_available TINYINT(1) DEFAULT 1").catch(() => {});
 
             const updateQuery = `UPDATE seller_products SET ${fields.join(', ')} WHERE id = ?`;
             await connection.query(updateQuery, [...values, id]);

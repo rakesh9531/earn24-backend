@@ -109,10 +109,10 @@ exports.submitReturnRequest = async (req, res) => {
         // 2. Check policy eligibility & stock for item
         const [[item]] = await db.query(
             `SELECT oi.*, sp.seller_id as merchant_seller_id, sp.stock_quantity as current_stock,
-                    COALESCE(sp.has_return_policy, psc.has_return_policy, 1) as has_return_policy,
-                    COALESCE(sp.return_window_days, psc.return_window_days, 7) as return_window_days,
-                    COALESCE(sp.is_replacement_available, psc.is_replacement_available, 1) as is_replacement_available,
-                    COALESCE(sp.replacement_window_days, psc.replacement_window_days, 7) as replacement_window_days
+                    IFNULL(sp.has_return_policy, IFNULL(psc.has_return_policy, 0)) as has_return_policy,
+                    IFNULL(sp.return_window_days, IFNULL(psc.return_window_days, 7)) as return_window_days,
+                    IFNULL(sp.is_replacement_available, IFNULL(psc.is_replacement_available, 0)) as is_replacement_available,
+                    IFNULL(sp.replacement_window_days, IFNULL(psc.replacement_window_days, 7)) as replacement_window_days
              FROM order_items oi
              JOIN seller_products sp ON oi.seller_product_id = sp.id
              LEFT JOIN products p ON sp.product_id = p.id
@@ -122,11 +122,14 @@ exports.submitReturnRequest = async (req, res) => {
         );
         if (!item) return res.status(404).json({ status: false, message: 'Order item not found.' });
 
-        if (requestType === 'RETURN' && !item.has_return_policy) {
-            return res.status(400).json({ status: false, message: 'Returns are not allowed for this product.' });
+        const canReturn = item.has_return_policy === 1 || item.has_return_policy === true || item.has_return_policy === '1';
+        if (requestType === 'RETURN' && !canReturn) {
+            return res.status(400).json({ status: false, message: 'Returns are not allowed for this product offer by the seller.' });
         }
-        if (requestType === 'REPLACEMENT' && !item.is_replacement_available) {
-            return res.status(400).json({ status: false, message: 'Replacements are not allowed for this product.' });
+
+        const canReplace = item.is_replacement_available === 1 || item.is_replacement_available === true || item.is_replacement_available === '1';
+        if (requestType === 'REPLACEMENT' && !canReplace) {
+            return res.status(400).json({ status: false, message: 'Replacements are not allowed for this product offer by the seller.' });
         }
 
         // Check active delivery window
