@@ -346,30 +346,48 @@ exports.getPreviouslyPurchasedItems = async (req, res) => {
     try {
         const query = `
             SELECT 
-                oi.product_id,
-                COALESCE(sp.id, oi.seller_product_id) as offer_id,
-                COALESCE(sp.id, oi.seller_product_id) as seller_product_id,
-                oi.product_id as id,
-                COALESCE(p.name, oi.product_name) as product_name,
-                COALESCE(p.name, oi.product_name) as name,
-                COALESCE(p.main_image_url, (SELECT main_image_url FROM products WHERE id = oi.product_id)) as main_image_url,
-                COALESCE(p.main_image_url, (SELECT main_image_url FROM products WHERE id = oi.product_id)) as image_url,
-                COALESCE(sp.selling_price, oi.price_per_unit) as selling_price,
-                COALESCE(sp.selling_price, oi.price_per_unit) as price,
-                COALESCE(sp.mrp, oi.price_per_unit) as mrp,
+                recent.product_id,
+                recent.product_id as id,
+                COALESCE(sp.id, recent.seller_product_id) as offer_id,
+                COALESCE(sp.id, recent.seller_product_id) as seller_product_id,
+                COALESCE(p.name, recent.product_name) as product_name,
+                COALESCE(p.name, recent.product_name) as name,
+                COALESCE(p.main_image_url, '') as main_image_url,
+                COALESCE(p.main_image_url, '') as image_url,
+                COALESCE(sp.selling_price, recent.price_per_unit) as selling_price,
+                COALESCE(sp.selling_price, recent.price_per_unit) as price,
+                COALESCE(sp.mrp, recent.price_per_unit) as mrp,
                 COALESCE(sp.quantity, 10) as stock,
                 COALESCE(sp.minimum_order_quantity, 1) as minimum_order_quantity,
-                COALESCE(oi.bv_earned_per_unit, 0) as bv_earned,
-                MAX(o.created_at) as last_ordered_at,
-                COUNT(oi.id) as order_count
-            FROM order_items oi
-            JOIN orders o ON oi.order_id = o.id
-            LEFT JOIN products p ON oi.product_id = p.id
-            LEFT JOIN seller_products sp ON (oi.seller_product_id = sp.id AND sp.is_active = 1)
-            WHERE o.user_id = ?
-            GROUP BY oi.product_id, COALESCE(sp.id, oi.seller_product_id)
-            ORDER BY last_ordered_at DESC
-            LIMIT ? OFFSET ?
+                COALESCE(recent.bv_earned_per_unit, 0) as bv_earned,
+                recent.last_ordered_at,
+                recent.order_count
+            FROM (
+                SELECT 
+                    oi.product_id,
+                    MAX(oi.seller_product_id) as seller_product_id,
+                    MAX(oi.product_name) as product_name,
+                    MAX(oi.price_per_unit) as price_per_unit,
+                    MAX(oi.bv_earned_per_unit) as bv_earned_per_unit,
+                    MAX(o.created_at) as last_ordered_at,
+                    COUNT(oi.id) as order_count
+                FROM order_items oi
+                JOIN orders o ON oi.order_id = o.id
+                WHERE o.user_id = ?
+                GROUP BY oi.product_id
+                ORDER BY last_ordered_at DESC
+                LIMIT ? OFFSET ?
+            ) recent
+            LEFT JOIN products p ON recent.product_id = p.id
+            LEFT JOIN seller_products sp ON (
+                sp.id = (
+                    SELECT sp2.id FROM seller_products sp2 
+                    WHERE sp2.product_id = recent.product_id AND sp2.is_active = 1 
+                    ORDER BY (sp2.id = recent.seller_product_id) DESC, sp2.id DESC 
+                    LIMIT 1
+                )
+            )
+            ORDER BY recent.last_ordered_at DESC
         `;
 
         const countQuery = `
