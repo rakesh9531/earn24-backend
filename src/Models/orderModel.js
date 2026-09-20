@@ -30,6 +30,7 @@ class Order {
     shipping_address,
     items,
     return_request,
+    return_requests,
     return_window_days,
     is_returnable
   }) {
@@ -70,6 +71,9 @@ class Order {
     this.shippingAddress = shipping_address || null;
     this.items = items || [];
     this.returnRequest = return_request || null;
+    this.return_request = return_request || null;
+    this.returnRequests = return_requests || (return_request ? [return_request] : []);
+    this.return_requests = return_requests || (return_request ? [return_request] : []);
     this.returnWindowDays = parseInt(return_window_days || 7);
     this.isReturnable = is_returnable !== undefined ? (is_returnable === 1 || is_returnable === true) : true;
   }

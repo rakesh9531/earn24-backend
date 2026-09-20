@@ -335,11 +335,14 @@ exports.getOrderDetails = async (req, res) => {
     const { orderId } = req.params;
 
     try {
-        const orderQuery = `SELECT * FROM orders WHERE id = ? AND user_id = ?`;
-        const [orderRows] = await db.query(orderQuery, [orderId, userId]);
+        const orderQuery = `SELECT * FROM orders WHERE (id = ? OR order_number = ?) AND user_id = ?`;
+        const [orderRows] = await db.query(orderQuery, [orderId, orderId, userId]);
         if (orderRows.length === 0) {
             return res.status(404).json({ status: false, message: 'Order not found.' });
         }
+
+        const realOrderId = orderRows[0].id;
+        const realOrderNum = orderRows[0].order_number;
 
         const addressQuery = `SELECT * FROM user_addresses WHERE id = ?`;
         const [addressRows] = await db.query(addressQuery, [orderRows[0].shipping_address_id]);
@@ -359,16 +362,19 @@ exports.getOrderDetails = async (req, res) => {
             ${hasVariantCol ? 'LEFT JOIN seller_product_variants spv ON oi.seller_product_variant_id = spv.id' : ''}
             WHERE oi.order_id = ?
         `;
-        const [itemRows] = await db.query(itemsQuery, [orderId]);
+        const [itemRows] = await db.query(itemsQuery, [realOrderId]);
 
         const [returnRows] = await db.query(
             `SELECT r.*, da.name as agent_name, da.phone as agent_phone 
              FROM order_returns r 
              LEFT JOIN delivery_agents da ON r.delivery_agent_id = da.id 
-             WHERE r.order_id = ? 
+             WHERE r.order_id = ?
              ORDER BY r.id DESC`,
-            [orderId]
-        ).catch(() => [[]]);
+            [realOrderId]
+        ).catch(err => {
+            console.error('[getOrderDetails Return Query Error]', err.message);
+            return [[]];
+        });
 
         const returnWindowDays = itemRows.length > 0 ? Math.max(...itemRows.map(i => parseInt(i.return_window_days || 7))) : 7;
         const isReturnable = itemRows.length > 0 ? itemRows.some(i => i.is_returnable !== 0) : true;
