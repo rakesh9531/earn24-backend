@@ -23,6 +23,10 @@ router.post('/cancel-assignment', auth, deliveryAppController.cancelAssignment);
 router.get('/history', auth, deliveryAppController.getHistory);
 router.get('/earnings-summary', auth, deliveryAppController.getEarningsSummary);
 
+// Settlement Routes for Delivery Agent
+router.get('/settlements/overview', auth, deliveryAppController.getSettlementOverview);
+router.post('/settlements/request', auth, deliveryAppController.requestSettlement);
+
 // Reverse Pickup & Replacement Delivery Task Routes for Delivery Agent
 router.get('/pickup-tasks', auth, deliveryAppController.getPickupTasks);
 router.post('/complete-pickup', auth, deliveryAppController.completeReversePickup);

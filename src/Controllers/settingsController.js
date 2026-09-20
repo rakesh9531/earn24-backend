@@ -132,3 +132,59 @@ exports.getDeliveryRules = async (req, res) => {
         res.status(500).json({ status: false, message: "An error occurred while fetching delivery rules." });
     }
 };
+
+/**
+ * Verify Security PIN for Payment Settings & Gateways (Default: 1234)
+ */
+exports.verifyPaymentPin = async (req, res) => {
+    try {
+        const { pin } = req.body;
+        if (!pin) {
+            return res.status(400).json({ status: false, message: "Security PIN is required." });
+        }
+
+        const [rows] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key = 'payment_security_pin'");
+        const currentPin = (rows[0] && rows[0].setting_value) ? rows[0].setting_value.trim() : '1234';
+
+        if (String(pin).trim() !== currentPin) {
+            return res.status(400).json({ status: false, message: "Incorrect Security PIN. Access denied." });
+        }
+
+        return res.status(200).json({ status: true, message: "Security PIN verified successfully." });
+    } catch (error) {
+        console.error("verifyPaymentPin error:", error);
+        return res.status(500).json({ status: false, message: "Server error verifying security PIN." });
+    }
+};
+
+/**
+ * Change Security PIN for Payment Settings & Gateways
+ */
+exports.changePaymentPin = async (req, res) => {
+    try {
+        const { currentPin, newPin } = req.body;
+        if (!newPin || String(newPin).trim().length < 4) {
+            return res.status(400).json({ status: false, message: "New PIN must be at least 4 characters." });
+        }
+
+        const [rows] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key = 'payment_security_pin'");
+        const dbPin = (rows[0] && rows[0].setting_value) ? rows[0].setting_value.trim() : '1234';
+
+        if (String(currentPin || '').trim() !== dbPin) {
+            return res.status(400).json({ status: false, message: "Current Security PIN is incorrect." });
+        }
+
+        const cleanNewPin = String(newPin).trim();
+        await db.query(
+            `INSERT INTO app_settings (setting_key, setting_value, description) 
+             VALUES ('payment_security_pin', ?, 'Security PIN for Payment Gateways and Delivery Rules') 
+             ON DUPLICATE KEY UPDATE setting_value = ?`,
+            [cleanNewPin, cleanNewPin]
+        );
+
+        return res.status(200).json({ status: true, message: "Security PIN updated successfully." });
+    } catch (error) {
+        console.error("changePaymentPin error:", error);
+        return res.status(500).json({ status: false, message: "Server error changing security PIN." });
+    }
+};

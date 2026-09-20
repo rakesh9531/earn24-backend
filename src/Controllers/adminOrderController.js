@@ -15,8 +15,8 @@ exports.getOrdersByStatus = async (req, res) => {
         if (status === 'CONFIRMED') {
             whereClause = "WHERE o.order_status IN ('CONFIRMED', 'PLACED', 'SHIPPED', 'OUT_FOR_DELIVERY')";
         } else if (status === 'ALL') {
-            // Process New Orders should only include real active orders, not unfinished payment drafts
-            whereClause = "WHERE o.order_status NOT IN ('PENDING', 'PENDING_PAYMENT')";
+            // Process New Orders should only include active processing orders, not delivered or cancelled orders
+            whereClause = "WHERE o.order_status NOT IN ('PENDING', 'PENDING_PAYMENT', 'DELIVERED', 'CANCELLED')";
         } else {
             whereClause = "WHERE o.order_status = ?";
             params = [status];
@@ -341,13 +341,43 @@ exports.settleAgentCash = async (req, res) => {
 exports.verifySettlement = async (req, res) => {
     const { orderId } = req.body;
     const adminId = req.user.id;
+    const connection = await db.getConnection();
     try {
-        await db.query(
+        await connection.beginTransaction();
+
+        const [orderRows] = await connection.query(
+            "SELECT total_amount, delivery_amount_collected, delivery_agent_id, order_number, payment_method, delivery_payment_mode FROM orders WHERE id = ? FOR UPDATE",
+            [orderId]
+        );
+
+        if (!orderRows[0]) {
+            await connection.rollback();
+            return res.status(404).json({ status: false, message: "Order not found." });
+        }
+
+        const order = orderRows[0];
+        const settleAmount = parseFloat(order.delivery_amount_collected || order.total_amount || 0);
+
+        await connection.query(
             "UPDATE orders SET is_cash_settled = 1, cash_settled_at = NOW(), settled_by_admin_id = ? WHERE id = ?",
             [adminId, orderId]
         );
-        res.json({ status: true, message: "Cash collection verified and settled!" });
-    } catch (e) { res.status(500).json({ status: false, message: e.message }); }
+
+        const mode = order.delivery_payment_mode || order.payment_method || 'COD';
+        await connection.query(
+            "INSERT INTO admin_settlement_logs (admin_id, agent_id, order_id, amount_received, remarks) VALUES (?, ?, ?, ?, ?)",
+            [adminId, order.delivery_agent_id, orderId, settleAmount, `Settlement verified (${mode}) for Order ${order.order_number}`]
+        ).catch(() => {});
+
+        await connection.commit();
+        res.json({ status: true, message: `₹${settleAmount} verified and settled successfully for Order ${order.order_number}!` });
+    } catch (e) {
+        if (connection) await connection.rollback();
+        console.error("verifySettlement error:", e);
+        res.status(500).json({ status: false, message: e.message });
+    } finally {
+        if (connection) connection.release();
+    }
 };
 
 exports.getAllOrdersHistory = async (req, res) => {
@@ -462,16 +492,18 @@ exports.getPendingSettlements = async (req, res) => {
     try {
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.delivered_at,
+                   o.payment_method, o.delivery_payment_mode, o.delivery_amount_collected,
+                   o.is_settlement_requested, o.settlement_requested_at,
                    u.full_name as customer_name,
                    da.full_name as agent_name, da.phone_number as agent_phone
             FROM orders o
             JOIN users u ON o.user_id = u.id
             JOIN delivery_agents da ON o.delivery_agent_id = da.id
-            WHERE o.payment_method = 'COD' 
-            AND o.order_status = 'DELIVERED' 
-            AND o.is_cash_settled = 0
+            WHERE (o.is_cash_settled = 0 OR o.is_cash_settled IS NULL)
+            AND o.order_status = 'DELIVERED'
+            AND (o.payment_method = 'COD' OR o.delivery_payment_mode IN ('COD', 'CASH', 'ONLINE') OR o.delivery_amount_collected > 0)
             AND (o.order_number LIKE ? OR da.full_name LIKE ? OR da.phone_number LIKE ?)
-            ORDER BY o.delivered_at DESC
+            ORDER BY o.is_settlement_requested DESC, o.delivered_at DESC
             LIMIT ? OFFSET ?`;
 
         const [rows] = await db.query(query, [searchPattern, searchPattern, searchPattern, limit, offset]);
@@ -479,7 +511,9 @@ exports.getPendingSettlements = async (req, res) => {
         const [countRows] = await db.query(`
             SELECT COUNT(*) as total FROM orders o 
             JOIN delivery_agents da ON o.delivery_agent_id = da.id
-            WHERE o.payment_method = 'COD' AND o.order_status = 'DELIVERED' AND o.is_cash_settled = 0
+            WHERE (o.is_cash_settled = 0 OR o.is_cash_settled IS NULL)
+            AND o.order_status = 'DELIVERED'
+            AND (o.payment_method = 'COD' OR o.delivery_payment_mode IN ('COD', 'CASH', 'ONLINE') OR o.delivery_amount_collected > 0)
             AND (o.order_number LIKE ? OR da.full_name LIKE ? OR da.phone_number LIKE ?)`, 
             [searchPattern, searchPattern, searchPattern]);
 
