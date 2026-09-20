@@ -1415,3 +1415,71 @@ exports.verifyProfileMobileOtp = async (req, res) => {
         res.status(500).json({ status: false, message: "Mobile OTP verification failed." });
     }
 };
+
+/**
+ * Send OTP to user's new email for Edit Profile verification
+ */
+exports.sendProfileEmailOtp = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { email } = req.body;
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+            return res.status(400).json({ status: false, message: "Valid email address is required." });
+        }
+
+        const cleanEmail = email.trim().toLowerCase();
+        const [existing] = await db.query("SELECT id FROM users WHERE email = ? AND id != ?", [cleanEmail, userId]);
+        if (existing.length > 0) {
+            return res.status(409).json({ status: false, message: "Email is already in use by another account." });
+        }
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const key = `e_${cleanEmail}`;
+        await db.query(`
+            INSERT INTO otp_records (mobile_number, otp_code, attempts_count, last_sent_at)
+            VALUES (?, ?, 1, NOW())
+            ON DUPLICATE KEY UPDATE otp_code = VALUES(otp_code), last_sent_at = NOW()
+        `, [key, otp]);
+
+        console.log(`[PROFILE EMAIL OTP] Sending OTP to ${cleanEmail}`);
+        try {
+            await sendOtpEmail(cleanEmail, otp);
+        } catch (mailErr) {
+            console.error("[PROFILE EMAIL OTP] Failed to send via SMTP:", mailErr.message);
+            return res.status(500).json({ status: false, message: "Could not send verification email. Please check the email address and try again." });
+        }
+
+        res.json({ status: true, message: `Verification code sent successfully to ${cleanEmail}. Please check your inbox.` });
+    } catch (e) {
+        console.error("sendProfileEmailOtp error:", e);
+        res.status(500).json({ status: false, message: "Failed to send Email OTP." });
+    }
+};
+
+/**
+ * Verify OTP for Edit Profile email update
+ */
+exports.verifyProfileEmailOtp = async (req, res) => {
+    try {
+        const { email, otp } = req.body;
+        if (!email || !otp) {
+            return res.status(400).json({ status: false, message: "Email and OTP are required." });
+        }
+
+        const cleanEmail = email.trim().toLowerCase();
+        const key = `e_${cleanEmail}`;
+        const [rows] = await db.query(
+            "SELECT otp_code FROM otp_records WHERE mobile_number = ?",
+            [key]
+        );
+
+        if (!rows.length || rows[0].otp_code !== otp.toString().trim()) {
+            return res.status(400).json({ status: false, message: "Invalid or expired OTP code." });
+        }
+
+        res.json({ status: true, message: "Email verified successfully." });
+    } catch (e) {
+        console.error("verifyProfileEmailOtp error:", e);
+        res.status(500).json({ status: false, message: "Email OTP verification failed." });
+    }
+};

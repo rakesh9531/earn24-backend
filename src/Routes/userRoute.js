@@ -82,6 +82,8 @@ router.get('/profile', auth, userController.getUserProfile);
 router.put('/profile/update', auth, uploadProfile.single('profileImage'), userController.updateUserProfile);
 router.post('/profile/send-mobile-otp', auth, userController.sendProfileMobileOtp);
 router.post('/profile/verify-mobile-otp', auth, userController.verifyProfileMobileOtp);
+router.post('/profile/send-email-otp', auth, userController.sendProfileEmailOtp);
+router.post('/profile/verify-email-otp', auth, userController.verifyProfileEmailOtp);
 router.get('/summary', auth, userController.getDashboardSummary);
 router.get('/profit-history', auth, userController.getProfitHistory);
 router.get('/bv-history', auth, userController.getBvHistory);
