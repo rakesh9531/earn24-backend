@@ -365,7 +365,7 @@ exports.getOrderDetails = async (req, res) => {
         const [itemRows] = await db.query(itemsQuery, [realOrderId]);
 
         const [returnRows] = await db.query(
-            `SELECT r.*, da.name as agent_name, da.phone as agent_phone 
+            `SELECT r.*, COALESCE(da.full_name, '') as agent_name, IFNULL(da.phone_number, '') as agent_phone 
              FROM order_returns r 
              LEFT JOIN delivery_agents da ON r.delivery_agent_id = da.id 
              WHERE r.order_id = ?
