@@ -1291,7 +1291,18 @@ exports.getHomeScreenData = async (req, res) => {
                     psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                     (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
                     (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
-                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned
+                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned,
+                    (
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                        FROM product_attributes pa
+                        JOIN attribute_values av ON pa.attribute_value_id = av.id
+                        JOIN attributes attr ON av.attribute_id = attr.id
+                        WHERE pa.product_id = p.id
+                    ) as attributes,
+                    (
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                        FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id AND (spv.is_active = TRUE OR spv.is_active IS NULL)
+                    ) as variants
                 FROM seller_products sp
                 JOIN sellers s ON sp.seller_id = s.id
                 LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
@@ -1325,7 +1336,18 @@ exports.getHomeScreenData = async (req, res) => {
                     psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                     (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
                     (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
-                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned
+                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned,
+                    (
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                        FROM product_attributes pa
+                        JOIN attribute_values av ON pa.attribute_value_id = av.id
+                        JOIN attributes attr ON av.attribute_id = attr.id
+                        WHERE pa.product_id = p.id
+                    ) as attributes,
+                    (
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                        FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id AND (spv.is_active = TRUE OR spv.is_active IS NULL)
+                    ) as variants
                 FROM seller_products sp
                 JOIN sellers s ON sp.seller_id = s.id
                 LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
@@ -1367,11 +1389,23 @@ exports.getHomeScreenData = async (req, res) => {
             const returnDays = parseInt(p.return_window_days || p.subcat_return_window_days || 7, 10);
             const replacementDays = parseInt(p.replacement_window_days || p.subcat_replacement_window_days || 7, 10);
 
+            let parsedGallery = [];
+            try { parsedGallery = typeof p.gallery_image_urls === 'string' ? JSON.parse(p.gallery_image_urls) : p.gallery_image_urls; } catch(e) { parsedGallery = []; }
+
+            let parsedAttr = [];
+            try { parsedAttr = typeof p.attributes === 'string' ? JSON.parse(p.attributes) : p.attributes; } catch(e) { parsedAttr = []; }
+
+            let parsedVars = [];
+            try { parsedVars = typeof p.variants === 'string' ? JSON.parse(p.variants) : p.variants; } catch(e) { parsedVars = []; }
+
             return {
                 ...p,
                 id: p.product_id,
                 product_id: p.product_id,
                 offer_id: p.offer_id,
+                gallery_image_urls: Array.isArray(parsedGallery) ? parsedGallery : [],
+                attributes: Array.isArray(parsedAttr) ? parsedAttr : [],
+                variants: Array.isArray(parsedVars) ? parsedVars : [],
                 has_return_policy: rawHasReturn ? 1 : 0,
                 return_window_days: returnDays,
                 is_replacement_available: rawHasReplacement ? 1 : 0,
@@ -1542,7 +1576,18 @@ exports.getPaginatedTopBvDeals = async (req, res) => {
                     psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                     (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
                     (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
-                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned
+                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned,
+                    (
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                        FROM product_attributes pa
+                        JOIN attribute_values av ON pa.attribute_value_id = av.id
+                        JOIN attributes attr ON av.attribute_id = attr.id
+                        WHERE pa.product_id = p.id
+                    ) as attributes,
+                    (
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                        FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id AND (spv.is_active = TRUE OR spv.is_active IS NULL)
+                    ) as variants
                 FROM seller_products sp
                 JOIN sellers s ON sp.seller_id = s.id
                 LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
@@ -1590,7 +1635,18 @@ exports.getPaginatedTopBvDeals = async (req, res) => {
                     psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                     (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
                     (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
-                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned
+                    GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned,
+                    (
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                        FROM product_attributes pa
+                        JOIN attribute_values av ON pa.attribute_value_id = av.id
+                        JOIN attributes attr ON av.attribute_id = attr.id
+                        WHERE pa.product_id = p.id
+                    ) as attributes,
+                    (
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                        FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id AND (spv.is_active = TRUE OR spv.is_active IS NULL)
+                    ) as variants
                 FROM seller_products sp
                 JOIN sellers s ON sp.seller_id = s.id
                 LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
@@ -1647,11 +1703,23 @@ exports.getPaginatedTopBvDeals = async (req, res) => {
             const returnDays = parseInt(p.return_window_days || p.subcat_return_window_days || 7, 10);
             const replacementDays = parseInt(p.replacement_window_days || p.subcat_replacement_window_days || 7, 10);
 
+            let parsedGallery = [];
+            try { parsedGallery = typeof p.gallery_image_urls === 'string' ? JSON.parse(p.gallery_image_urls) : p.gallery_image_urls; } catch(e) { parsedGallery = []; }
+
+            let parsedAttr = [];
+            try { parsedAttr = typeof p.attributes === 'string' ? JSON.parse(p.attributes) : p.attributes; } catch(e) { parsedAttr = []; }
+
+            let parsedVars = [];
+            try { parsedVars = typeof p.variants === 'string' ? JSON.parse(p.variants) : p.variants; } catch(e) { parsedVars = []; }
+
             return {
                 ...p,
                 id: p.product_id,
                 product_id: p.product_id,
                 offer_id: p.offer_id,
+                gallery_image_urls: Array.isArray(parsedGallery) ? parsedGallery : [],
+                attributes: Array.isArray(parsedAttr) ? parsedAttr : [],
+                variants: Array.isArray(parsedVars) ? parsedVars : [],
                 has_return_policy: rawHasReturn ? 1 : 0,
                 return_window_days: returnDays,
                 is_replacement_available: rawHasReplacement ? 1 : 0,
