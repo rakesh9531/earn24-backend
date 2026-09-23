@@ -1281,6 +1281,7 @@ exports.getHomeScreenData = async (req, res) => {
             topBvQuery = `
                 SELECT 
                     p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
+                    p.category_id, p.subcategory_id,
                     sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
                     sp.purchase_price, sp.minimum_order_quantity,
                     COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
@@ -1326,6 +1327,7 @@ exports.getHomeScreenData = async (req, res) => {
             topBvQuery = `
                 SELECT 
                     p.id as product_id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
+                    p.category_id, p.subcategory_id,
                     sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
                     sp.purchase_price, sp.minimum_order_quantity,
                     COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
@@ -1402,6 +1404,8 @@ exports.getHomeScreenData = async (req, res) => {
                 ...p,
                 id: p.product_id,
                 product_id: p.product_id,
+                category_id: p.category_id,
+                subcategory_id: p.subcategory_id,
                 offer_id: p.offer_id,
                 gallery_image_urls: Array.isArray(parsedGallery) ? parsedGallery : [],
                 attributes: Array.isArray(parsedAttr) ? parsedAttr : [],
@@ -1566,6 +1570,7 @@ exports.getPaginatedTopBvDeals = async (req, res) => {
             query = `
                 SELECT 
                     p.id as product_id, p.id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
+                    p.category_id, p.subcategory_id,
                     sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
                     sp.purchase_price, sp.minimum_order_quantity,
                     COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
@@ -1625,6 +1630,7 @@ exports.getPaginatedTopBvDeals = async (req, res) => {
             query = `
                 SELECT 
                     p.id as product_id, p.id, p.name, p.description, p.main_image_url, p.gallery_image_urls,
+                    p.category_id, p.subcategory_id,
                     sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
                     sp.purchase_price, sp.minimum_order_quantity,
                     COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
@@ -1716,6 +1722,8 @@ exports.getPaginatedTopBvDeals = async (req, res) => {
                 ...p,
                 id: p.product_id,
                 product_id: p.product_id,
+                category_id: p.category_id,
+                subcategory_id: p.subcategory_id,
                 offer_id: p.offer_id,
                 gallery_image_urls: Array.isArray(parsedGallery) ? parsedGallery : [],
                 attributes: Array.isArray(parsedAttr) ? parsedAttr : [],
