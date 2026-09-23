@@ -1563,6 +1563,11 @@ exports.searchProducts = async (req, res) => {
                 sp.minimum_order_quantity,
                 p.popularity,
                 COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
+                sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
+                IFNULL(sp.is_cod_available, 1) as is_cod_available,
+                sc.has_return_policy as subcat_has_return_policy, sc.return_window_days as subcat_return_window_days,
+                sc.is_replacement_available as subcat_is_replacement_available, sc.replacement_window_days as subcat_replacement_window_days,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (${bvGenerationPct} / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (${bvGenerationPct} / 100))) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -1584,17 +1589,50 @@ exports.searchProducts = async (req, res) => {
       offset,
     ]);
 
-    // --- 5. Process the Result (Parse JSON strings) ---
-    const processedProducts = productsRaw.map((p) => ({
-      ...p,
-      id: p.product_id,
-      product_id: p.product_id,
-      offer_id: p.offer_id,
-      bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
-      gallery_image_urls: safeJsonParse(p.gallery_image_urls, []),
-      attributes: safeJsonParse(p.attributes, []),
-      variants: safeJsonParse(p.variants, []),
-    }));
+    // --- 5. Process the Result (Parse JSON strings & Resolve Policies) ---
+    const processedProducts = productsRaw.map((p) => {
+      let rawHasReturn;
+      if (p.has_return_policy !== null && p.has_return_policy !== undefined) {
+        rawHasReturn = (p.has_return_policy === 1 || p.has_return_policy === true || p.has_return_policy === '1' || p.has_return_policy === 'true');
+      } else if (p.subcat_has_return_policy !== null && p.subcat_has_return_policy !== undefined) {
+        rawHasReturn = (p.subcat_has_return_policy === 1 || p.subcat_has_return_policy === true || p.subcat_has_return_policy === '1' || p.subcat_has_return_policy === 'true');
+      } else {
+        rawHasReturn = true;
+      }
+
+      let rawHasReplacement;
+      if (p.is_replacement_available !== null && p.is_replacement_available !== undefined) {
+        rawHasReplacement = (p.is_replacement_available === 1 || p.is_replacement_available === true || p.is_replacement_available === '1' || p.is_replacement_available === 'true');
+      } else if (p.subcat_is_replacement_available !== null && p.subcat_is_replacement_available !== undefined) {
+        rawHasReplacement = (p.subcat_is_replacement_available === 1 || p.subcat_is_replacement_available === true || p.subcat_is_replacement_available === '1' || p.subcat_is_replacement_available === 'true');
+      } else {
+        rawHasReplacement = true;
+      }
+
+      const returnDays = parseInt(p.return_window_days || p.subcat_return_window_days || 7, 10);
+      const replacementDays = parseInt(p.replacement_window_days || p.subcat_replacement_window_days || 7, 10);
+
+      return {
+        ...p,
+        id: p.product_id,
+        product_id: p.product_id,
+        offer_id: p.offer_id,
+        has_return_policy: rawHasReturn ? 1 : 0,
+        return_window_days: returnDays,
+        is_replacement_available: rawHasReplacement ? 1 : 0,
+        replacement_window_days: replacementDays,
+        hasReturnPolicy: rawHasReturn,
+        isReplacementAvailable: rawHasReplacement,
+        warranty_type: p.warranty_type || 'no_warranty',
+        warranty_months: p.warranty_months || 0,
+        warranty_period: p.warranty_period || '',
+        warranty_covered_by: p.warranty_covered_by || '',
+        bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
+        gallery_image_urls: safeJsonParse(p.gallery_image_urls, []),
+        attributes: safeJsonParse(p.attributes, []),
+        variants: safeJsonParse(p.variants, []),
+      };
+    });
 
     // Get total count
     const countQuery = `SELECT COUNT(DISTINCT p.id) as total ${baseSelectAndJoins} ${whereString}`;
@@ -1676,9 +1714,22 @@ exports.getProductForUser = async (req, res) => {
     );
     const bvGenerationPct = settingsRows[0] ? parseFloat(settingsRows[0].setting_value) : 80.0;
 
+    const targetOfferId = req.query.offer_id || req.query.seller_product_id;
     const isSellerProd = req.query.is_seller_product === '1' || req.query.is_seller_product === 'true';
-    const whereClause = isSellerProd ? "sp.id = ?" : "(p.id = ? OR sp.id = ?)";
-    const orderParams = isSellerProd ? [activePincode, activePincode, id] : [activePincode, activePincode, id, id, id];
+
+    let whereClause = "(p.id = ? OR sp.id = ?)";
+    let orderParams = [activePincode, activePincode, id, id, id];
+    let orderByClause = "(CASE WHEN p.id = ? THEN 0 ELSE 1 END), sp.selling_price ASC";
+
+    if (targetOfferId) {
+      whereClause = "(sp.id = ? OR p.id = ?)";
+      orderParams = [activePincode, activePincode, targetOfferId, id, targetOfferId];
+      orderByClause = "(CASE WHEN sp.id = ? THEN 0 ELSE 1 END), sp.selling_price ASC";
+    } else if (isSellerProd) {
+      whereClause = "sp.id = ?";
+      orderParams = [activePincode, activePincode, id];
+      orderByClause = "sp.selling_price ASC";
+    }
 
     const query = `
             SELECT 
@@ -1718,7 +1769,7 @@ exports.getProductForUser = async (req, res) => {
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE ${whereClause} AND sp.is_active = TRUE
-            ORDER BY ${isSellerProd ? 'sp.selling_price ASC' : '(CASE WHEN p.id = ? THEN 0 ELSE 1 END), sp.selling_price ASC'}
+            ORDER BY ${orderByClause}
             LIMIT 1;
         `;
 
@@ -1921,6 +1972,10 @@ exports.getProductsByCategory = async (req, res) => {
                 p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
                 b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
+                sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
+                IFNULL(sp.is_cod_available, 1) as is_cod_available,
+                psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
+                psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (? / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -1932,6 +1987,7 @@ exports.getProductsByCategory = async (req, res) => {
                 ${variantsSubquery}
             FROM products AS p
             JOIN seller_products AS sp ON p.id = sp.product_id
+            LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
             LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
@@ -1956,6 +2012,10 @@ exports.getProductsByCategory = async (req, res) => {
                 p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
                 b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
+                sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
+                IFNULL(sp.is_cod_available, 1) as is_cod_available,
+                psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
+                psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (? / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -1967,6 +2027,7 @@ exports.getProductsByCategory = async (req, res) => {
                 ${variantsSubquery}
             FROM products AS p
             JOIN seller_products AS sp ON p.id = sp.product_id
+            LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.category_id = ? 
@@ -1991,15 +2052,48 @@ exports.getProductsByCategory = async (req, res) => {
     const [countRows] = await db.query(countQuery, countParams);
     const totalRecords = countRows[0] ? countRows[0].total : 0;
 
-    const formattedProducts = products.map(p => ({
-      ...p,
-      product_id: p.id,
-      has_variants: Boolean(p.has_variants),
-      bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
-      attributes: safeJsonParse(p.attributes, []),
-      gallery_image_urls: safeJsonParse(p.gallery_image_urls, []),
-      variants: safeJsonParse(p.variants, [])
-    }));
+    const formattedProducts = products.map(p => {
+      let rawHasReturn;
+      if (p.has_return_policy !== null && p.has_return_policy !== undefined) {
+        rawHasReturn = (p.has_return_policy === 1 || p.has_return_policy === true || p.has_return_policy === '1' || p.has_return_policy === 'true');
+      } else if (p.subcat_has_return_policy !== null && p.subcat_has_return_policy !== undefined) {
+        rawHasReturn = (p.subcat_has_return_policy === 1 || p.subcat_has_return_policy === true || p.subcat_has_return_policy === '1' || p.subcat_has_return_policy === 'true');
+      } else {
+        rawHasReturn = true;
+      }
+
+      let rawHasReplacement;
+      if (p.is_replacement_available !== null && p.is_replacement_available !== undefined) {
+        rawHasReplacement = (p.is_replacement_available === 1 || p.is_replacement_available === true || p.is_replacement_available === '1' || p.is_replacement_available === 'true');
+      } else if (p.subcat_is_replacement_available !== null && p.subcat_is_replacement_available !== undefined) {
+        rawHasReplacement = (p.subcat_is_replacement_available === 1 || p.subcat_is_replacement_available === true || p.subcat_is_replacement_available === '1' || p.subcat_is_replacement_available === 'true');
+      } else {
+        rawHasReplacement = true;
+      }
+
+      const returnDays = parseInt(p.return_window_days || p.subcat_return_window_days || 7, 10);
+      const replacementDays = parseInt(p.replacement_window_days || p.subcat_replacement_window_days || 7, 10);
+
+      return {
+        ...p,
+        product_id: p.id,
+        has_variants: Boolean(p.has_variants),
+        has_return_policy: rawHasReturn ? 1 : 0,
+        return_window_days: returnDays,
+        is_replacement_available: rawHasReplacement ? 1 : 0,
+        replacement_window_days: replacementDays,
+        hasReturnPolicy: rawHasReturn,
+        isReplacementAvailable: rawHasReplacement,
+        warranty_type: p.warranty_type || 'no_warranty',
+        warranty_months: p.warranty_months || 0,
+        warranty_period: p.warranty_period || '',
+        warranty_covered_by: p.warranty_covered_by || '',
+        bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
+        attributes: safeJsonParse(p.attributes, []),
+        gallery_image_urls: safeJsonParse(p.gallery_image_urls, []),
+        variants: safeJsonParse(p.variants, [])
+      };
+    });
 
     res.status(200).json({
       status: true,
@@ -2055,6 +2149,10 @@ exports.getProductsBySubcategory = async (req, res) => {
                 p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
                 b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
+                sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
+                IFNULL(sp.is_cod_available, 1) as is_cod_available,
+                psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
+                psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (? / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -2066,6 +2164,7 @@ exports.getProductsBySubcategory = async (req, res) => {
                 ${variantsSubquery}
             FROM products AS p
             JOIN seller_products AS sp ON p.id = sp.product_id
+            LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
             LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
@@ -2090,6 +2189,10 @@ exports.getProductsBySubcategory = async (req, res) => {
                 p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
                 b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
+                sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
+                IFNULL(sp.is_cod_available, 1) as is_cod_available,
+                psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
+                psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (? / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -2101,6 +2204,7 @@ exports.getProductsBySubcategory = async (req, res) => {
                 ${variantsSubquery}
             FROM products AS p
             JOIN seller_products AS sp ON p.id = sp.product_id
+            LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.subcategory_id = ? 
@@ -2125,15 +2229,48 @@ exports.getProductsBySubcategory = async (req, res) => {
     const [countRows] = await db.query(countQuery, countParams);
     const totalRecords = countRows[0] ? countRows[0].total : 0;
 
-    const formattedProducts = products.map(p => ({
-      ...p,
-      product_id: p.id,
-      has_variants: Boolean(p.has_variants),
-      bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
-      attributes: safeJsonParse(p.attributes, []),
-      gallery_image_urls: safeJsonParse(p.gallery_image_urls, []),
-      variants: safeJsonParse(p.variants, [])
-    }));
+    const formattedProducts = products.map(p => {
+      let rawHasReturn;
+      if (p.has_return_policy !== null && p.has_return_policy !== undefined) {
+        rawHasReturn = (p.has_return_policy === 1 || p.has_return_policy === true || p.has_return_policy === '1' || p.has_return_policy === 'true');
+      } else if (p.subcat_has_return_policy !== null && p.subcat_has_return_policy !== undefined) {
+        rawHasReturn = (p.subcat_has_return_policy === 1 || p.subcat_has_return_policy === true || p.subcat_has_return_policy === '1' || p.subcat_has_return_policy === 'true');
+      } else {
+        rawHasReturn = true;
+      }
+
+      let rawHasReplacement;
+      if (p.is_replacement_available !== null && p.is_replacement_available !== undefined) {
+        rawHasReplacement = (p.is_replacement_available === 1 || p.is_replacement_available === true || p.is_replacement_available === '1' || p.is_replacement_available === 'true');
+      } else if (p.subcat_is_replacement_available !== null && p.subcat_is_replacement_available !== undefined) {
+        rawHasReplacement = (p.subcat_is_replacement_available === 1 || p.subcat_is_replacement_available === true || p.subcat_is_replacement_available === '1' || p.subcat_is_replacement_available === 'true');
+      } else {
+        rawHasReplacement = true;
+      }
+
+      const returnDays = parseInt(p.return_window_days || p.subcat_return_window_days || 7, 10);
+      const replacementDays = parseInt(p.replacement_window_days || p.subcat_replacement_window_days || 7, 10);
+
+      return {
+        ...p,
+        product_id: p.id,
+        has_variants: Boolean(p.has_variants),
+        has_return_policy: rawHasReturn ? 1 : 0,
+        return_window_days: returnDays,
+        is_replacement_available: rawHasReplacement ? 1 : 0,
+        replacement_window_days: replacementDays,
+        hasReturnPolicy: rawHasReturn,
+        isReplacementAvailable: rawHasReplacement,
+        warranty_type: p.warranty_type || 'no_warranty',
+        warranty_months: p.warranty_months || 0,
+        warranty_period: p.warranty_period || '',
+        warranty_covered_by: p.warranty_covered_by || '',
+        bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
+        attributes: safeJsonParse(p.attributes, []),
+        gallery_image_urls: safeJsonParse(p.gallery_image_urls, []),
+        variants: safeJsonParse(p.variants, [])
+      };
+    });
 
     res.status(200).json({
       status: true,

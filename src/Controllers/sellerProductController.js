@@ -1284,6 +1284,11 @@ exports.getHomeScreenData = async (req, res) => {
                     sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
                     sp.purchase_price, sp.minimum_order_quantity,
                     COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                    sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
+                    sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
+                    IFNULL(sp.is_cod_available, 1) as is_cod_available,
+                    psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
+                    psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                     (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
                     (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
                     GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned
@@ -1292,6 +1297,7 @@ exports.getHomeScreenData = async (req, res) => {
                 LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
                 LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
                 JOIN products p ON sp.product_id = p.id
+                LEFT JOIN product_subcategories psc ON p.subcategory_id = psc.id
                 LEFT JOIN brands b ON p.brand_id = b.id
                 LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
                 WHERE (
@@ -1312,6 +1318,11 @@ exports.getHomeScreenData = async (req, res) => {
                     sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
                     sp.purchase_price, sp.minimum_order_quantity,
                     COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                    sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
+                    sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
+                    IFNULL(sp.is_cod_available, 1) as is_cod_available,
+                    psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
+                    psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                     (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
                     (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
                     GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned
@@ -1319,6 +1330,7 @@ exports.getHomeScreenData = async (req, res) => {
                 JOIN sellers s ON sp.seller_id = s.id
                 LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
                 JOIN products p ON sp.product_id = p.id
+                LEFT JOIN product_subcategories psc ON p.subcategory_id = psc.id
                 LEFT JOIN brands b ON p.brand_id = b.id
                 LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
                 WHERE (
@@ -1333,10 +1345,45 @@ exports.getHomeScreenData = async (req, res) => {
         }
 
         const [rawTopBv] = await db.query(topBvQuery, topBvParams);
-        const topBvDeals = (rawTopBv || []).map(p => ({
-            ...p,
-            id: p.product_id,
-        }));
+        const topBvDeals = (rawTopBv || []).map(p => {
+            let rawHasReturn;
+            if (p.has_return_policy !== null && p.has_return_policy !== undefined) {
+                rawHasReturn = (p.has_return_policy === 1 || p.has_return_policy === true || p.has_return_policy === '1' || p.has_return_policy === 'true');
+            } else if (p.subcat_has_return_policy !== null && p.subcat_has_return_policy !== undefined) {
+                rawHasReturn = (p.subcat_has_return_policy === 1 || p.subcat_has_return_policy === true || p.subcat_has_return_policy === '1' || p.subcat_has_return_policy === 'true');
+            } else {
+                rawHasReturn = true;
+            }
+
+            let rawHasReplacement;
+            if (p.is_replacement_available !== null && p.is_replacement_available !== undefined) {
+                rawHasReplacement = (p.is_replacement_available === 1 || p.is_replacement_available === true || p.is_replacement_available === '1' || p.is_replacement_available === 'true');
+            } else if (p.subcat_is_replacement_available !== null && p.subcat_is_replacement_available !== undefined) {
+                rawHasReplacement = (p.subcat_is_replacement_available === 1 || p.subcat_is_replacement_available === true || p.subcat_is_replacement_available === '1' || p.subcat_is_replacement_available === 'true');
+            } else {
+                rawHasReplacement = true;
+            }
+
+            const returnDays = parseInt(p.return_window_days || p.subcat_return_window_days || 7, 10);
+            const replacementDays = parseInt(p.replacement_window_days || p.subcat_replacement_window_days || 7, 10);
+
+            return {
+                ...p,
+                id: p.product_id,
+                product_id: p.product_id,
+                offer_id: p.offer_id,
+                has_return_policy: rawHasReturn ? 1 : 0,
+                return_window_days: returnDays,
+                is_replacement_available: rawHasReplacement ? 1 : 0,
+                replacement_window_days: replacementDays,
+                hasReturnPolicy: rawHasReturn,
+                isReplacementAvailable: rawHasReplacement,
+                warranty_type: p.warranty_type || 'no_warranty',
+                warranty_months: p.warranty_months || 0,
+                warranty_period: p.warranty_period || '',
+                warranty_covered_by: p.warranty_covered_by || '',
+            };
+        });
 
         res.status(200).json({
             status: true,
@@ -1488,6 +1535,11 @@ exports.getPaginatedTopBvDeals = async (req, res) => {
                     sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
                     sp.purchase_price, sp.minimum_order_quantity,
                     COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                    sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
+                    sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
+                    IFNULL(sp.is_cod_available, 1) as is_cod_available,
+                    psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
+                    psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                     (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
                     (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
                     GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned
@@ -1496,6 +1548,7 @@ exports.getPaginatedTopBvDeals = async (req, res) => {
                 LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
                 LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
                 JOIN products p ON sp.product_id = p.id
+                LEFT JOIN product_subcategories psc ON p.subcategory_id = psc.id
                 LEFT JOIN brands b ON p.brand_id = b.id
                 LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
                 WHERE (
@@ -1530,6 +1583,11 @@ exports.getPaginatedTopBvDeals = async (req, res) => {
                     sp.id as offer_id, b.name as brand_name, sp.selling_price, sp.mrp,
                     sp.purchase_price, sp.minimum_order_quantity,
                     COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                    sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
+                    sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
+                    IFNULL(sp.is_cod_available, 1) as is_cod_available,
+                    psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
+                    psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                     (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
                     (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
                     GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned
@@ -1537,6 +1595,7 @@ exports.getPaginatedTopBvDeals = async (req, res) => {
                 JOIN sellers s ON sp.seller_id = s.id
                 LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
                 JOIN products p ON sp.product_id = p.id
+                LEFT JOIN product_subcategories psc ON p.subcategory_id = psc.id
                 LEFT JOIN brands b ON p.brand_id = b.id
                 LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
                 WHERE (
@@ -1566,10 +1625,45 @@ exports.getPaginatedTopBvDeals = async (req, res) => {
         const total = countRows[0]?.total || 0;
         const totalPages = Math.ceil(total / limit) || 1;
 
-        const products = rows.map(p => ({
-            ...p,
-            id: p.product_id,
-        }));
+        const products = rows.map(p => {
+            let rawHasReturn;
+            if (p.has_return_policy !== null && p.has_return_policy !== undefined) {
+                rawHasReturn = (p.has_return_policy === 1 || p.has_return_policy === true || p.has_return_policy === '1' || p.has_return_policy === 'true');
+            } else if (p.subcat_has_return_policy !== null && p.subcat_has_return_policy !== undefined) {
+                rawHasReturn = (p.subcat_has_return_policy === 1 || p.subcat_has_return_policy === true || p.subcat_has_return_policy === '1' || p.subcat_has_return_policy === 'true');
+            } else {
+                rawHasReturn = true;
+            }
+
+            let rawHasReplacement;
+            if (p.is_replacement_available !== null && p.is_replacement_available !== undefined) {
+                rawHasReplacement = (p.is_replacement_available === 1 || p.is_replacement_available === true || p.is_replacement_available === '1' || p.is_replacement_available === 'true');
+            } else if (p.subcat_is_replacement_available !== null && p.subcat_is_replacement_available !== undefined) {
+                rawHasReplacement = (p.subcat_is_replacement_available === 1 || p.subcat_is_replacement_available === true || p.subcat_is_replacement_available === '1' || p.subcat_is_replacement_available === 'true');
+            } else {
+                rawHasReplacement = true;
+            }
+
+            const returnDays = parseInt(p.return_window_days || p.subcat_return_window_days || 7, 10);
+            const replacementDays = parseInt(p.replacement_window_days || p.subcat_replacement_window_days || 7, 10);
+
+            return {
+                ...p,
+                id: p.product_id,
+                product_id: p.product_id,
+                offer_id: p.offer_id,
+                has_return_policy: rawHasReturn ? 1 : 0,
+                return_window_days: returnDays,
+                is_replacement_available: rawHasReplacement ? 1 : 0,
+                replacement_window_days: replacementDays,
+                hasReturnPolicy: rawHasReturn,
+                isReplacementAvailable: rawHasReplacement,
+                warranty_type: p.warranty_type || 'no_warranty',
+                warranty_months: p.warranty_months || 0,
+                warranty_period: p.warranty_period || '',
+                warranty_covered_by: p.warranty_covered_by || '',
+            };
+        });
 
         res.status(200).json({
             status: true,
