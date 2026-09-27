@@ -149,13 +149,16 @@ exports.login = async (req, res) => {
 
 
 
-// 3. GET ACTIVE TASKS WITH ITEMS (Production Robust Version)
+// 3. GET ACTIVE TASKS WITH ITEMS & PICKUP LOCATIONS (Production Robust Version)
 exports.getMyOrders = async (req, res) => {
     const agentId = req.user.id;
     try {
         // Fetch Order and Customer/Address details
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.payment_status, o.order_status,
+                   IFNULL(o.assignment_status, 'ACCEPTED') as assignment_status,
+                   o.pickup_otp,
+                   IFNULL(o.pickup_status, 'PENDING') as pickup_status,
                    u.full_name as customer_name, u.mobile_number as customer_phone, sa.alternate_phone as customer_alt_phone,
                    sa.address_line_1, sa.address_line_2, sa.landmark, sa.city, sa.state, sa.pincode
             FROM orders o
@@ -171,29 +174,77 @@ exports.getMyOrders = async (req, res) => {
             order.is_paid = isPrepaid ? 1 : 0;
             order.collectable_amount = isPrepaid ? 0.00 : parseFloat(order.total_amount);
             order.payment_instruction = isPrepaid ? "PREPAID / WALLET (Do NOT collect cash)" : `COLLECT CASH: ₹${parseFloat(order.total_amount).toFixed(2)}`;
-            // FIX: Removed p.weight and p.unit. 
-            // Instead, we fetch attributes_snapshot which contains the weight/size user ordered.
+            
+            // Detailed items query with Pickup Status, OTP, and Warehouse/Merchant Location info
             const itemQuery = `
                 SELECT 
+                    oi.id as order_item_id,
                     oi.product_name, 
                     oi.quantity, 
-                    oi.attributes_snapshot, -- This contains the Weight/Size data
+                    oi.attributes_snapshot,
+                    IFNULL(oi.pickup_otp, o.pickup_otp) as item_pickup_otp,
+                    IFNULL(oi.pickup_status, 'PENDING') as item_pickup_status,
+                    oi.picked_up_at,
                     p.main_image_url,
-                    b.name as brand_name
+                    b.name as brand_name,
+                    sp.seller_id,
+                    s.sellerable_type,
+                    s.sellerable_id,
+                    CASE 
+                        WHEN s.sellerable_type = 'Merchant' AND m.business_name IS NOT NULL THEN m.business_name 
+                        ELSE 'Central Warehouse / Earn24 Hub' 
+                    END as pickup_location_name,
+                    CASE 
+                        WHEN s.sellerable_type = 'Merchant' AND m.business_address IS NOT NULL THEN m.business_address 
+                        ELSE 'Earn24 Central Hub / Warehouse' 
+                    END as pickup_address,
+                    CASE 
+                        WHEN s.sellerable_type = 'Merchant' AND m.phone_number IS NOT NULL THEN m.phone_number 
+                        ELSE 'Warehouse Manager' 
+                    END as pickup_contact_phone
                 FROM order_items oi
+                JOIN orders o ON oi.order_id = o.id
                 JOIN products p ON oi.product_id = p.id
                 LEFT JOIN brands b ON p.brand_id = b.id
+                LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+                LEFT JOIN sellers s ON sp.seller_id = s.id
+                LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
                 WHERE oi.order_id = ?`;
             
             const [items] = await db.query(itemQuery, [order.id]);
             
-            // Parse the JSON attributes for each item so the Frontend can loop through them
-            order.items = items.map(item => ({
+            // Map items and parse attributes
+            const processedItems = items.map(item => ({
                 ...item,
                 attributes: item.attributes_snapshot ? 
                     (typeof item.attributes_snapshot === 'string' ? JSON.parse(item.attributes_snapshot) : item.attributes_snapshot) 
                     : {}
             }));
+            order.items = processedItems;
+
+            // Group items into pickup locations for rider handshake guidance
+            const locationMap = {};
+            for (const item of processedItems) {
+                const locKey = item.seller_id ? `seller_${item.seller_id}` : 'warehouse_hub';
+                if (!locationMap[locKey]) {
+                    locationMap[locKey] = {
+                        key: locKey,
+                        seller_id: item.seller_id || null,
+                        location_name: item.pickup_location_name || 'Central Warehouse / Earn24 Hub',
+                        address: item.pickup_address || 'Earn24 Central Hub / Warehouse',
+                        phone: item.pickup_contact_phone || 'Warehouse Manager',
+                        pickup_otp: item.item_pickup_otp || order.pickup_otp,
+                        pickup_status: item.item_pickup_status || 'PENDING',
+                        items: []
+                    };
+                }
+                if (item.item_pickup_status === 'PENDING') {
+                    locationMap[locKey].pickup_status = 'PENDING';
+                }
+                locationMap[locKey].items.push(item);
+            }
+            order.pickup_locations = Object.values(locationMap);
+            order.all_picked_up = (order.pickup_status === 'PICKED_UP') || (order.pickup_locations.length > 0 && order.pickup_locations.every(l => l.pickup_status === 'PICKED_UP'));
         }
 
         res.json({ status: true, data: orders });
@@ -216,16 +267,43 @@ exports.getMyOrders = async (req, res) => {
 exports.startDelivery = async (req, res) => {
     const { orderId } = req.body;
     try {
-        const [check] = await db.query("SELECT order_status, cancellation_reason, cancelled_by FROM orders WHERE id = ?", [orderId]);
-        if (check[0] && check[0].order_status === 'CANCELLED') {
+        const [check] = await db.query(
+            "SELECT order_status, cancellation_reason, cancelled_by, IFNULL(assignment_status, 'ACCEPTED') as assignment_status, IFNULL(pickup_status, 'PENDING') as pickup_status FROM orders WHERE id = ?", 
+            [orderId]
+        );
+        if (!check[0]) {
+            return res.status(404).json({ status: false, message: "Order not found." });
+        }
+        if (check[0].order_status === 'CANCELLED') {
             return res.status(400).json({ 
                 status: false, 
                 isCancelled: true, 
                 message: `Order was CANCELLED by ${check[0].cancelled_by || 'Admin'}. Reason: ${check[0].cancellation_reason || 'N/A'}` 
             });
         }
+        if (check[0].assignment_status === 'PENDING_ACCEPTANCE') {
+            return res.status(400).json({
+                status: false,
+                message: "Please accept the delivery assignment first before starting trip."
+            });
+        }
+        if (check[0].pickup_status !== 'PICKED_UP') {
+            return res.status(400).json({
+                status: false,
+                message: "Warehouse / Store pickup verification pending! Please collect the products and have your Pickup OTP verified at counter before starting delivery trip."
+            });
+        }
 
         await db.query("UPDATE orders SET order_status = 'OUT_FOR_DELIVERY' WHERE id = ? AND order_status != 'CANCELLED'", [orderId]);
+        
+        const io = req.app.get('socketio');
+        if (io) {
+            io.to('admins').emit('order_status_updated', {
+                orderId: orderId,
+                status: 'OUT_FOR_DELIVERY'
+            });
+        }
+
         res.json({ status: true, message: "Delivery started. Customer notified." });
     } catch (e) { res.status(500).json({ status: false, message: e.message }); }
 };
@@ -645,7 +723,7 @@ exports.cancelAssignment = async (req, res) => {
     try {
         // We only allow cancellation if the order is not yet DELIVERED
         const [order] = await db.query(
-            "SELECT id FROM orders WHERE id = ? AND delivery_agent_id = ? AND order_status != 'DELIVERED'", 
+            "SELECT id, order_number FROM orders WHERE id = ? AND delivery_agent_id = ? AND order_status != 'DELIVERED'", 
             [orderId, agentId]
         );
 
@@ -653,18 +731,26 @@ exports.cancelAssignment = async (req, res) => {
             return res.status(404).json({ status: false, message: "Order not found or already delivered." });
         }
 
-        // Reset the agent and set status back to CONFIRMED so Admin can see it again
-        // ALSO: Save the reason so Admin knows WHY it was rejected
+        // Reset the agent and set status back to CONFIRMED so Admin can see it again in unassigned pool
+        // ALSO: Save the reason and clear pickup OTP
         const query = `
             UPDATE orders 
             SET delivery_agent_id = NULL, 
+                assignment_status = 'REJECTED',
                 order_status = 'CONFIRMED', 
                 delivery_otp = NULL,
+                pickup_otp = NULL,
+                pickup_status = 'PENDING',
                 rejection_reason = ?,
                 last_rejected_by_agent_id = ?
             WHERE id = ?
         `;
-        await db.query(query, [reason || 'No reason provided', agentId, orderId]);
+        await db.query(query, [reason || 'Rider rejected assignment', agentId, orderId]);
+
+        await db.query(
+            "UPDATE order_items SET pickup_otp = NULL, pickup_status = 'PENDING' WHERE order_id = ?",
+            [orderId]
+        ).catch(() => {});
 
         console.log(`Order ${orderId} rejected by agent ${agentId}. Reason: ${reason}`);
 
@@ -673,15 +759,73 @@ exports.cancelAssignment = async (req, res) => {
         if (io) {
             io.to('admins').emit('assignment_cancelled', {
                 orderId: orderId,
+                orderNumber: order[0].order_number,
                 agentId: agentId,
-                reason: reason || 'No reason provided'
+                reason: reason || 'Rider rejected assignment'
+            });
+            io.to('admins').emit('order_status_updated', {
+                orderId: orderId,
+                status: 'CONFIRMED',
+                assignmentStatus: 'REJECTED',
+                rejectionReason: reason || 'Rider rejected assignment'
             });
         }
 
-        res.json({ status: true, message: "Assignment cancelled. Order returned to Admin pool." });
+        res.json({ status: true, message: "Assignment rejected. Order returned to Admin pool for reassignment." });
     } catch (e) {
         res.status(500).json({ status: false, message: e.message });
     }
+};
+
+/**
+ * Agent Accepts Assigned Delivery Task
+ */
+exports.acceptAssignment = async (req, res) => {
+    const { orderId } = req.body;
+    const agentId = req.user.id;
+
+    try {
+        const [rows] = await db.query(
+            "SELECT id, order_number, order_status, assignment_status, pickup_otp FROM orders WHERE id = ? AND delivery_agent_id = ?",
+            [orderId, agentId]
+        );
+
+        if (!rows[0]) {
+            return res.status(404).json({ status: false, message: "Order not found or not assigned to you." });
+        }
+
+        await db.query(
+            "UPDATE orders SET assignment_status = 'ACCEPTED' WHERE id = ?",
+            [orderId]
+        );
+
+        const io = req.app.get('socketio');
+        if (io) {
+            io.to('admins').emit('assignment_accepted', {
+                orderId: orderId,
+                orderNumber: rows[0].order_number,
+                agentId: agentId,
+                message: `Delivery Agent accepted Order #${rows[0].order_number || orderId}`
+            });
+            io.to('admins').emit('order_status_updated', {
+                orderId: orderId,
+                status: 'SHIPPED',
+                assignmentStatus: 'ACCEPTED'
+            });
+        }
+
+        res.json({ 
+            status: true, 
+            message: "Assignment accepted successfully! Please proceed to warehouse/store to collect parcel.",
+            pickupOtp: rows[0].pickup_otp 
+        });
+    } catch (e) {
+        res.status(500).json({ status: false, message: e.message });
+    }
+};
+
+exports.rejectAssignment = async (req, res) => {
+    return exports.cancelAssignment(req, res);
 };
 
 
