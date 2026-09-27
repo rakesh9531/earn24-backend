@@ -638,7 +638,7 @@ exports.downloadInvoice = async (req, res) => {
                    COALESCE(m.business_address, s.address, 'Central Fulfillment Hub') as seller_address, 
                    COALESCE(m.gst_number, s.gstin, 'N/A') as seller_gstin
             FROM order_items oi
-            JOIN products p ON oi.product_id = p.id
+            LEFT JOIN products p ON oi.product_id = p.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
             LEFT JOIN sellers s ON sp.seller_id = s.id
@@ -703,13 +703,13 @@ exports.downloadShippingLabel = async (req, res) => {
 
         // Items and Merchant Info
         const itemsQuery = `
-            SELECT oi.*, p.name as catalog_name, p.weight, p.unit,
+            SELECT oi.*, p.name as catalog_name,
                    COALESCE(m.business_name, s.display_name, 'EARN24 Central Hub') as seller_name,
                    COALESCE(m.business_address, s.address, 'Earn24 Logistics Center') as seller_address,
                    COALESCE(m.phone_number, '') as seller_phone,
                    COALESCE(m.gst_number, s.gstin, '') as seller_gstin
             FROM order_items oi
-            JOIN products p ON oi.product_id = p.id
+            LEFT JOIN products p ON oi.product_id = p.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
             LEFT JOIN sellers s ON sp.seller_id = s.id
             LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
