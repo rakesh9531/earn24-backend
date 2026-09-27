@@ -527,8 +527,14 @@ exports.getMerchantOrders = async (req, res) => {
         const query = `
             SELECT o.id as order_id, o.order_number, o.order_status, o.payment_method, o.payment_status, o.subtotal, o.delivery_fee, o.total_amount, o.created_at,
                    o.delivered_at, o.cancelled_at, o.updated_at,
+                   o.delivery_agent_id,
+                   IFNULL(o.pickup_status, 'PENDING') as pickup_status,
+                   o.picked_up_at,
                    da.full_name as delivery_agent_name, da.phone_number as delivery_agent_phone,
-                   oi.id as item_id, IFNULL(oi.item_status, o.order_status) as item_status, oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price, oi.attributes_snapshot, p.main_image_url,
+                   oi.id as item_id, IFNULL(oi.item_status, o.order_status) as item_status, 
+                   IFNULL(oi.pickup_status, 'PENDING') as item_pickup_status,
+                   oi.picked_up_at as item_picked_up_at,
+                   oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price, oi.attributes_snapshot, p.main_image_url,
                    u.full_name as customer_name, IFNULL(u.mobile_number, '') as customer_phone,
                    ua.address_line_1, ua.address_line_2, ua.city, ua.state, ua.pincode, ua.landmark,
                    parent_o.id as parent_order_id, parent_o.order_number as parent_order_number,
@@ -578,6 +584,8 @@ exports.getMerchantOrders = async (req, res) => {
                     updated_at: r.updated_at,
                     customer_name: r.customer_name,
                     customer_phone: r.customer_phone,
+                    pickup_status: r.pickup_status || 'PENDING',
+                    picked_up_at: r.picked_up_at,
                     shipping_address: {
                         address_line_1: r.address_line_1,
                         address_line_2: r.address_line_2,
@@ -587,6 +595,7 @@ exports.getMerchantOrders = async (req, res) => {
                         landmark: r.landmark
                     },
                     delivery_agent: r.delivery_agent_name ? {
+                        id: r.delivery_agent_id,
                         name: r.delivery_agent_name,
                         phone: r.delivery_agent_phone
                     } : null,
@@ -954,5 +963,119 @@ exports.changeMerchantPassword = async (req, res) => {
     } catch (e) {
         console.error("Error changing merchant password:", e);
         res.status(500).json({ status: false, message: e.message || "Failed to change password." });
+    }
+};
+
+/**
+ * Verify Delivery Agent Pickup OTP (Merchant Handshake)
+ */
+exports.verifyMerchantPickupOtp = async (req, res) => {
+    const merchantId = req.user.id;
+    const { orderId } = req.params;
+    const { otp } = req.body;
+
+    if (!otp) {
+        return res.status(400).json({ status: false, message: "Pickup OTP is required." });
+    }
+
+    try {
+        // 1. Fetch order and check if order belongs to or contains items from this merchant
+        const [orderRows] = await db.query(
+            "SELECT id, order_number, order_status, delivery_agent_id, pickup_otp, pickup_status FROM orders WHERE id = ?",
+            [orderId]
+        );
+        if (orderRows.length === 0) {
+            return res.status(404).json({ status: false, message: "Order not found." });
+        }
+        const order = orderRows[0];
+
+        // 2. Fetch items for this merchant in this order
+        const [itemRows] = await db.query(
+            `SELECT oi.id, oi.seller_product_id, oi.pickup_otp, oi.pickup_status, sp.seller_id
+             FROM order_items oi
+             JOIN seller_products sp ON oi.seller_product_id = sp.id
+             JOIN sellers s ON sp.seller_id = s.id
+             WHERE oi.order_id = ? AND s.sellerable_type = 'Merchant' AND s.sellerable_id = ?`,
+            [orderId, merchantId]
+        );
+
+        if (itemRows.length === 0) {
+            return res.status(403).json({ status: false, message: "You are not authorized to verify pickup for this order." });
+        }
+
+        const enteredOtp = otp.toString().trim();
+        const masterOtp = (order.pickup_otp || '').toString().trim();
+
+        // Check if master OTP matches or any item OTP matches
+        const isMasterMatched = (masterOtp !== '' && masterOtp === enteredOtp);
+        const matchingItems = itemRows.filter(i => (i.pickup_otp || '').toString().trim() === enteredOtp);
+
+        if (!isMasterMatched && matchingItems.length === 0) {
+            return res.status(400).json({
+                status: false,
+                message: "Invalid Pickup OTP! The code entered does not match the delivery agent's pickup OTP."
+            });
+        }
+
+        // Mark items for this merchant as PICKED_UP
+        const itemIdsToUpdate = isMasterMatched ? itemRows.map(i => i.id) : matchingItems.map(i => i.id);
+        await db.query(
+            "UPDATE order_items SET pickup_status = 'PICKED_UP', picked_up_at = NOW() WHERE id IN (?)",
+            [itemIdsToUpdate]
+        );
+
+        // Check if any items across the entire order are still pending pickup
+        const [remaining] = await db.query(
+            "SELECT COUNT(*) as count FROM order_items WHERE order_id = ? AND IFNULL(pickup_status, 'PENDING') != 'PICKED_UP'",
+            [orderId]
+        );
+        const allPickedUp = (remaining[0]?.count || 0) === 0;
+
+        if (allPickedUp) {
+            await db.query(
+                "UPDATE orders SET pickup_status = 'PICKED_UP', picked_up_at = NOW(), order_status = 'SHIPPED' WHERE id = ?",
+                [orderId]
+            );
+        } else {
+            await db.query(
+                "UPDATE orders SET picked_up_at = COALESCE(picked_up_at, NOW()) WHERE id = ?",
+                [orderId]
+            );
+        }
+
+        // Emit real-time notification
+        const io = req.app.get('socketio');
+        if (io) {
+            if (order.delivery_agent_id) {
+                io.to(`agent_${order.delivery_agent_id}`).emit('order_pickup_verified', {
+                    orderId: order.id,
+                    orderNumber: order.order_number,
+                    allPickedUp,
+                    message: allPickedUp
+                        ? `Merchant Handover Verified! All items collected for Order #${order.order_number}. You can now start the delivery trip.`
+                        : `Merchant items verified for Order #${order.order_number}.`
+                });
+            }
+            io.to('admins').emit('order_pickup_verified', {
+                orderId: order.id,
+                orderNumber: order.order_number,
+                allPickedUp
+            });
+            io.to(`merchant_${merchantId}`).emit('order_pickup_verified', {
+                orderId: order.id,
+                orderNumber: order.order_number,
+                allPickedUp
+            });
+        }
+
+        return res.status(200).json({
+            status: true,
+            message: "Handover Verified Successfully! Pickup OTP confirmed with delivery agent.",
+            allPickedUp
+        });
+
+    } catch (error) {
+        console.error("Error verifying merchant pickup OTP:", error);
+        return res.status(500).json({ status: false, message: "An error occurred while verifying pickup OTP." });
     }
 };
