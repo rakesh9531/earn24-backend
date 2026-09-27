@@ -22,10 +22,19 @@ exports.getOrdersByStatus = async (req, res) => {
             params = [status];
         }
 
+        const [cols] = await db.query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'orders'"
+        ).catch(() => [[]]);
+        const colSet = new Set((cols || []).map(c => c.COLUMN_NAME));
+
+        const trackingCol = colSet.has('tracking_number') ? 'o.tracking_number' : 'NULL as tracking_number';
+        const courierCol = colSet.has('courier_name') ? 'o.courier_name' : 'NULL as courier_name';
+        const dispatchCol = colSet.has('dispatch_mode') ? 'o.dispatch_mode' : "'LOCAL_RIDER' as dispatch_mode";
+
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.order_status, o.created_at, o.payment_method, o.payment_status,
                    o.assignment_status, o.pickup_otp, o.pickup_status,
-                   o.tracking_number, o.courier_name, o.dispatch_mode,
+                   ${trackingCol}, ${courierCol}, ${dispatchCol},
                    u.full_name as customer_name, u.mobile_number as customer_phone,
                    o.delivery_agent_id, o.rejection_reason, o.last_rejected_by_agent_id,
                    da.full_name as rejected_by_agent_name,

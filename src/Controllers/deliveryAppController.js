@@ -10,6 +10,8 @@ const ensureOrderCourierColumns = async () => {
     try {
         await db.query("ALTER TABLE orders ADD COLUMN dispatch_mode ENUM('LOCAL_RIDER', 'SHIPROCKET_COURIER') DEFAULT 'LOCAL_RIDER'").catch(() => {});
         await db.query("ALTER TABLE orders ADD COLUMN courier_name VARCHAR(100) NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN tracking_number VARCHAR(100) NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN assigned_at DATETIME NULL").catch(() => {});
     } catch (e) {}
 };
 ensureOrderCourierColumns().catch(() => {});
