@@ -983,14 +983,19 @@ exports.dispatchReplacementUnit = async (req, res) => {
         const isLocal = (mode === 'LOCAL' || (!mode && delivery_agent_id));
 
         if (isLocal && delivery_agent_id) {
-            // Assign local delivery boy to child order
+            // Generate a 4-digit Pickup OTP for warehouse handover verification
+            const autoPickupOtp = String(Math.floor(1000 + Math.random() * 9000));
+
+            // Assign local delivery boy to child order + set pickup_otp
             if (repOrderId) {
                 await conn.query(`
                     UPDATE orders 
                     SET delivery_agent_id = ?, 
-                        order_status = 'CONFIRMED'
+                        order_status = 'CONFIRMED',
+                        pickup_otp = ?,
+                        pickup_status = 'PENDING'
                     WHERE id = ?
-                `, [delivery_agent_id, repOrderId]);
+                `, [delivery_agent_id, autoPickupOtp, repOrderId]);
             }
 
             await conn.query(`
