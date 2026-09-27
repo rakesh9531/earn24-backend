@@ -23,6 +23,7 @@ router.post('/reject-assignment', auth, deliveryAppController.rejectAssignment);
 router.post('/cancel-assignment', auth, deliveryAppController.cancelAssignment);
 
 router.get('/history', auth, deliveryAppController.getHistory);
+router.get('/orders/:orderId/journey', auth, deliveryAppController.getOrderJourneyDetails);
 router.get('/earnings-summary', auth, deliveryAppController.getEarningsSummary);
 
 // Settlement Routes for Delivery Agent

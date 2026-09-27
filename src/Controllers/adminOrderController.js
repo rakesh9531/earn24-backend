@@ -121,7 +121,8 @@ exports.assignOrderForDelivery = async (req, res) => {
                 assignment_status = 'PENDING_ACCEPTANCE',
                 pickup_otp = ?,
                 pickup_status = 'PENDING',
-                rejection_reason = NULL
+                rejection_reason = NULL,
+                assigned_at = NOW()
             WHERE id = ?
         `;
         const [result] = await db.query(query, [deliveryAgentId, masterPickupOtp, orderId]);

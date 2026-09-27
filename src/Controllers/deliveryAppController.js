@@ -1590,3 +1590,321 @@ exports.requestSettlement = async (req, res) => {
         res.status(500).json({ status: false, message: e.message });
     }
 };
+
+/**
+ * 7. GET ORDER FULL LIFECYCLE & JOURNEY STATUS (Forward, Return, Replacement)
+ * Shows exact date/times for:
+ * - New order assigned to delivery boy (Date & Time)
+ * - Delivery boy picked up from warehouse/merchant (Date & Time)
+ * - Delivery boy delivered to customer (Date & Time)
+ * - Return assigned, doorstep picked up, and warehouse handed over (Date & Time)
+ * - Replacement assigned, defective picked, hub handed over, new replacement picked up & delivered (Date & Time)
+ */
+exports.getOrderJourneyDetails = async (req, res) => {
+    const agentId = req.user.id;
+    const { orderId } = req.params;
+
+    try {
+        // 1. Fetch main order
+        const [orderRows] = await db.query(`
+            SELECT 
+                o.id, o.order_number, o.order_status, o.payment_method, o.payment_status,
+                o.total_amount, o.subtotal, o.delivery_fee,
+                o.created_at, o.assigned_at, o.picked_up_at, o.delivered_at,
+                o.cancelled_at, o.cancellation_reason, o.cancelled_by,
+                o.pickup_status, o.pickup_otp,
+                u.full_name as customer_name, u.mobile_number as customer_phone,
+                CONCAT_WS(', ', ua.address_line_1, ua.address_line_2, ua.landmark, ua.city, ua.state, ua.pincode) as delivery_address
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            LEFT JOIN user_addresses ua ON o.shipping_address_id = ua.id
+            WHERE (o.id = ? OR o.order_number = ?) AND (o.delivery_agent_id = ? OR o.delivery_agent_id IS NOT NULL)
+        `, [orderId, orderId, agentId]);
+
+        if (orderRows.length === 0) {
+            return res.status(404).json({ status: false, message: 'Order journey not found.' });
+        }
+        const order = orderRows[0];
+
+        // 2. Fetch items for this order with pickup locations
+        const [items] = await db.query(`
+            SELECT 
+                oi.id as order_item_id, oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price,
+                oi.item_status, oi.pickup_status, oi.picked_up_at, oi.attributes_snapshot,
+                p.main_image_url, b.name as brand_name,
+                CASE 
+                    WHEN s.sellerable_type = 'Merchant' AND m.business_name IS NOT NULL THEN m.business_name 
+                    ELSE 'Central Warehouse / Earn24 Hub' 
+                END as pickup_location_name,
+                CASE 
+                    WHEN s.sellerable_type = 'Merchant' AND m.business_address IS NOT NULL THEN m.business_address 
+                    ELSE 'Earn24 Central Hub / Warehouse' 
+                END as pickup_address,
+                CASE 
+                    WHEN s.sellerable_type = 'Merchant' AND m.phone_number IS NOT NULL THEN m.phone_number 
+                    ELSE 'Warehouse Manager' 
+                END as pickup_contact_phone
+            FROM order_items oi
+            JOIN products p ON oi.product_id = p.id
+            LEFT JOIN brands b ON p.brand_id = b.id
+            LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN sellers s ON sp.seller_id = s.id
+            LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+            WHERE oi.order_id = ?
+        `, [order.id]);
+
+        // 3. Check for return / replacement requests
+        const [returnRows] = await db.query(`
+            SELECT 
+                r.id as request_id, r.order_id, r.order_item_id, 
+                COALESCE(r.request_type, r.return_type, 'RETURN') as request_type,
+                r.status as request_status, r.reason,
+                r.assigned_at, r.created_at, r.picked_up_at, r.received_at_hub_at,
+                r.replacement_order_id, r.refund_amount, r.refund_status
+            FROM order_returns r
+            WHERE r.order_id = ? OR r.replacement_order_id = ? OR r.replacement_order_id = ?
+            ORDER BY r.id DESC
+        `, [order.id, order.id, order.order_number]);
+
+        // 4. Check if this order is itself a replacement order
+        let parentOrder = null;
+        const isReplacementOrder = (order.order_number && order.order_number.startsWith('R-')) || returnRows.some(r => String(r.replacement_order_id) === String(order.id) || String(r.replacement_order_id) === String(order.order_number));
+
+        if (isReplacementOrder) {
+            const linkedRet = returnRows.find(r => String(r.replacement_order_id) === String(order.id) || String(r.replacement_order_id) === String(order.order_number));
+            if (linkedRet && linkedRet.order_id) {
+                const [parents] = await db.query(
+                    `SELECT id, order_number, created_at, delivered_at FROM orders WHERE id = ?`, 
+                    [linkedRet.order_id]
+                );
+                if (parents.length > 0) parentOrder = parents[0];
+            }
+        }
+
+        // 5. Construct Visual Milestones Array
+        const milestones = [];
+        let journeyType = 'FORWARD';
+
+        if (isReplacementOrder) {
+            journeyType = 'REPLACEMENT';
+
+            milestones.push({
+                stage: 'ORIGINAL_ORDER',
+                badge: 'ORIGINAL PURCHASE',
+                title: `Original Order Placed (#${parentOrder?.order_number || 'Parent'})`,
+                timestamp: parentOrder?.created_at || null,
+                description: 'Customer originally purchased the product',
+                status: 'COMPLETED',
+                icon: 'bi-bag-check-fill'
+            });
+
+            const activeRet = returnRows[0];
+            milestones.push({
+                stage: 'REPLACEMENT_ASSIGNED',
+                badge: 'PICKUP ASSIGNED',
+                title: 'Defective Item Pickup Assigned to Rider',
+                timestamp: activeRet?.assigned_at || activeRet?.created_at || null,
+                description: activeRet?.reason ? `Defect Reason: "${activeRet.reason}"` : 'Assigned to collect defective unit from customer',
+                status: (activeRet?.assigned_at || activeRet?.created_at) ? 'COMPLETED' : 'PENDING',
+                icon: 'bi-arrow-left-right'
+            });
+
+            milestones.push({
+                stage: 'DEFECTIVE_COLLECTED',
+                badge: 'DOORSTEP QC',
+                title: 'Defective Product Collected from Customer',
+                timestamp: activeRet?.picked_up_at || null,
+                description: activeRet?.picked_up_at ? 'Defective item inspected & collected at customer doorstep' : 'Pending doorstep pickup',
+                status: activeRet?.picked_up_at ? 'COMPLETED' : 'PENDING',
+                icon: 'bi-box-seam'
+            });
+
+            milestones.push({
+                stage: 'DEFECTIVE_HUB_HANDOVER',
+                badge: 'HUB DEPOSIT',
+                title: 'Defective Product Deposited at Warehouse / Merchant',
+                timestamp: activeRet?.received_at_hub_at || null,
+                description: activeRet?.received_at_hub_at ? 'Defective item safely handed over at warehouse' : 'Pending warehouse deposit',
+                status: activeRet?.received_at_hub_at ? 'COMPLETED' : 'PENDING',
+                icon: 'bi-building-check'
+            });
+
+            milestones.push({
+                stage: 'REPLACEMENT_ORDER_ASSIGNED',
+                badge: 'REPLACEMENT ASSIGNED',
+                title: `New Replacement Order Assigned (#${order.order_number})`,
+                timestamp: order.assigned_at || order.created_at,
+                description: 'Fresh replacement unit assigned to you for delivery',
+                status: 'COMPLETED',
+                icon: 'bi-send-check'
+            });
+
+            milestones.push({
+                stage: 'REPLACEMENT_PICKED_UP',
+                badge: 'WAREHOUSE PICKUP',
+                title: 'Replacement Item Picked Up from Warehouse / Store',
+                timestamp: order.picked_up_at || null,
+                description: order.picked_up_at ? `Collected with OTP from ${items[0]?.pickup_location_name || 'Warehouse'}` : 'Awaiting OTP pickup handshake',
+                status: order.picked_up_at ? 'COMPLETED' : 'PENDING',
+                icon: 'bi-shield-check'
+            });
+
+            milestones.push({
+                stage: 'REPLACEMENT_DELIVERED',
+                badge: 'DOORSTEP DELIVERED',
+                title: 'Replacement Order Delivered to Customer',
+                timestamp: order.delivered_at || null,
+                description: order.delivered_at ? `Customer received replacement at ${order.delivery_address || 'doorstep'}` : 'Out for customer doorstep delivery',
+                status: order.order_status === 'DELIVERED' ? 'COMPLETED' : 'PENDING',
+                icon: 'bi-house-check-fill'
+            });
+
+        } else if (returnRows.length > 0 && returnRows[0].request_type === 'RETURN') {
+            journeyType = 'RETURN';
+            const ret = returnRows[0];
+
+            milestones.push({
+                stage: 'ORDER_PLACED',
+                badge: 'PURCHASE',
+                title: `Order Placed (#${order.order_number})`,
+                timestamp: order.created_at,
+                description: 'Customer ordered products online',
+                status: 'COMPLETED',
+                icon: 'bi-cart-check-fill'
+            });
+
+            milestones.push({
+                stage: 'ORDER_ASSIGNED',
+                badge: 'FORWARD ASSIGNED',
+                title: 'Order Assigned to Delivery Boy',
+                timestamp: order.assigned_at || order.created_at,
+                description: 'Assigned to you for warehouse pickup & customer delivery',
+                status: 'COMPLETED',
+                icon: 'bi-person-check-fill'
+            });
+
+            milestones.push({
+                stage: 'WAREHOUSE_PICKUP',
+                badge: 'HUB PICKUP',
+                title: 'Picked Up from Warehouse / Store',
+                timestamp: order.picked_up_at,
+                description: `Handover verified with OTP at ${items[0]?.pickup_location_name || 'Warehouse'}`,
+                status: order.picked_up_at ? 'COMPLETED' : 'PENDING',
+                icon: 'bi-box-seam'
+            });
+
+            milestones.push({
+                stage: 'DELIVERED',
+                badge: 'DELIVERED',
+                title: 'Product Delivered to Customer',
+                timestamp: order.delivered_at,
+                description: `Delivered to ${order.customer_name}`,
+                status: 'COMPLETED',
+                icon: 'bi-house-check-fill'
+            });
+
+            milestones.push({
+                stage: 'RETURN_ASSIGNED',
+                badge: 'RETURN ASSIGNED',
+                title: 'Customer Return Pickup Assigned to Rider',
+                timestamp: ret.assigned_at || ret.created_at,
+                description: ret.reason ? `Return Reason: "${ret.reason}"` : 'Assigned to collect return package from customer',
+                status: 'COMPLETED',
+                icon: 'bi-arrow-return-left'
+            });
+
+            milestones.push({
+                stage: 'RETURN_PICKED_UP',
+                badge: 'RETURN COLLECTED',
+                title: 'Return Picked Up from Customer Doorstep',
+                timestamp: ret.picked_up_at,
+                description: ret.picked_up_at ? 'Collected from customer with inspection' : 'Pending customer doorstep pickup',
+                status: ret.picked_up_at ? 'COMPLETED' : 'PENDING',
+                icon: 'bi-qr-code-scan'
+            });
+
+            milestones.push({
+                stage: 'RETURN_HUB_HANDOVER',
+                badge: 'HUB HANDOVER',
+                title: 'Returned Item Deposited at Warehouse / Merchant',
+                timestamp: ret.received_at_hub_at,
+                description: ret.received_at_hub_at ? 'Deposited at Hub/Merchant warehouse' : 'Pending warehouse deposit',
+                status: ret.received_at_hub_at ? 'COMPLETED' : 'PENDING',
+                icon: 'bi-building-check'
+            });
+
+        } else {
+            journeyType = 'FORWARD';
+
+            milestones.push({
+                stage: 'ORDER_PLACED',
+                badge: 'ORDER PLACED',
+                title: `Order Placed (#${order.order_number})`,
+                timestamp: order.created_at,
+                description: 'Customer confirmed purchase',
+                status: 'COMPLETED',
+                icon: 'bi-bag-check-fill'
+            });
+
+            milestones.push({
+                stage: 'ORDER_ASSIGNED',
+                badge: 'ASSIGNED',
+                title: 'Order Assigned to Delivery Boy',
+                timestamp: order.assigned_at || order.created_at,
+                description: 'Assigned to you for warehouse collection and doorstep delivery',
+                status: 'COMPLETED',
+                icon: 'bi-person-check-fill'
+            });
+
+            milestones.push({
+                stage: 'WAREHOUSE_PICKUP',
+                badge: 'HUB PICKUP',
+                title: 'Picked Up from Warehouse / Merchant Hub',
+                timestamp: order.picked_up_at,
+                description: order.picked_up_at
+                    ? `OTP verified & parcel collected from ${items[0]?.pickup_location_name || 'Central Hub'}`
+                    : `Go to ${items[0]?.pickup_location_name || 'Warehouse'} and share 4-digit Pickup OTP to collect`,
+                status: order.picked_up_at ? 'COMPLETED' : 'PENDING',
+                icon: 'bi-shield-check'
+            });
+
+            const isOut = order.order_status === 'SHIPPED' || order.order_status === 'DELIVERED';
+            milestones.push({
+                stage: 'OUT_FOR_DELIVERY',
+                badge: 'ON THE WAY',
+                title: 'Out for Doorstep Delivery',
+                timestamp: order.picked_up_at,
+                description: isOut ? 'Delivery trip started, heading towards customer doorstep' : 'Awaiting trip start',
+                status: isOut ? 'COMPLETED' : 'PENDING',
+                icon: 'bi-bicycle'
+            });
+
+            const isDelivered = order.order_status === 'DELIVERED';
+            milestones.push({
+                stage: 'DELIVERED',
+                badge: 'DELIVERED',
+                title: 'Delivered to Customer',
+                timestamp: order.delivered_at,
+                description: isDelivered 
+                    ? `Customer verified OTP & parcel handed over to ${order.customer_name}` 
+                    : `Pending delivery to ${order.customer_name}`,
+                status: isDelivered ? 'COMPLETED' : 'PENDING',
+                icon: 'bi-house-check-fill'
+            });
+        }
+
+        res.json({
+            status: true,
+            journeyType,
+            order,
+            items,
+            linkedReturns: returnRows,
+            parentOrder,
+            milestones
+        });
+
+    } catch (error) {
+        console.error("getOrderJourneyDetails error:", error);
+        res.status(500).json({ status: false, message: error.message });
+    }
+};
