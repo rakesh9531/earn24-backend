@@ -214,16 +214,70 @@ exports.getMerchantProfile = async (req, res) => {
     const merchantId = req.user.id;
     try {
         const [rows] = await db.query(
-            'SELECT id, business_name, owner_name, email, phone_number, gst_number, pan_number, business_address, pincode, admin_approval_status, is_active, created_at FROM merchants WHERE id = ?',
+            `SELECT id, business_name, owner_name, email, phone_number, gst_number, pan_number, 
+                    business_address, pincode, IFNULL(admin_approval_status, 'APPROVED') as admin_approval_status, 
+                    is_active, created_at, pan_card_doc, aadhaar_card_doc, gst_cert_doc, bank_passbook_doc 
+             FROM merchants WHERE id = ?`,
             [merchantId]
         );
         if (rows.length === 0) {
             return res.status(404).json({ status: false, message: 'Merchant profile not found.' });
         }
-        res.status(200).json({ status: true, data: rows[0] });
+        const profile = rows[0];
+
+        // Linked bank details
+        try {
+            const [bankRows] = await db.query(
+                'SELECT account_holder_name, account_number, ifsc_code, bank_name, branch_name, account_type FROM merchant_bank_details WHERE merchant_id = ? ORDER BY id DESC LIMIT 1',
+                [merchantId]
+            );
+            profile.bank_details = bankRows.length > 0 ? bankRows[0] : null;
+        } catch (e) {
+            profile.bank_details = null;
+        }
+
+        // Live stats for profile summary
+        try {
+            const [stats] = await db.query(`
+                SELECT 
+                    (SELECT COUNT(*) FROM seller_products sp JOIN sellers s ON sp.seller_id = s.id WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant' AND sp.is_active = 1) as total_products,
+                    (SELECT COUNT(DISTINCT o.id) FROM orders o JOIN order_items oi ON o.id = oi.order_id JOIN seller_products sp ON oi.seller_product_id = sp.id JOIN sellers s ON sp.seller_id = s.id WHERE s.sellerable_id = ? AND s.sellerable_type = 'Merchant') as total_orders
+            `, [merchantId, merchantId]);
+            profile.total_products = stats[0]?.total_products || 0;
+            profile.total_orders = stats[0]?.total_orders || 0;
+        } catch (e) {
+            profile.total_products = 0;
+            profile.total_orders = 0;
+        }
+
+        res.status(200).json({ status: true, data: profile });
     } catch (error) {
         console.error("Error fetching merchant profile:", error);
         res.status(500).json({ status: false, message: 'An error occurred.' });
+    }
+};
+
+/**
+ * Update Merchant Profile Info
+ */
+exports.updateMerchantProfile = async (req, res) => {
+    const merchantId = req.user.id;
+    const { business_name, owner_name, phone_number, business_address, pincode } = req.body;
+    try {
+        await db.query(
+            `UPDATE merchants 
+             SET business_name = COALESCE(?, business_name),
+                 owner_name = COALESCE(?, owner_name),
+                 phone_number = COALESCE(?, phone_number),
+                 business_address = COALESCE(?, business_address),
+                 pincode = COALESCE(?, pincode)
+             WHERE id = ?`,
+            [business_name || null, owner_name || null, phone_number || null, business_address || null, pincode || null, merchantId]
+        );
+        res.status(200).json({ status: true, message: 'Merchant profile updated successfully!' });
+    } catch (error) {
+        console.error("Error updating merchant profile:", error);
+        res.status(500).json({ status: false, message: 'Could not update profile.' });
     }
 };
 
