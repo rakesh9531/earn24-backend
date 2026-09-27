@@ -1079,3 +1079,19 @@ exports.verifyMerchantPickupOtp = async (req, res) => {
         return res.status(500).json({ status: false, message: "An error occurred while verifying pickup OTP." });
     }
 };
+
+/**
+ * GET /api/merchant/delivery-agents
+ * Fetches active delivery agents for merchant to assign pickups
+ */
+exports.getDeliveryAgents = async (req, res) => {
+    try {
+        const [rows] = await db.query(
+            'SELECT id, full_name, phone_number, is_active FROM delivery_agents WHERE is_active = 1 ORDER BY full_name ASC'
+        );
+        res.status(200).json({ status: true, data: rows });
+    } catch (error) {
+        console.error("Error fetching delivery agents for merchant:", error);
+        res.status(500).json({ status: false, message: "Could not fetch delivery agents." });
+    }
+};
