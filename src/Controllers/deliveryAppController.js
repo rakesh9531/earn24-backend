@@ -5,6 +5,15 @@ const smsService = require('../utils/smsHelper'); // Import the SMS utility
 const commissionService = require('../Services/commissionService');
 const distributionService = require('../Services/distributionService');
 
+// Self-healing columns for courier vs local rider dispatching
+const ensureOrderCourierColumns = async () => {
+    try {
+        await db.query("ALTER TABLE orders ADD COLUMN dispatch_mode ENUM('LOCAL_RIDER', 'SHIPROCKET_COURIER') DEFAULT 'LOCAL_RIDER'").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN courier_name VARCHAR(100) NULL").catch(() => {});
+    } catch (e) {}
+};
+ensureOrderCourierColumns().catch(() => {});
+
 /**
  * 1. AGENT LOGIN (Existing)
  */
@@ -986,25 +995,174 @@ exports.toggleDutyStatus = async (req, res) => {
 };
 
 /**
- * 10. SMART AUTO-DISPATCH ALGORITHM
- * 1. Checks Local Delivery Agents matching shipping pincode.
- * 2. If no local rider covers pincode -> Routes to Shiprocket Pan-India Courier (if Admin Toggle is ON).
+ * 10. SMART AUTO-DISPATCH ENGINE (Zero-Human-Touch Order Routing)
+ * 1. HYPERLOCAL CHECK: Compares Merchant Pincode/Location vs Customer Shipping Pincode.
+ *    - Same City/District (e.g. Dhanbad Merchant -> Dhanbad Customer): Routes to LOCAL DELIVERY BOY.
+ *    - Cross-City / Inter-State (e.g. Delhi Merchant -> Dhanbad Customer): Local Boy is SKIPPED (avoids impossible long-distance pickup).
+ *      Directly routed to Pan-India Courier Partner (Shiprocket / Delhivery).
+ * 2. Fallback: If Local Order has no online local riders, routes to Courier Partner if enabled.
  */
 exports.autoDispatchOrder = async (orderId) => {
     try {
-        // Fetch order shipping pincode & items
+        // Fetch order details, customer shipping address & user info
         const [[order]] = await db.query(
-            `SELECT o.id, o.order_number, o.total_amount, sa.pincode, sa.address_line_1, sa.city, sa.state 
+            `SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.payment_status,
+                    sa.pincode, sa.address_line_1, sa.city, sa.state,
+                    u.full_name as customer_name, u.mobile_number as customer_phone
              FROM orders o 
-             JOIN user_addresses sa ON o.shipping_address_id = sa.id 
+             LEFT JOIN user_addresses sa ON o.shipping_address_id = sa.id 
+             LEFT JOIN users u ON o.user_id = u.id
              WHERE o.id = ?`,
             [orderId]
         );
 
         if (!order) return { success: false, message: 'Order not found' };
-        const shippingPincode = String(order.pincode).trim();
+        const shippingPincode = String(order.pincode || '').trim();
+        const shippingCity = String(order.city || '').trim().toLowerCase();
 
-        // 1. Search for Local Online Delivery Agents matching this exact pincode
+        // Fetch Order Items and their Merchant / Fulfillment Hub locations
+        const [items] = await db.query(
+            `SELECT oi.id as order_item_id, oi.product_id, oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price,
+                    p.weight, p.name as catalog_name,
+                    sp.seller_id,
+                    s.sellerable_type, s.sellerable_id,
+                    m.id as merchant_id, m.business_name, m.pincode as merchant_pincode,
+                    m.business_address, m.phone_number as merchant_phone
+             FROM order_items oi
+             JOIN products p ON oi.product_id = p.id
+             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+             LEFT JOIN sellers s ON sp.seller_id = s.id
+             LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+             WHERE oi.order_id = ?`,
+            [orderId]
+        );
+
+        // Analyze if the order is Outstation / Inter-city
+        let isInterCityOutstation = false;
+        let outstationReason = '';
+        let primaryPickupMerchant = null;
+
+        for (const item of items) {
+            if (item.sellerable_type === 'Merchant') {
+                if (!primaryPickupMerchant) primaryPickupMerchant = item;
+
+                const merchantPincode = String(item.merchant_pincode || '').trim();
+                const merchantAddress = String(item.business_address || '').toLowerCase();
+
+                const cleanShippingPin = shippingPincode.replace(/\D/g, '');
+                const cleanMerchantPin = merchantPincode.replace(/\D/g, '');
+
+                if (cleanMerchantPin && cleanShippingPin) {
+                    // Check first 2 digits (State/Postal Circle)
+                    const isSameState = cleanMerchantPin.slice(0, 2) === cleanShippingPin.slice(0, 2);
+                    // Check first 3 digits (Sorting District / Metro Area)
+                    const isSameDistrict = cleanMerchantPin.slice(0, 3) === cleanShippingPin.slice(0, 3);
+                    // Check if city name matches in address
+                    const isCityMatch = shippingCity && shippingCity.length > 2 && merchantAddress.includes(shippingCity);
+
+                    if (!isSameState && !isCityMatch) {
+                        isInterCityOutstation = true;
+                        outstationReason = `Merchant (${item.business_name || 'Store'}) is in Pincode ${merchantPincode} while Customer is in Pincode ${shippingPincode} (Inter-state/Inter-city)`;
+                        break;
+                    } else if (!isSameDistrict && !isCityMatch) {
+                        isInterCityOutstation = true;
+                        outstationReason = `Merchant (${item.business_name || 'Store'}) is in Pincode ${merchantPincode} while Customer is in Pincode ${shippingPincode} (Inter-district distance too large for bike rider)`;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // =========================================================================
+        // CASE A: OUTSTATION / INTER-CITY (e.g. Delhi Merchant -> Dhanbad Customer)
+        // Never assign local delivery boy! Route directly to Courier Partner.
+        // =========================================================================
+        if (isInterCityOutstation) {
+            console.log(`[Auto-Dispatch] 🚚 OUTSTATION / INTER-CITY detected for Order #${order.order_number}: ${outstationReason}`);
+            console.log(`[Auto-Dispatch] 🚫 Skipped Local Delivery Boy (Rider cannot travel across cities for pickup).`);
+            console.log(`[Auto-Dispatch] 📦 Dispatching to Pan-India Courier Partner (Shiprocket)...`);
+
+            const [[settingsRow]] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key = 'is_shiprocket_active'").catch(() => [[null]]);
+            const isShiprocketActive = settingsRow ? parseInt(settingsRow.setting_value, 10) === 1 : true;
+
+            if (isShiprocketActive) {
+                const shiprocketService = require('../Services/shiprocketService');
+
+                const shiprocketItems = items.map(it => ({
+                    name: it.product_name || "Catalog Product",
+                    sku: `PROD-${it.product_id}`,
+                    units: it.quantity || 1,
+                    selling_price: parseFloat(it.price_per_unit || it.total_price || 0)
+                }));
+
+                const isPrepaid = (order.payment_method === 'WALLET' || order.payment_method === 'ONLINE' || order.payment_method === 'PAYU' || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID');
+                const pickupLocationName = primaryPickupMerchant?.business_name
+                    ? String(primaryPickupMerchant.business_name).substring(0, 36)
+                    : "Primary";
+
+                const shipmentResult = await shiprocketService.createForwardOrder({
+                    order_id: order.order_number,
+                    order_date: new Date().toISOString(),
+                    pickup_location: pickupLocationName,
+                    billing_customer_name: order.customer_name || "Customer",
+                    billing_address: order.address_line_1 || "Address",
+                    billing_city: order.city || "City",
+                    billing_pincode: shippingPincode,
+                    billing_state: order.state || "State",
+                    billing_country: "India",
+                    billing_email: "support@earn24.in",
+                    billing_phone: order.customer_phone || "9999999999",
+                    shipping_is_billing: true,
+                    order_items: shiprocketItems.length > 0 ? shiprocketItems : [{ name: "Catalog Items", sku: "EARN24-PROD", units: 1, selling_price: order.total_amount }],
+                    payment_method: isPrepaid ? "Prepaid" : "COD",
+                    sub_total: parseFloat(order.total_amount || 0),
+                    length: 10, width: 10, height: 10, weight: 0.5
+                }).catch(err => ({ success: false, error: err.message }));
+
+                if (shipmentResult.success) {
+                    const awb = shipmentResult.awb_code || shipmentResult.shipment_id;
+                    const courierName = shipmentResult.courier_name || 'Delhivery Express';
+
+                    await db.query(
+                        `UPDATE orders 
+                         SET order_status = 'SHIPPED_SHIPROCKET', 
+                             dispatch_mode = 'SHIPROCKET_COURIER',
+                             delivery_agent_id = NULL,
+                             tracking_number = ?,
+                             courier_name = ?
+                         WHERE id = ?`,
+                        [awb, courierName, orderId]
+                    ).catch(async () => {
+                        await db.query(
+                            "UPDATE orders SET order_status = 'SHIPPED_SHIPROCKET', delivery_agent_id = NULL, tracking_number = ? WHERE id = ?",
+                            [awb, orderId]
+                        );
+                    });
+
+                    console.log(`[Auto-Dispatch] ✅ Order #${order.order_number} successfully routed to Courier: ${courierName}, Tracking: ${awb}`);
+                    return { success: true, mode: 'SHIPROCKET_COURIER', courierName, awb, shipment: shipmentResult };
+                } else {
+                    console.warn(`[Auto-Dispatch] Shiprocket dispatch failed for #${order.order_number}:`, shipmentResult.error);
+                }
+            }
+
+            // If Shiprocket toggle is OFF or failed, ensure delivery_agent_id stays NULL to protect riders
+            await db.query(
+                "UPDATE orders SET dispatch_mode = 'SHIPROCKET_COURIER', delivery_agent_id = NULL WHERE id = ?",
+                [orderId]
+            ).catch(() => {});
+
+            return { 
+                success: false, 
+                mode: 'OUTSTATION_COURIER_PENDING', 
+                message: 'Inter-city order flagged for Courier Partner. Local delivery boy NOT assigned to prevent cross-city mismatch.' 
+            };
+        }
+
+        // =========================================================================
+        // CASE B: HYPERLOCAL / SAME-CITY ORDER (e.g. Dhanbad Merchant -> Dhanbad Customer)
+        // Search for Local Online Delivery Agents matching shipping pincode
+        // =========================================================================
         const [agents] = await db.query(
             `SELECT id, full_name, phone_number, serviceable_pincodes 
              FROM delivery_agents 
@@ -1017,34 +1175,56 @@ exports.autoDispatchOrder = async (orderId) => {
         if (agents.length > 0) {
             // Auto-assign to matched local rider
             const selectedAgent = agents[0];
+            const autoPickupOtp = Math.floor(1000 + Math.random() * 9000).toString();
+
             await db.query(
-                "UPDATE orders SET delivery_agent_id = ?, order_status = 'CONFIRMED' WHERE id = ?",
-                [selectedAgent.id, orderId]
-            );
-            console.log(`[Auto-Dispatch] Order #${order.order_number} matched local rider ${selectedAgent.full_name} for Pincode ${shippingPincode}`);
+                `UPDATE orders 
+                 SET delivery_agent_id = ?, 
+                     dispatch_mode = 'LOCAL_RIDER',
+                     order_status = 'CONFIRMED',
+                     pickup_otp = ?,
+                     pickup_status = 'PENDING'
+                 WHERE id = ?`,
+                [selectedAgent.id, autoPickupOtp, orderId]
+            ).catch(async () => {
+                await db.query(
+                    "UPDATE orders SET delivery_agent_id = ?, order_status = 'CONFIRMED', pickup_otp = ? WHERE id = ?",
+                    [selectedAgent.id, autoPickupOtp, orderId]
+                );
+            });
+
+            await db.query(
+                "UPDATE order_items SET pickup_otp = ?, pickup_status = 'PENDING' WHERE order_id = ? AND (pickup_otp IS NULL OR pickup_otp = '')",
+                [autoPickupOtp, orderId]
+            ).catch(() => {});
+
+            console.log(`[Auto-Dispatch] ✅ Local Order #${order.order_number} matched local rider ${selectedAgent.full_name} for Pincode ${shippingPincode}`);
             return { success: true, mode: 'LOCAL_RIDER', agent: selectedAgent };
         }
 
-        // 2. No Local Rider found. Check if Pan-India Shiprocket Courier Toggle is ON in app_settings
-        const [[settingsRow]] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key = 'is_shiprocket_active'");
+        // =========================================================================
+        // CASE C: LOCAL ORDER BUT NO LOCAL RIDER ONLINE
+        // Fallback to Shiprocket Pan-India Courier Partner (if Admin Toggle is ON)
+        // =========================================================================
+        const [[settingsRow]] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key = 'is_shiprocket_active'").catch(() => [[null]]);
         const isShiprocketActive = settingsRow ? parseInt(settingsRow.setting_value, 10) === 1 : true;
 
         if (isShiprocketActive) {
-            console.log(`[Auto-Dispatch] Routing Order #${order.order_number} to Shiprocket Pan-India Courier Partner...`);
+            console.log(`[Auto-Dispatch] Routing Order #${order.order_number} to Shiprocket Pan-India Courier Partner (Fallback)...`);
             const shiprocketService = require('../Services/shiprocketService');
             
             const shipmentResult = await shiprocketService.createForwardOrder({
                 order_id: order.order_number,
                 order_date: new Date().toISOString(),
                 pickup_location: "Primary",
-                billing_customer_name: "Customer",
+                billing_customer_name: order.customer_name || "Customer",
                 billing_address: order.address_line_1 || "Address",
                 billing_city: order.city || "City",
                 billing_pincode: shippingPincode,
                 billing_state: order.state || "State",
                 billing_country: "India",
-                billing_email: "customer@earn24.com",
-                billing_phone: "9999999999",
+                billing_email: "support@earn24.in",
+                billing_phone: order.customer_phone || "9999999999",
                 shipping_is_billing: true,
                 order_items: [{ name: "Catalog Items", sku: "EARN24-PROD", units: 1, selling_price: order.total_amount }],
                 payment_method: "Prepaid",
@@ -1053,11 +1233,26 @@ exports.autoDispatchOrder = async (orderId) => {
             }).catch(err => ({ success: false, error: err.message }));
 
             if (shipmentResult.success) {
+                const awb = shipmentResult.awb_code || shipmentResult.shipment_id;
+                const courierName = shipmentResult.courier_name || 'Delhivery Express';
+
                 await db.query(
-                    "UPDATE orders SET order_status = 'SHIPPED_SHIPROCKET', tracking_number = ? WHERE id = ?",
-                    [shipmentResult.awb_code || shipmentResult.shipment_id, orderId]
-                );
-                return { success: true, mode: 'SHIPROCKET_COURIER', shipment: shipmentResult };
+                    `UPDATE orders 
+                     SET order_status = 'SHIPPED_SHIPROCKET', 
+                         dispatch_mode = 'SHIPROCKET_COURIER',
+                         delivery_agent_id = NULL,
+                         tracking_number = ?,
+                         courier_name = ?
+                     WHERE id = ?`,
+                    [awb, courierName, orderId]
+                ).catch(async () => {
+                    await db.query(
+                        "UPDATE orders SET order_status = 'SHIPPED_SHIPROCKET', delivery_agent_id = NULL, tracking_number = ? WHERE id = ?",
+                        [awb, orderId]
+                    );
+                });
+
+                return { success: true, mode: 'SHIPROCKET_COURIER', courierName, awb, shipment: shipmentResult };
             }
         }
 

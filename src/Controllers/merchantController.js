@@ -580,8 +580,11 @@ exports.getMerchantOrders = async (req, res) => {
     try {
         const query = `
             SELECT o.id as order_id, o.order_number, o.order_status, o.payment_method, o.payment_status, o.subtotal, o.delivery_fee, o.total_amount, o.created_at,
-                   o.delivered_at, o.cancelled_at, o.updated_at,
+                   o.assigned_at, o.delivered_at, o.cancelled_at, o.updated_at,
                    o.delivery_agent_id,
+                   o.tracking_number,
+                   o.courier_name,
+                   o.dispatch_mode,
                    IFNULL(o.pickup_status, 'PENDING') as pickup_status,
                    o.picked_up_at,
                    o.pickup_otp,
@@ -620,12 +623,17 @@ exports.getMerchantOrders = async (req, res) => {
 
             if (!ordersMap.has(r.order_id)) {
                 const isReplacement = Boolean((r.order_number && r.order_number.startsWith('R-')) || r.payment_method === 'REPLACEMENT' || r.parent_order_number);
+                const isCourierShipment = (r.dispatch_mode === 'SHIPROCKET_COURIER' || r.order_status === 'SHIPPED_SHIPROCKET' || Boolean(r.tracking_number));
+                const confirmedTime = r.assigned_at || (r.order_status !== 'PENDING' && r.order_status !== 'PENDING_PAYMENT' ? (r.updated_at || r.created_at) : null);
 
                 ordersMap.set(r.order_id, {
                     order_id: r.order_id,
                     order_number: r.order_number,
                     order_status: r.order_status,
                     product_status: r.item_status || r.order_status,
+                    dispatch_mode: r.dispatch_mode || (isCourierShipment ? 'SHIPROCKET_COURIER' : 'LOCAL_RIDER'),
+                    courier_name: r.courier_name || (isCourierShipment ? 'Shiprocket Courier' : null),
+                    tracking_number: r.tracking_number || null,
                     payment_method: r.payment_method || 'COD',
                     payment_status: displayPaymentStatus,
                     full_payment_status: fullPaymentDisplay,
@@ -634,13 +642,15 @@ exports.getMerchantOrders = async (req, res) => {
                     delivery_fee: parseFloat(r.delivery_fee || 0),
                     total_amount: parseFloat(r.total_amount || 0),
                     created_at: r.created_at,
-                    delivered_at: r.delivered_at,
-                    cancelled_at: r.cancelled_at,
+                    confirmed_at: confirmedTime,
+                    assigned_at: r.assigned_at || r.updated_at || r.created_at,
+                    picked_up_at: r.picked_up_at || r.item_picked_up_at || null,
+                    delivered_at: r.delivered_at || null,
+                    cancelled_at: r.cancelled_at || null,
                     updated_at: r.updated_at,
                     customer_name: r.customer_name,
                     customer_phone: r.customer_phone,
                     pickup_status: r.pickup_status || 'PENDING',
-                    picked_up_at: r.picked_up_at,
                     pickup_otp: r.pickup_otp || null,
                     shipping_address: {
                         address_line_1: r.address_line_1,
