@@ -1025,13 +1025,13 @@ exports.autoDispatchOrder = async (orderId) => {
         // Fetch Order Items and their Merchant / Fulfillment Hub locations
         const [items] = await db.query(
             `SELECT oi.id as order_item_id, oi.product_id, oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price,
-                    p.weight, p.name as catalog_name,
+                    p.name as catalog_name,
                     sp.seller_id,
                     s.sellerable_type, s.sellerable_id,
                     m.id as merchant_id, m.business_name, m.pincode as merchant_pincode,
                     m.business_address, m.phone_number as merchant_phone
              FROM order_items oi
-             JOIN products p ON oi.product_id = p.id
+             LEFT JOIN products p ON oi.product_id = p.id
              LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
              LEFT JOIN sellers s ON sp.seller_id = s.id
              LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
