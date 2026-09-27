@@ -13,6 +13,8 @@ router.get('/my-requests',   auth, returnCtrl.getMyReturnRequests);
 // Merchant Routes
 router.get('/merchant/all',           auth, returnCtrl.getMerchantReturnRequests);
 router.patch('/merchant/:id/action',   auth, returnCtrl.merchantReturnAction);
+router.post('/merchant/:id/assign-agent',  auth, returnCtrl.merchantAssignPickup);
+router.patch('/merchant/:id/assign-agent', auth, returnCtrl.merchantAssignPickup);
 router.post('/merchant/:id/receive-at-hub', auth, returnCtrl.receiveItemAtHub);
 router.post('/:id/receive-at-hub',     auth, returnCtrl.receiveItemAtHub);
 router.post('/admin/:id/receive-at-hub', auth, returnCtrl.receiveItemAtHub);

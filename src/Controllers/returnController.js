@@ -56,6 +56,8 @@ async function ensureReturnTableColumns() {
         await safeAddColumn('order_returns', 'received_by_type', 'VARCHAR(50) NULL');
         await safeAddColumn('order_returns', 'received_by_id', 'INT NULL');
         await safeAddColumn('order_returns', 'hub_notes', 'TEXT NULL');
+        await safeAddColumn('order_returns', 'assigned_at', 'DATETIME NULL');
+        await safeAddColumn('order_returns', 'pickup_assigned_at', 'DATETIME NULL');
         await safeAddColumn('order_returns', 'return_quantity', 'INT DEFAULT 1');
 
         isMigrationChecked = true;
@@ -477,7 +479,9 @@ exports.adminAssignPickup = async (req, res) => {
                 pickup_scheduled_date = ?,
                 admin_notes = COALESCE(?, admin_notes),
                 admin_action = 'APPROVED',
-                status = 'PICKUP_ASSIGNED'
+                status = 'PICKUP_ASSIGNED',
+                assigned_at = NOW(),
+                pickup_assigned_at = NOW()
             WHERE id = ?
         `, [deliveryAgentId, dateStr, adminNotes || null, id]);
 
@@ -505,6 +509,101 @@ exports.adminAssignPickup = async (req, res) => {
         });
     } catch (err) {
         console.error('[Admin Return] assign error:', err);
+        res.status(500).json({ status: false, message: 'Failed to assign delivery agent.' });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────
+// MERCHANT: POST/PATCH /merchant/returns/:id/assign-agent
+// Merchant selects and assigns a delivery boy for reverse pickup of their product
+// ─────────────────────────────────────────────────────────────
+exports.merchantAssignPickup = async (req, res) => {
+    const merchantId = req.user.id;
+    const { id } = req.params;
+    const { deliveryAgentId, pickupDate, notes, merchantNotes } = req.body;
+
+    if (!deliveryAgentId) {
+        return res.status(400).json({ status: false, message: 'Please select a delivery agent.' });
+    }
+
+    try {
+        await ensureReturnTableColumns();
+
+        // 1. Verify that return belongs to this merchant
+        let [[ret]] = await db.query(
+            `SELECT * FROM order_returns WHERE id = ? AND merchant_id = ?`,
+            [id, merchantId]
+        );
+
+        if (!ret) {
+            // Check fallback by seller_products -> sellers
+            const [[checkRet]] = await db.query(
+                `SELECT r.* FROM order_returns r
+                 LEFT JOIN order_items oi ON r.order_item_id = oi.id
+                 LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+                 LEFT JOIN sellers s ON sp.seller_id = s.id
+                 WHERE r.id = ? AND (r.merchant_id = ? OR s.sellerable_id = ? OR r.merchant_id IS NULL)`,
+                [id, merchantId, merchantId]
+            );
+            ret = checkRet;
+        }
+
+        if (!ret) {
+            return res.status(404).json({ status: false, message: 'Return request not found or not belonging to your store.' });
+        }
+
+        // 2. Verify delivery agent exists and is active
+        const [[agent]] = await db.query(
+            `SELECT id, full_name, phone_number FROM delivery_agents WHERE id = ? AND is_active = 1`,
+            [deliveryAgentId]
+        );
+        if (!agent) {
+            return res.status(404).json({ status: false, message: 'Selected delivery agent is not active or not found.' });
+        }
+
+        const dateStr = pickupDate || new Date().toISOString().slice(0, 10);
+        const effectiveNotes = notes || merchantNotes || null;
+
+        // 3. Update order_returns: set rider, schedule date, merchant_action='ACCEPTED', status='PICKUP_ASSIGNED', timestamps
+        await db.query(`
+            UPDATE order_returns 
+            SET delivery_agent_id = ?,
+                pickup_scheduled_date = ?,
+                merchant_action = 'ACCEPTED',
+                merchant_notes = COALESCE(?, merchant_notes),
+                status = 'PICKUP_ASSIGNED',
+                assigned_at = NOW(),
+                pickup_assigned_at = NOW()
+            WHERE id = ?
+        `, [deliveryAgentId, dateStr, effectiveNotes, id]);
+
+        // 4. Emit realtime socket notifications for delivery agent
+        try {
+            const io = req.app.get('io');
+            if (io) {
+                const payload = {
+                    message: `New Reverse Pickup Assigned for ${dateStr}!`,
+                    requestId: id,
+                    orderId: ret.order_id,
+                    productName: ret.product_name || 'Return Product',
+                    pickupDate: dateStr
+                };
+                io.emit(`agent_${deliveryAgentId}_new_pickup`, payload);
+                io.emit('pickup_assigned', {
+                    deliveryAgentId,
+                    ...payload
+                });
+            }
+        } catch (sErr) {}
+
+        res.json({
+            status: true,
+            message: `Delivery boy ${agent.full_name} successfully assigned for reverse pickup on ${dateStr}!`,
+            agentName: agent.full_name,
+            agentPhone: agent.phone_number
+        });
+    } catch (err) {
+        console.error('[Merchant Return] assign error:', err);
         res.status(500).json({ status: false, message: 'Failed to assign delivery agent.' });
     }
 };

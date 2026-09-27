@@ -37,8 +37,15 @@ router.get('/settlements',          auth, wallet.getSettlements);
 router.post('/bank-details',  auth, wallet.saveBankDetails);
 router.get('/bank-details',   auth, wallet.getBankDetails);
 
-// ══ Return & Replacement (Merchant view) ══
-router.get('/returns',            auth, returnCtrl.getMerchantReturnRequests);
-router.patch('/returns/:id/action', auth, returnCtrl.merchantReturnAction);
+// ══ Delivery Agents & Reverse Logistics ══
+router.get('/delivery-agents',                  auth, merchant.getDeliveryAgents);
+
+// ══ Return & Replacement (Merchant view & Actions) ══
+router.get('/returns',                          auth, returnCtrl.getMerchantReturnRequests);
+router.patch('/returns/:id/action',             auth, returnCtrl.merchantReturnAction);
+router.post('/returns/:id/assign-agent',        auth, returnCtrl.merchantAssignPickup);
+router.patch('/returns/:id/assign-agent',       auth, returnCtrl.merchantAssignPickup);
+router.post('/returns/:id/receive-at-hub',      auth, returnCtrl.receiveItemAtHub);
+router.post('/returns/:id/dispatch-replacement', auth, returnCtrl.dispatchReplacementUnit);
 
 module.exports = router;
