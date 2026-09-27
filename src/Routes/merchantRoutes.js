@@ -20,6 +20,7 @@ router.post('/change-password', auth, merchant.changeMerchantPassword);
 
 // ══ Protected — Merchant Profile & Products ══
 router.get('/profile',         auth, merchant.getMerchantProfile);
+router.put('/profile',         auth, merchant.updateMerchantProfile);
 router.post('/products',       auth, productUploadMiddleware, merchant.addMerchantProduct);
 router.post('/products/add',   auth, productUploadMiddleware, merchant.addMerchantProduct);
 router.put('/products/:id',    auth, productUploadMiddleware, merchant.updateMerchantProduct);
