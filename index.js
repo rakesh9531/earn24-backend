@@ -611,9 +611,25 @@ async function testDatabaseConnection() {
       await safeAddCol('orders', 'rejection_reason', "VARCHAR(255) NULL");
       await safeAddCol('orders', 'last_rejected_by_agent_id', "INT NULL");
 
+      await safeAddCol('orders', 'picked_up_at', "DATETIME NULL");
+
       await safeAddCol('order_items', 'pickup_otp', "VARCHAR(10) NULL");
       await safeAddCol('order_items', 'pickup_status', "VARCHAR(50) DEFAULT 'PENDING'");
       await safeAddCol('order_items', 'picked_up_at', "DATETIME NULL");
+
+      // Sync existing picked up orders if orders.picked_up_at is NULL
+      await connection.query(`
+        UPDATE orders o
+        JOIN (
+          SELECT order_id, MIN(picked_up_at) as min_picked 
+          FROM order_items 
+          WHERE picked_up_at IS NOT NULL 
+          GROUP BY order_id
+        ) oi ON o.id = oi.order_id
+        SET o.picked_up_at = oi.min_picked
+        WHERE o.picked_up_at IS NULL
+      `).catch(() => {});
+
       console.log('✅ Migration: Warehouse Pickup & Rider Assignment schema verified.');
     } catch (migErr) {
       console.error('Migration warning (non-fatal):', migErr.message);
