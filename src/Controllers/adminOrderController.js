@@ -25,6 +25,7 @@ exports.getOrdersByStatus = async (req, res) => {
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.order_status, o.created_at, o.payment_method, o.payment_status,
                    o.assignment_status, o.pickup_otp, o.pickup_status,
+                   o.tracking_number, o.courier_name, o.dispatch_mode,
                    u.full_name as customer_name, u.mobile_number as customer_phone,
                    o.delivery_agent_id, o.rejection_reason, o.last_rejected_by_agent_id,
                    da.full_name as rejected_by_agent_name,

@@ -1122,3 +1122,9 @@ CREATE TABLE IF NOT EXISTS `seller_product_variants` (
   INDEX `idx_prod_id` (`product_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 6. Hyperlocal vs Pan-India Courier Order Dispatching
+ALTER TABLE `orders` 
+  ADD COLUMN `dispatch_mode` ENUM('LOCAL_RIDER', 'SHIPROCKET_COURIER') DEFAULT 'LOCAL_RIDER' COMMENT 'LOCAL_RIDER = Hyperlocal same-city, SHIPROCKET_COURIER = Pan-India inter-city',
+  ADD COLUMN `courier_name` VARCHAR(100) NULL COMMENT 'Assigned 3PL Courier partner e.g. Delhivery, Bluedart, etc.';
+
+
