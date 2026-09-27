@@ -170,6 +170,14 @@ exports.getMyOrders = async (req, res) => {
         const [orders] = await db.query(query, [agentId]);
 
         for (let order of orders) {
+            // Auto-heal / Auto-generate 4-digit Pickup OTP if missing on assigned order
+            if (!order.pickup_otp || String(order.pickup_otp).trim() === '') {
+                const autoOtp = Math.floor(1000 + Math.random() * 9000).toString();
+                order.pickup_otp = autoOtp;
+                await db.query("UPDATE orders SET pickup_otp = ? WHERE id = ?", [autoOtp, order.id]).catch(() => {});
+                await db.query("UPDATE order_items SET pickup_otp = ? WHERE order_id = ? AND (pickup_otp IS NULL OR pickup_otp = '')", [autoOtp, order.id]).catch(() => {});
+            }
+
             const isPrepaid = (order.payment_method === 'WALLET' || order.payment_method === 'ONLINE' || order.payment_method === 'PAYU' || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID');
             order.is_paid = isPrepaid ? 1 : 0;
             order.collectable_amount = isPrepaid ? 0.00 : parseFloat(order.total_amount);
