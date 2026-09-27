@@ -24,6 +24,7 @@ exports.getOrdersByStatus = async (req, res) => {
 
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.order_status, o.created_at, o.payment_method, o.payment_status,
+                   o.assignment_status, o.pickup_otp, o.pickup_status,
                    u.full_name as customer_name, u.mobile_number as customer_phone,
                    o.delivery_agent_id, o.rejection_reason, o.last_rejected_by_agent_id,
                    da.full_name as rejected_by_agent_name,
@@ -79,12 +80,53 @@ exports.assignOrderForDelivery = async (req, res) => {
             });
         }
 
-        // Update the order status and assign the delivery agent
-        const query = "UPDATE orders SET order_status = 'SHIPPED', delivery_agent_id = ? WHERE id = ?";
-        const [result] = await db.query(query, [deliveryAgentId, orderId]);
+        // Generate a 4-digit secure Pickup OTP for Warehouse / Store handover
+        const masterPickupOtp = Math.floor(1000 + Math.random() * 9000).toString();
+
+        // Check if order items are from multiple sellers / merchants
+        const [distinctSellers] = await db.query(`
+            SELECT DISTINCT sp.seller_id, s.sellerable_type, s.sellerable_id
+            FROM order_items oi
+            JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN sellers s ON sp.seller_id = s.id
+            WHERE oi.order_id = ?
+        `, [orderId]).catch(() => [[]]);
+
+        if (distinctSellers && distinctSellers.length > 1) {
+            // Multi-seller / multi-location order: Assign unique 4-digit OTP per distinct seller location
+            for (let idx = 0; idx < distinctSellers.length; idx++) {
+                const s = distinctSellers[idx];
+                const sellerOtp = idx === 0 ? masterPickupOtp : Math.floor(1000 + Math.random() * 9000).toString();
+                await db.query(`
+                    UPDATE order_items oi
+                    JOIN seller_products sp ON oi.seller_product_id = sp.id
+                    SET oi.pickup_otp = ?, oi.pickup_status = 'PENDING'
+                    WHERE oi.order_id = ? AND sp.seller_id = ?
+                `, [sellerOtp, orderId, s.seller_id]).catch(() => {});
+            }
+        } else {
+            // Single location / Central Warehouse order
+            await db.query(`
+                UPDATE order_items 
+                SET pickup_otp = ?, pickup_status = 'PENDING' 
+                WHERE order_id = ?
+            `, [masterPickupOtp, orderId]).catch(() => {});
+        }
+
+        // Update the order status and assign the delivery agent with PENDING_ACCEPTANCE
+        const query = `
+            UPDATE orders 
+            SET order_status = 'SHIPPED', 
+                delivery_agent_id = ?, 
+                assignment_status = 'PENDING_ACCEPTANCE',
+                pickup_otp = ?,
+                pickup_status = 'PENDING',
+                rejection_reason = NULL
+            WHERE id = ?
+        `;
+        const [result] = await db.query(query, [deliveryAgentId, masterPickupOtp, orderId]);
 
         if (result.affectedRows === 0) {
-            // This case is unlikely if the above check passed, but it's good for safety
             return res.status(404).json({ status: false, message: 'Order not found.' });
         }
 
@@ -93,17 +135,25 @@ exports.assignOrderForDelivery = async (req, res) => {
         if (io) {
             io.to(`agent_${deliveryAgentId}`).emit('order_assigned', {
                 orderId: orderId,
+                orderNumber: orderRows[0].order_number,
                 deliveryAgentId,
-                message: "A new order has been assigned to you."
+                pickupOtp: masterPickupOtp,
+                message: "A new order has been assigned to you. Please accept or reject."
             });
             io.to('admins').emit('order_status_updated', {
                 orderId: orderId,
                 status: 'SHIPPED',
+                assignmentStatus: 'PENDING_ACCEPTANCE',
+                pickupStatus: 'PENDING',
                 deliveryAgentId
             });
         }
 
-        res.status(200).json({ status: true, message: "Order assigned for delivery successfully." });
+        res.status(200).json({ 
+            status: true, 
+            message: "Order assigned to delivery agent successfully. Waiting for agent acceptance and pickup verification.",
+            pickupOtp: masterPickupOtp 
+        });
 
     } catch (error) {
         console.error("Error assigning order for delivery:", error);
@@ -144,7 +194,7 @@ exports.getAdminOrderDetails = async (req, res) => {
         const realOrderId = orderRows[0].id;
         const realOrderNum = orderRows[0].order_number;
         
-        // 2. Fetch all line items for this order with Attributes and Brand
+        // 2. Fetch all line items for this order with Attributes, Brand, Pickup Status, and Seller details
         const itemsQuery = `
             SELECT 
                 oi.id as order_item_id,
@@ -156,11 +206,32 @@ exports.getAdminOrderDetails = async (req, res) => {
                 oi.total_bv_earned,
                 oi.item_status,
                 oi.attributes_snapshot,
+                IFNULL(oi.pickup_otp, o.pickup_otp) as pickup_otp,
+                IFNULL(oi.pickup_status, 'PENDING') as pickup_status,
+                oi.picked_up_at,
                 p.main_image_url,
-                b.name as brand_name
+                b.name as brand_name,
+                sp.seller_id,
+                s.sellerable_type,
+                CASE 
+                    WHEN s.sellerable_type = 'Merchant' AND m.business_name IS NOT NULL THEN m.business_name 
+                    ELSE 'Central Warehouse / Earn24 Hub' 
+                END as pickup_location_name,
+                CASE 
+                    WHEN s.sellerable_type = 'Merchant' AND m.business_address IS NOT NULL THEN m.business_address 
+                    ELSE 'Earn24 Central Hub / Warehouse' 
+                END as pickup_address,
+                CASE 
+                    WHEN s.sellerable_type = 'Merchant' AND m.phone_number IS NOT NULL THEN m.phone_number 
+                    ELSE 'Warehouse Manager' 
+                END as pickup_contact_phone
             FROM order_items oi
+            JOIN orders o ON oi.order_id = o.id
             JOIN products p ON oi.product_id = p.id
             LEFT JOIN brands b ON p.brand_id = b.id
+            LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN sellers s ON sp.seller_id = s.id
+            LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
             WHERE oi.order_id = ?
         `;
         const [itemRows] = await db.query(itemsQuery, [realOrderId]);
@@ -725,5 +796,111 @@ exports.cancelAdminOrder = async (req, res) => {
         res.status(500).json({ status: false, message: "Failed to cancel order: " + error.message });
     } finally {
         if (connection) connection.release();
+    }
+};
+
+/**
+ * Verify Warehouse / Store Pickup Handshake OTP
+ * Admin or Warehouse Manager enters the 4-digit OTP shown on Rider's app to confirm parcel handover.
+ */
+exports.verifyPickupOtp = async (req, res) => {
+    const { orderId } = req.params;
+    const { otp, sellerId, orderItemId } = req.body;
+
+    if (!otp) {
+        return res.status(400).json({ status: false, message: "Pickup OTP is required." });
+    }
+
+    try {
+        const [orderRows] = await db.query(
+            "SELECT id, order_number, order_status, delivery_agent_id, pickup_otp, pickup_status FROM orders WHERE id = ?",
+            [orderId]
+        );
+        if (orderRows.length === 0) {
+            return res.status(404).json({ status: false, message: "Order not found." });
+        }
+        const order = orderRows[0];
+
+        // Fetch items for this order
+        const [itemRows] = await db.query(
+            `SELECT oi.id, oi.seller_product_id, oi.pickup_otp, oi.pickup_status, sp.seller_id
+             FROM order_items oi
+             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+             WHERE oi.order_id = ?`,
+            [orderId]
+        );
+
+        const enteredOtp = otp.toString().trim();
+        const masterOtp = (order.pickup_otp || '').toString().trim();
+
+        // Check if master OTP matches or any item/seller OTP matches
+        const isMasterMatched = (masterOtp !== '' && masterOtp === enteredOtp);
+        const matchingItems = itemRows.filter(i => (i.pickup_otp || '').toString().trim() === enteredOtp);
+
+        if (!isMasterMatched && matchingItems.length === 0) {
+            return res.status(400).json({
+                status: false,
+                message: "Invalid Pickup OTP! The entered code does not match this order's warehouse pickup OTP."
+            });
+        }
+
+        // Mark matching items or all items as PICKED_UP
+        if (isMasterMatched) {
+            await db.query(
+                "UPDATE order_items SET pickup_status = 'PICKED_UP', picked_up_at = NOW() WHERE order_id = ?",
+                [orderId]
+            );
+        } else {
+            const matchedIds = matchingItems.map(i => i.id);
+            await db.query(
+                "UPDATE order_items SET pickup_status = 'PICKED_UP', picked_up_at = NOW() WHERE id IN (?)",
+                [matchedIds]
+            );
+        }
+
+        // Check if any items are still pending pickup
+        const [remaining] = await db.query(
+            "SELECT COUNT(*) as count FROM order_items WHERE order_id = ? AND IFNULL(pickup_status, 'PENDING') != 'PICKED_UP'",
+            [orderId]
+        );
+        const allPickedUp = (remaining[0]?.count || 0) === 0;
+
+        if (allPickedUp) {
+            await db.query(
+                "UPDATE orders SET pickup_status = 'PICKED_UP', order_status = 'SHIPPED' WHERE id = ?",
+                [orderId]
+            );
+        }
+
+        // Emit real-time notification to rider and admins
+        const io = req.app.get('socketio');
+        if (io) {
+            if (order.delivery_agent_id) {
+                io.to(`agent_${order.delivery_agent_id}`).emit('order_pickup_verified', {
+                    orderId: order.id,
+                    orderNumber: order.order_number,
+                    allPickedUp,
+                    message: allPickedUp
+                        ? `Warehouse Pickup Verified! All items collected for Order #${order.order_number}. You can now start the delivery trip.`
+                        : `Pickup location items verified for Order #${order.order_number}.`
+                });
+            }
+            io.to('admins').emit('order_pickup_verified', {
+                orderId: order.id,
+                orderNumber: order.order_number,
+                allPickedUp
+            });
+        }
+
+        res.status(200).json({
+            status: true,
+            allPickedUp,
+            message: allPickedUp
+                ? "Pickup handshake verified successfully! All items handed over to delivery agent."
+                : "Location items verified successfully. Some items pending from another pickup location."
+        });
+    } catch (error) {
+        console.error("Error verifying pickup OTP:", error);
+        res.status(500).json({ status: false, message: "An error occurred during pickup verification: " + error.message });
     }
 };

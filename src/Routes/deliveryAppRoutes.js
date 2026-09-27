@@ -18,6 +18,8 @@ router.post('/complete-delivery', auth, deliveryAppController.completeDelivery);
 
 
 router.get('/stats', auth, deliveryAppController.getAgentStats);
+router.post('/accept-assignment', auth, deliveryAppController.acceptAssignment);
+router.post('/reject-assignment', auth, deliveryAppController.rejectAssignment);
 router.post('/cancel-assignment', auth, deliveryAppController.cancelAssignment);
 
 router.get('/history', auth, deliveryAppController.getHistory);

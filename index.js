@@ -588,6 +588,37 @@ async function testDatabaseConnection() {
       }
     } catch (e) {}
 
+    // Auto-migration for Warehouse / Merchant Pickup Handshake and Rider Assignment
+    try {
+      const safeAddCol = async (tbl, col, def) => {
+        try {
+          const [rows] = await connection.query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+            [tbl, col]
+          );
+          if (!rows || rows.length === 0) {
+            await connection.query(`ALTER TABLE \`${tbl}\` ADD COLUMN \`${col}\` ${def}`);
+            console.log(`✅ Migration: Added column ${col} to ${tbl}`);
+          }
+        } catch (err) {
+          await connection.query(`ALTER TABLE \`${tbl}\` ADD COLUMN \`${col}\` ${def}`).catch(() => {});
+        }
+      };
+
+      await safeAddCol('orders', 'assignment_status', "VARCHAR(50) DEFAULT 'PENDING_ACCEPTANCE'");
+      await safeAddCol('orders', 'pickup_otp', "VARCHAR(10) NULL");
+      await safeAddCol('orders', 'pickup_status', "VARCHAR(50) DEFAULT 'PENDING'");
+      await safeAddCol('orders', 'rejection_reason', "VARCHAR(255) NULL");
+      await safeAddCol('orders', 'last_rejected_by_agent_id', "INT NULL");
+
+      await safeAddCol('order_items', 'pickup_otp', "VARCHAR(10) NULL");
+      await safeAddCol('order_items', 'pickup_status', "VARCHAR(50) DEFAULT 'PENDING'");
+      await safeAddCol('order_items', 'picked_up_at', "DATETIME NULL");
+      console.log('✅ Migration: Warehouse Pickup & Rider Assignment schema verified.');
+    } catch (migErr) {
+      console.error('Migration warning (non-fatal):', migErr.message);
+    }
+
     connection.release();
   } catch (error) {
     console.error('Unable to connect to the database:', error);
