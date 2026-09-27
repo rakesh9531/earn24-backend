@@ -612,6 +612,8 @@ async function testDatabaseConnection() {
       await safeAddCol('orders', 'last_rejected_by_agent_id', "INT NULL");
 
       await safeAddCol('orders', 'picked_up_at', "DATETIME NULL");
+      await safeAddCol('orders', 'assigned_at', "DATETIME NULL");
+      await safeAddCol('order_returns', 'assigned_at', "DATETIME NULL");
 
       await safeAddCol('order_items', 'pickup_otp', "VARCHAR(10) NULL");
       await safeAddCol('order_items', 'pickup_status', "VARCHAR(50) DEFAULT 'PENDING'");
