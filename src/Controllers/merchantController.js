@@ -584,6 +584,7 @@ exports.getMerchantOrders = async (req, res) => {
                    o.delivery_agent_id,
                    IFNULL(o.pickup_status, 'PENDING') as pickup_status,
                    o.picked_up_at,
+                   o.pickup_otp,
                    da.full_name as delivery_agent_name, da.phone_number as delivery_agent_phone,
                    oi.id as item_id, IFNULL(oi.item_status, o.order_status) as item_status, 
                    IFNULL(oi.pickup_status, 'PENDING') as item_pickup_status,
@@ -640,6 +641,7 @@ exports.getMerchantOrders = async (req, res) => {
                     customer_phone: r.customer_phone,
                     pickup_status: r.pickup_status || 'PENDING',
                     picked_up_at: r.picked_up_at,
+                    pickup_otp: r.pickup_otp || null,
                     shipping_address: {
                         address_line_1: r.address_line_1,
                         address_line_2: r.address_line_2,
@@ -1053,8 +1055,27 @@ exports.verifyMerchantPickupOtp = async (req, res) => {
             [orderId, merchantId]
         );
 
-        if (itemRows.length === 0) {
+        // For replacement orders (payment_method='REPLACEMENT'), seller linkage may differ.
+        // If no items found via seller chain, check if this is a replacement order for this merchant
+        // by verifying against order_returns table (merchant_id matches)
+        const isReplacementOrder = (order.order_number && order.order_number.startsWith('R-'))
+            || (order.payment_method === 'REPLACEMENT');
+
+        if (itemRows.length === 0 && !isReplacementOrder) {
             return res.status(403).json({ status: false, message: "You are not authorized to verify pickup for this order." });
+        }
+
+        if (itemRows.length === 0 && isReplacementOrder) {
+            // Verify this merchant owns the parent return request
+            const [retRows] = await db.query(
+                `SELECT id FROM order_returns 
+                 WHERE replacement_order_id = ? AND merchant_id = ?
+                 LIMIT 1`,
+                [orderId, merchantId]
+            );
+            if (retRows.length === 0) {
+                return res.status(403).json({ status: false, message: "You are not authorized to verify pickup for this replacement order." });
+            }
         }
 
         const enteredOtp = otp.toString().trim();
@@ -1071,19 +1092,24 @@ exports.verifyMerchantPickupOtp = async (req, res) => {
             });
         }
 
-        // Mark items for this merchant as PICKED_UP
-        const itemIdsToUpdate = isMasterMatched ? itemRows.map(i => i.id) : matchingItems.map(i => i.id);
-        await db.query(
-            "UPDATE order_items SET pickup_status = 'PICKED_UP', picked_up_at = NOW() WHERE id IN (?)",
-            [itemIdsToUpdate]
-        );
+        let allPickedUp = true;
 
-        // Check if any items across the entire order are still pending pickup
-        const [remaining] = await db.query(
-            "SELECT COUNT(*) as count FROM order_items WHERE order_id = ? AND IFNULL(pickup_status, 'PENDING') != 'PICKED_UP'",
-            [orderId]
-        );
-        const allPickedUp = (remaining[0]?.count || 0) === 0;
+        if (itemRows.length > 0) {
+            // Normal order — mark items for this merchant as PICKED_UP
+            const itemIdsToUpdate = isMasterMatched ? itemRows.map(i => i.id) : matchingItems.map(i => i.id);
+            await db.query(
+                "UPDATE order_items SET pickup_status = 'PICKED_UP', picked_up_at = NOW() WHERE id IN (?)",
+                [itemIdsToUpdate]
+            );
+
+            // Check if any items across the entire order are still pending pickup
+            const [remaining] = await db.query(
+                "SELECT COUNT(*) as count FROM order_items WHERE order_id = ? AND IFNULL(pickup_status, 'PENDING') != 'PICKED_UP'",
+                [orderId]
+            );
+            allPickedUp = (remaining[0]?.count || 0) === 0;
+        }
+        // For replacement orders with no item rows, master OTP match alone is sufficient — mark directly
 
         if (allPickedUp) {
             await db.query(

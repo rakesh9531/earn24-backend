@@ -254,6 +254,16 @@ exports.getMyOrders = async (req, res) => {
             }
             order.pickup_locations = Object.values(locationMap);
             order.all_picked_up = (order.pickup_status === 'PICKED_UP') || (order.pickup_locations.length > 0 && order.pickup_locations.every(l => l.pickup_status === 'PICKED_UP'));
+
+            // Replacement order detection — used by delivery app to show correct UI
+            order.is_replacement = Boolean(
+                (order.order_number && order.order_number.startsWith('R-')) ||
+                order.payment_method === 'REPLACEMENT'
+            );
+            // pickup_verified is true when merchant has verified the OTP for warehouse handover
+            order.pickup_verified = (order.pickup_status === 'PICKED_UP');
+            // can_start_trip: only if pickup is verified (merchant OTP confirmed)
+            order.can_start_trip = order.all_picked_up || order.pickup_verified;
         }
 
         res.json({ status: true, data: orders });
