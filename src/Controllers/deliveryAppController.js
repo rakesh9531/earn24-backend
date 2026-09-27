@@ -156,6 +156,7 @@ exports.getMyOrders = async (req, res) => {
         // Fetch Order and Customer/Address details
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.payment_status, o.order_status,
+                   o.picked_up_at, o.delivered_at,
                    IFNULL(o.assignment_status, 'ACCEPTED') as assignment_status,
                    o.pickup_otp,
                    IFNULL(o.pickup_status, 'PENDING') as pickup_status,
@@ -881,7 +882,7 @@ exports.getHistory = async (req, res) => {
         // 2. Fetch the paginated data (Includes cancellation details and proper date ordering)
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.order_status, o.payment_method, 
-                   o.delivered_at, o.cancelled_at, o.updated_at, o.cancellation_reason, o.cancelled_by,
+                   o.picked_up_at, o.delivered_at, o.cancelled_at, o.updated_at, o.cancellation_reason, o.cancelled_by,
                    u.full_name as customer_name
             FROM orders o
             JOIN users u ON o.user_id = u.id
@@ -1488,7 +1489,7 @@ exports.getSettlementOverview = async (req, res) => {
     try {
         // 1. Pending orders (is_cash_settled = 0)
         const [pendingOrders] = await db.query(`
-            SELECT o.id, o.order_number, o.total_amount, o.delivered_at, 
+            SELECT o.id, o.order_number, o.total_amount, o.picked_up_at, o.delivered_at, 
                    o.payment_method, o.delivery_payment_mode, o.delivery_amount_collected,
                    o.is_settlement_requested, o.settlement_requested_at,
                    u.full_name as customer_name, u.mobile_number as customer_phone,
@@ -1521,7 +1522,7 @@ exports.getSettlementOverview = async (req, res) => {
 
         // 2. Settled orders (is_cash_settled = 1)
         const [settledOrders] = await db.query(`
-            SELECT o.id, o.order_number, o.total_amount, o.delivered_at, o.cash_settled_at,
+            SELECT o.id, o.order_number, o.total_amount, o.picked_up_at, o.delivered_at, o.cash_settled_at,
                    o.payment_method, o.delivery_payment_mode, o.delivery_amount_collected,
                    u.full_name as customer_name,
                    admin_u.full_name as settled_by_admin_name

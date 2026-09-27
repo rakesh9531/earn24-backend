@@ -867,7 +867,12 @@ exports.verifyPickupOtp = async (req, res) => {
 
         if (allPickedUp) {
             await db.query(
-                "UPDATE orders SET pickup_status = 'PICKED_UP', order_status = 'SHIPPED' WHERE id = ?",
+                "UPDATE orders SET pickup_status = 'PICKED_UP', picked_up_at = NOW(), order_status = 'SHIPPED' WHERE id = ?",
+                [orderId]
+            );
+        } else {
+            await db.query(
+                "UPDATE orders SET picked_up_at = COALESCE(picked_up_at, NOW()) WHERE id = ?",
                 [orderId]
             );
         }
