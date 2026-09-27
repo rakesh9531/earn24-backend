@@ -597,62 +597,292 @@ exports.updatePaymentMethod = async (req, res) => {
  * Generates and downloads the invoice PDF for a specific order.
  */
 exports.downloadInvoice = async (req, res) => {
-    const userId = req.user.id;
+    const requester = req.user;
     const { orderId } = req.params;
 
     try {
-        // 1. Get Order Details
-        const orderQuery = `SELECT * FROM orders WHERE id = ? AND user_id = ?`;
-        const [orderRows] = await db.query(orderQuery, [orderId, userId]);
+        // 1. Get Order Details - Allow Admin and Merchant to access any order
+        let orderQuery = `SELECT * FROM orders WHERE id = ? OR order_number = ?`;
+        let params = [orderId, orderId];
+        
+        const role = (requester?.role || '').toLowerCase();
+        const isStaffOrSeller = ['admin', 'superadmin', 'super_admin', 'merchant', 'delivery_agent', 'staff'].includes(role) || role.includes('admin') || role.includes('merchant');
+        if (!isStaffOrSeller) {
+            orderQuery = `SELECT * FROM orders WHERE (id = ? OR order_number = ?) AND user_id = ?`;
+            params.push(requester.id);
+        }
+
+        const [orderRows] = await db.query(orderQuery, params);
         if (orderRows.length === 0) {
             return res.status(404).json({ status: false, message: 'Order not found.' });
         }
         const order = orderRows[0];
 
-        if (order.order_status !== 'DELIVERED') {
+        // Enforce DELIVERED check only for normal end customers; allow Admin and Merchant to print invoice anytime
+        if (!isStaffOrSeller && order.order_status !== 'DELIVERED') {
             return res.status(400).json({ status: false, message: 'Invoice is only available after the order has been delivered.' });
         }
 
         // 2. Get Shipping Address
         const [addressRows] = await db.query(`SELECT * FROM user_addresses WHERE id = ?`, [order.shipping_address_id]);
-        order.shipping_address = addressRows[0];
+        order.shipping_address = addressRows[0] || {};
 
-        // 3. Get User Details
-        const [userRows] = await db.query(`SELECT full_name, mobile_number as phone_number FROM users WHERE id = ?`, [userId]);
-        const user = userRows[0];
+        // 3. Get Customer Details (Use order.user_id, NEVER requester.id!)
+        const [userRows] = await db.query(`SELECT full_name, mobile_number as phone_number FROM users WHERE id = ?`, [order.user_id]);
+        const user = userRows[0] || { full_name: "Customer", phone_number: "" };
 
-        // 4. Get Items with HSN Code and Seller Info
+        // 4. Get Items with HSN Code and Seller Info (Support both Merchant and Admin sellers)
         const itemsQuery = `
-            SELECT oi.*, h.hsn_code, h.gst_percentage, s.display_name as seller_name, s.address as seller_address, s.gstin as seller_gstin
+            SELECT oi.*, h.hsn_code, h.gst_percentage, 
+                   COALESCE(m.business_name, s.display_name, 'EARN24') as seller_name, 
+                   COALESCE(m.business_address, s.address, 'Central Fulfillment Hub') as seller_address, 
+                   COALESCE(m.gst_number, s.gstin, 'N/A') as seller_gstin
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
-            JOIN seller_products sp ON oi.seller_product_id = sp.id
-            JOIN sellers s ON sp.seller_id = s.sellerable_id AND s.sellerable_type = 'Admin'
+            LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN sellers s ON sp.seller_id = s.id
+            LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
             WHERE oi.order_id = ?
         `;
-        // Correction: The mapping between seller_products and sellers might vary based on your multi-seller logic.
-        // For simplicity, we fetch the details of the seller linked to the first item.
-        const [itemRows] = await db.query(itemsQuery, [orderId]);
+        const [itemRows] = await db.query(itemsQuery, [order.id]);
         order.items = itemRows;
 
         const seller = {
             display_name: itemRows[0]?.seller_name || "EARN24",
-            address: itemRows[0]?.seller_address || "N/A",
+            address: itemRows[0]?.seller_address || "Central Fulfillment Hub",
             gstin: itemRows[0]?.seller_gstin || "N/A"
         };
 
         // 5. Generate PDF
         const pdfBuffer = await invoiceService.generateInvoicePDF(order, user, seller);
 
-        // 6. Send Response (Changed to attachment to force Download)
+        // 6. Send Response
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename=Invoice-${order.order_number}.pdf`);
+        res.setHeader('Content-Disposition', `inline; filename=Invoice-${order.order_number}.pdf`);
         res.send(pdfBuffer);
 
     } catch (error) {
         console.error("Error generating invoice:", error);
         res.status(500).json({ status: false, message: 'An error occurred while generating the invoice PDF.' });
+    }
+};
+
+/**
+ * Generates a ready-to-print 4x6 Box Shipping Label / Address Sticker.
+ * Used by Admin & Merchants to stick customer address, COD cash to collect, and barcode onto the packed parcel box.
+ */
+exports.downloadShippingLabel = async (req, res) => {
+    const requester = req.user;
+    const { orderId } = req.params;
+
+    try {
+        let orderQuery = `SELECT * FROM orders WHERE id = ? OR order_number = ?`;
+        let params = [orderId, orderId];
+        
+        const role = (requester?.role || '').toLowerCase();
+        const isStaffOrSeller = ['admin', 'superadmin', 'super_admin', 'merchant', 'delivery_agent', 'staff'].includes(role) || role.includes('admin') || role.includes('merchant');
+        if (!isStaffOrSeller) {
+            orderQuery = `SELECT * FROM orders WHERE (id = ? OR order_number = ?) AND user_id = ?`;
+            params.push(requester.id);
+        }
+
+        const [orderRows] = await db.query(orderQuery, params);
+        if (orderRows.length === 0) {
+            return res.status(404).send('<h3 style="font-family:sans-serif;text-align:center;margin-top:50px;">Order not found</h3>');
+        }
+        const order = orderRows[0];
+
+        // Customer Delivery Address
+        const [addressRows] = await db.query(`SELECT * FROM user_addresses WHERE id = ?`, [order.shipping_address_id]);
+        const addr = addressRows[0] || {};
+
+        // Customer Info
+        const [userRows] = await db.query(`SELECT full_name, mobile_number, email FROM users WHERE id = ?`, [order.user_id]);
+        const customer = userRows[0] || { full_name: "Customer", mobile_number: "" };
+
+        // Items and Merchant Info
+        const itemsQuery = `
+            SELECT oi.*, p.name as catalog_name, p.weight, p.unit,
+                   COALESCE(m.business_name, s.display_name, 'EARN24 Central Hub') as seller_name,
+                   COALESCE(m.business_address, s.address, 'Earn24 Logistics Center') as seller_address,
+                   COALESCE(m.phone_number, '') as seller_phone,
+                   COALESCE(m.gst_number, s.gstin, '') as seller_gstin
+            FROM order_items oi
+            JOIN products p ON oi.product_id = p.id
+            LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN sellers s ON sp.seller_id = s.id
+            LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+            WHERE oi.order_id = ?
+        `;
+        const [items] = await db.query(itemsQuery, [order.id]);
+
+        const seller = {
+            name: items[0]?.seller_name || "EARN24 Store",
+            address: items[0]?.seller_address || "Central Hub",
+            phone: items[0]?.seller_phone || "",
+            gstin: items[0]?.seller_gstin || ""
+        };
+
+        const isPrepaid = (order.payment_method === 'WALLET' || order.payment_method === 'ONLINE' || order.payment_method === 'PAYU' || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID');
+        const paymentLabel = isPrepaid ? 'PREPAID - DO NOT COLLECT CASH' : `CASH ON DELIVERY (COLLECT ₹${parseFloat(order.total_amount).toFixed(2)})`;
+        const routingMode = (order.dispatch_mode === 'SHIPROCKET_COURIER' || order.tracking_number)
+            ? `COURIER: ${order.courier_name || 'Shiprocket Partner'}` 
+            : 'EARN24 LOCAL DELIVERY PARTNER';
+
+        const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Shipping Label - #${order.order_number}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+    body { background: #f1f5f9; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+    .no-print-bar { margin-bottom: 15px; display: flex; gap: 10px; }
+    .btn-print { background: #0284c7; color: #fff; border: none; padding: 10px 24px; font-size: 15px; font-weight: bold; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
+    .label-box {
+      width: 420px;
+      min-height: 580px;
+      background: #ffffff;
+      border: 2px solid #000000;
+      padding: 16px;
+      color: #000000;
+      position: relative;
+    }
+    .header-table { width: 100%; border-bottom: 2px solid #000; padding-bottom: 8px; margin-bottom: 10px; }
+    .brand-title { font-size: 20px; font-weight: 900; letter-spacing: 1px; }
+    .routing-tag { font-size: 10px; font-weight: 800; background: #000; color: #fff; padding: 3px 6px; border-radius: 3px; display: inline-block; margin-top: 3px; }
+    .barcode-block { text-align: center; border-bottom: 2px solid #000; padding: 8px 0; margin-bottom: 12px; }
+    .fake-barcode { font-family: "Courier New", Courier, monospace; letter-spacing: 4px; font-weight: 900; font-size: 24px; }
+    .order-sub-num { font-size: 13px; font-weight: 700; margin-top: 2px; }
+    
+    .section-title { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; color: #333; margin-bottom: 3px; }
+    .ship-to-card {
+      border: 2px solid #000000;
+      padding: 10px;
+      border-radius: 4px;
+      margin-bottom: 12px;
+      background: #fafafa;
+    }
+    .customer-name { font-size: 18px; font-weight: 900; margin-bottom: 3px; }
+    .customer-phone { font-size: 15px; font-weight: 800; margin-bottom: 5px; }
+    .address-text { font-size: 13px; line-height: 1.45; font-weight: 600; }
+    .landmark-text { font-size: 12px; margin-top: 4px; font-weight: bold; }
+    .pincode-highlight { font-size: 16px; font-weight: 900; display: inline-block; margin-top: 4px; }
+    
+    .pay-card {
+      border: 2px dashed #000;
+      padding: 8px;
+      text-align: center;
+      font-size: 14px;
+      font-weight: 900;
+      margin-bottom: 12px;
+      background: ${isPrepaid ? '#f0fdf4' : '#fffbeb'};
+    }
+    
+    .items-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 10px; border-bottom: 1px solid #000; }
+    .items-table th { border-bottom: 1px solid #000; text-align: left; padding: 3px 0; }
+    .items-table td { padding: 4px 0; }
+
+    .ship-from-box {
+      font-size: 10px;
+      line-height: 1.35;
+      color: #222;
+      border-top: 1px solid #ccc;
+      padding-top: 6px;
+    }
+    
+    @media print {
+      body { background: #fff; padding: 0; }
+      .no-print-bar { display: none !important; }
+      .label-box { border: 2px solid #000; margin: 0 auto; box-shadow: none; width: 100%; max-width: 420px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="no-print-bar">
+    <button class="btn-print" onclick="window.print()">
+      🖨️ Print Label / Paste on Box
+    </button>
+  </div>
+
+  <div class="label-box">
+    <table class="header-table">
+      <tr>
+        <td>
+          <div class="brand-title">EARN24 EXPRESS</div>
+          <div class="routing-tag">${routingMode}</div>
+        </td>
+        <td style="text-align: right; font-size: 11px;">
+          <div>Date: <strong>${new Date(order.created_at).toLocaleDateString()}</strong></div>
+          ${order.tracking_number ? `<div>AWB: <strong>${order.tracking_number}</strong></div>` : ''}
+        </td>
+      </tr>
+    </table>
+
+    <div class="barcode-block">
+      <div class="fake-barcode">||| | ||||| || ||||||| |||</div>
+      <div class="order-sub-num">ORDER #${order.order_number}</div>
+    </div>
+
+    <div class="section-title">SHIP TO / DELIVER TO (CUSTOMER):</div>
+    <div class="ship-to-card">
+      <div class="customer-name">${customer.full_name || 'Customer'}</div>
+      <div class="customer-phone">📞 ${customer.mobile_number || addr.alternate_phone || 'N/A'}</div>
+      <div class="address-text">
+        ${addr.address_line_1 || ''} ${addr.address_line_2 ? ', ' + addr.address_line_2 : ''}<br>
+        ${addr.city ? addr.city + ', ' : ''}${addr.state || ''}
+      </div>
+      ${addr.landmark ? `<div class="landmark-text">Landmark: ${addr.landmark}</div>` : ''}
+      <div class="pincode-highlight">PINCODE: ${addr.pincode || 'N/A'}</div>
+    </div>
+
+    <div class="pay-card">
+      ${paymentLabel}
+    </div>
+
+    <div class="section-title">PACKAGE CONTENTS:</div>
+    <table class="items-table">
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th style="text-align: center; width: 40px;">Qty</th>
+          <th style="text-align: right; width: 60px;">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items.map(it => `
+          <tr>
+            <td><strong>${it.product_name || it.catalog_name}</strong></td>
+            <td style="text-align: center;">${it.quantity}</td>
+            <td style="text-align: right;">₹${parseFloat(it.total_price || (it.price_per_unit * it.quantity)).toFixed(2)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+
+    <div class="ship-from-box">
+      <strong>RETURN IF UNDELIVERED TO (SELLER):</strong><br>
+      <strong>${seller.name}</strong>, ${seller.address}<br>
+      ${seller.phone ? 'Phone: ' + seller.phone + ' | ' : ''}GSTIN: ${seller.gstin || 'N/A'}
+    </div>
+  </div>
+
+  <script>
+    window.onload = function() {
+      setTimeout(function() { window.print(); }, 400);
+    };
+  </script>
+</body>
+</html>
+        `;
+
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+    } catch (e) {
+        console.error("Shipping Label Error:", e);
+        res.status(500).send("Error generating shipping label: " + e.message);
     }
 };
 

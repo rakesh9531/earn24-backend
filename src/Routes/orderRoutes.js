@@ -45,6 +45,7 @@ router.get('/:orderId', orderController.getOrderDetails);
 // ✅ ADD THIS NEW ROUTE
 router.patch('/:id/payment-method', auth, orderController.updatePaymentMethod);
 router.get('/:orderId/invoice', auth, orderController.downloadInvoice);
+router.get('/:orderId/shipping-label', auth, orderController.downloadShippingLabel);
 router.post('/:id/cancel', auth, orderController.cancelUserOrder);
 router.post('/:orderId/request-return', auth, orderController.requestReturn);
 router.post('/:orderId/items/:itemId/cancel', auth, orderController.cancelOrderItem);
