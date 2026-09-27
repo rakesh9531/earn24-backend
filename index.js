@@ -613,6 +613,9 @@ async function testDatabaseConnection() {
 
       await safeAddCol('orders', 'picked_up_at', "DATETIME NULL");
       await safeAddCol('orders', 'assigned_at', "DATETIME NULL");
+      await safeAddCol('orders', 'tracking_number', "VARCHAR(100) NULL");
+      await safeAddCol('orders', 'courier_name', "VARCHAR(100) NULL");
+      await safeAddCol('orders', 'dispatch_mode', "ENUM('LOCAL_RIDER', 'SHIPROCKET_COURIER') DEFAULT 'LOCAL_RIDER'");
       await safeAddCol('order_returns', 'assigned_at', "DATETIME NULL");
 
       await safeAddCol('order_items', 'pickup_otp', "VARCHAR(10) NULL");
