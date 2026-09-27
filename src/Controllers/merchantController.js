@@ -44,6 +44,35 @@ const ensureSellerProductColumns = async (targetDb = db) => {
 // Immediate background execution on module load
 ensureSellerProductColumns().catch(() => {});
 
+const ensureOrderColumns = async (targetDb = db) => {
+    try {
+        const [existing] = await targetDb.query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'orders'`
+        );
+        const colMap = new Set((existing || []).map(r => r.COLUMN_NAME));
+
+        const colDefs = [
+            { col: 'tracking_number', def: 'VARCHAR(100) NULL' },
+            { col: 'courier_name', def: 'VARCHAR(100) NULL' },
+            { col: 'dispatch_mode', def: "ENUM('LOCAL_RIDER', 'SHIPROCKET_COURIER') DEFAULT 'LOCAL_RIDER'" },
+            { col: 'assigned_at', def: 'DATETIME NULL' }
+        ];
+
+        for (const item of colDefs) {
+            if (!colMap.has(item.col)) {
+                await targetDb.query(`ALTER TABLE \`orders\` ADD COLUMN \`${item.col}\` ${item.def}`).catch(err => {
+                    if (err.errno !== 1060 && err.code !== 'ER_DUP_FIELDNAME') {
+                        console.warn(`[MIGRATION] Note adding column ${item.col} to orders:`, err.message);
+                    }
+                });
+            }
+        }
+    } catch (err) {
+        console.warn("[MIGRATION] ensureOrderColumns error:", err.message);
+    }
+};
+ensureOrderColumns().catch(() => {});
+
 function saveBase64Image(base64Str) {
     if (!base64Str || typeof base64Str !== 'string') return null;
     if (!base64Str.startsWith('data:image/')) return base64Str;
@@ -578,13 +607,24 @@ exports.getMerchantProducts = async (req, res) => {
 exports.getMerchantOrders = async (req, res) => {
     const merchantId = req.user.id;
     try {
+        // Safe dynamic column detection to prevent 'Unknown column' error before migration finishes
+        const [cols] = await db.query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'orders'"
+        ).catch(() => [[]]);
+        const colSet = new Set((cols || []).map(c => c.COLUMN_NAME));
+
+        const trackingCol = colSet.has('tracking_number') ? 'o.tracking_number' : 'NULL as tracking_number';
+        const courierCol = colSet.has('courier_name') ? 'o.courier_name' : 'NULL as courier_name';
+        const dispatchCol = colSet.has('dispatch_mode') ? 'o.dispatch_mode' : "'LOCAL_RIDER' as dispatch_mode";
+        const assignedAtCol = colSet.has('assigned_at') ? 'o.assigned_at' : 'NULL as assigned_at';
+
         const query = `
             SELECT o.id as order_id, o.order_number, o.order_status, o.payment_method, o.payment_status, o.subtotal, o.delivery_fee, o.total_amount, o.created_at,
-                   o.assigned_at, o.delivered_at, o.cancelled_at, o.updated_at,
+                   ${assignedAtCol}, o.delivered_at, o.cancelled_at, o.updated_at,
                    o.delivery_agent_id,
-                   o.tracking_number,
-                   o.courier_name,
-                   o.dispatch_mode,
+                   ${trackingCol},
+                   ${courierCol},
+                   ${dispatchCol},
                    IFNULL(o.pickup_status, 'PENDING') as pickup_status,
                    o.picked_up_at,
                    o.pickup_otp,
