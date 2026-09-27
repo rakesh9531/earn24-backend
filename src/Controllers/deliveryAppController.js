@@ -1013,8 +1013,8 @@ exports.payuDoorstepCheckout = async (req, res) => {
         const surl = `${baseUrl}/api/delivery-app/payu-success`;
         const furl = `${baseUrl}/api/delivery-app/payu-failure`;
 
-        // Hash: key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5|udf6|udf7|udf8|udf9|udf10|SALT
-        const hashString = `${payuKey}|${txnid}|${amount}|${productInfo}|${firstname}|${email}|${order.id}|||||||||${payuSalt}`;
+        // Format: key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5|udf6|udf7|udf8|udf9|udf10|SALT
+        const hashString = `${payuKey}|${txnid}|${amount}|${productInfo}|${firstname}|${email}|${order.id}||||||||||${payuSalt}`;
         const hash = crypto.createHash('sha512').update(hashString).digest('hex');
 
         // Log transaction
@@ -1151,6 +1151,10 @@ exports.payuDoorstepCheckout = async (req, res) => {
                         <input type="hidden" name="furl" value="${furl}" />
                         <input type="hidden" name="hash" value="${hash}" />
                         <input type="hidden" name="udf1" value="${order.id}" />
+                        <input type="hidden" name="udf2" value="" />
+                        <input type="hidden" name="udf3" value="" />
+                        <input type="hidden" name="udf4" value="" />
+                        <input type="hidden" name="udf5" value="" />
                         <noscript>
                             <button type="submit" class="pay-btn">Click here to Pay ₹${amount}</button>
                         </noscript>
