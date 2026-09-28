@@ -12,6 +12,14 @@ const ensureOrderCourierColumns = async () => {
         await db.query("ALTER TABLE orders ADD COLUMN courier_name VARCHAR(100) NULL").catch(() => {});
         await db.query("ALTER TABLE orders ADD COLUMN tracking_number VARCHAR(100) NULL").catch(() => {});
         await db.query("ALTER TABLE orders ADD COLUMN assigned_at DATETIME NULL").catch(() => {});
+
+        // Self-healing columns on order_items for per-merchant multi-shipment tracking
+        await db.query("ALTER TABLE order_items ADD COLUMN tracking_number VARCHAR(100) NULL").catch(() => {});
+        await db.query("ALTER TABLE order_items ADD COLUMN courier_name VARCHAR(100) NULL").catch(() => {});
+        await db.query("ALTER TABLE order_items ADD COLUMN dispatch_mode VARCHAR(50) DEFAULT 'LOCAL_RIDER'").catch(() => {});
+        await db.query("ALTER TABLE order_items ADD COLUMN pickup_status VARCHAR(50) DEFAULT 'PENDING'").catch(() => {});
+        await db.query("ALTER TABLE order_items ADD COLUMN picked_up_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE order_items ADD COLUMN delivered_at DATETIME NULL").catch(() => {});
     } catch (e) {}
 };
 ensureOrderCourierColumns().catch(() => {});
@@ -1039,113 +1047,185 @@ exports.autoDispatchOrder = async (orderId) => {
             [orderId]
         );
 
-        // Analyze if the order is Outstation / Inter-city
-        let isInterCityOutstation = false;
-        let outstationReason = '';
-        let primaryPickupMerchant = null;
-
+        // 1. Group items by Merchant / Pickup Hub for Multi-Merchant Splitting
+        const merchantGroups = {};
         for (const item of items) {
-            if (item.sellerable_type === 'Merchant') {
-                if (!primaryPickupMerchant) primaryPickupMerchant = item;
+            const mKey = item.merchant_id || item.sellerable_id || item.seller_id || 'DEFAULT';
+            if (!merchantGroups[mKey]) {
+                merchantGroups[mKey] = {
+                    merchantId: mKey,
+                    merchantName: item.business_name || 'Earn24 Partner',
+                    merchantPincode: String(item.merchant_pincode || '').trim(),
+                    merchantAddress: String(item.business_address || '').trim(),
+                    merchantPhone: item.merchant_phone || '',
+                    items: []
+                };
+            }
+            merchantGroups[mKey].items.push(item);
+        }
 
-                const merchantPincode = String(item.merchant_pincode || '').trim();
-                const merchantAddress = String(item.business_address || '').toLowerCase();
+        const totalMerchantCount = Object.keys(merchantGroups).length;
+        const cleanShippingPin = shippingPincode.replace(/\D/g, '');
 
-                const cleanShippingPin = shippingPincode.replace(/\D/g, '');
-                const cleanMerchantPin = merchantPincode.replace(/\D/g, '');
+        let hasOutstationMerchant = false;
+        let outstationLogReasons = [];
 
-                if (cleanMerchantPin && cleanShippingPin) {
-                    // Check first 2 digits (State/Postal Circle)
-                    const isSameState = cleanMerchantPin.slice(0, 2) === cleanShippingPin.slice(0, 2);
-                    // Check first 3 digits (Sorting District / Metro Area)
-                    const isSameDistrict = cleanMerchantPin.slice(0, 3) === cleanShippingPin.slice(0, 3);
-                    // Check if city name matches in address
-                    const isCityMatch = shippingCity && shippingCity.length > 2 && merchantAddress.includes(shippingCity);
+        // Check each merchant hub against customer shipping destination
+        for (const mKey in merchantGroups) {
+            const group = merchantGroups[mKey];
+            const cleanMerchantPin = group.merchantPincode.replace(/\D/g, '');
+            const merchantAddrLower = group.merchantAddress.toLowerCase();
 
-                    if (!isSameState && !isCityMatch) {
-                        isInterCityOutstation = true;
-                        outstationReason = `Merchant (${item.business_name || 'Store'}) is in Pincode ${merchantPincode} while Customer is in Pincode ${shippingPincode} (Inter-state/Inter-city)`;
-                        break;
-                    } else if (!isSameDistrict && !isCityMatch) {
-                        isInterCityOutstation = true;
-                        outstationReason = `Merchant (${item.business_name || 'Store'}) is in Pincode ${merchantPincode} while Customer is in Pincode ${shippingPincode} (Inter-district distance too large for bike rider)`;
-                        break;
-                    }
+            let isGroupOutstation = false;
+            let groupReason = '';
+
+            if (cleanMerchantPin && cleanShippingPin) {
+                const isSameState = cleanMerchantPin.slice(0, 2) === cleanShippingPin.slice(0, 2);
+                const isSameDistrict = cleanMerchantPin.slice(0, 3) === cleanShippingPin.slice(0, 3);
+                const isCityMatch = shippingCity && shippingCity.length > 2 && merchantAddrLower.includes(shippingCity);
+
+                if (!isSameState && !isCityMatch) {
+                    isGroupOutstation = true;
+                    groupReason = `Merchant (${group.merchantName}) is in Pincode ${cleanMerchantPin} while Customer is in Pincode ${cleanShippingPin} (Inter-state/Inter-city)`;
+                } else if (!isSameDistrict && !isCityMatch) {
+                    isGroupOutstation = true;
+                    groupReason = `Merchant (${group.merchantName}) is in Pincode ${cleanMerchantPin} while Customer is in Pincode ${cleanShippingPin} (Inter-district distance too large for bike rider)`;
                 }
+            } else if (!cleanMerchantPin) {
+                isGroupOutstation = true;
+                groupReason = `Merchant (${group.merchantName}) has no local pickup pincode`;
+            }
+
+            group.isOutstation = isGroupOutstation;
+            group.outstationReason = groupReason;
+            if (isGroupOutstation) {
+                hasOutstationMerchant = true;
+                outstationLogReasons.push(groupReason);
             }
         }
 
         // =========================================================================
-        // CASE A: OUTSTATION / INTER-CITY (e.g. Delhi Merchant -> Dhanbad Customer)
-        // Never assign local delivery boy! Route directly to Courier Partner.
+        // CASE A: OUTSTATION / INTER-CITY / MULTI-MERCHANT COURIER DISPATCH
+        // Routes parcels to Pan-India Courier Partner (Shiprocket) per merchant
         // =========================================================================
-        if (isInterCityOutstation) {
-            console.log(`[Auto-Dispatch] 🚚 OUTSTATION / INTER-CITY detected for Order #${order.order_number}: ${outstationReason}`);
-            console.log(`[Auto-Dispatch] 🚫 Skipped Local Delivery Boy (Rider cannot travel across cities for pickup).`);
-            console.log(`[Auto-Dispatch] 📦 Dispatching to Pan-India Courier Partner (Shiprocket)...`);
+        if (hasOutstationMerchant) {
+            console.log(`[Auto-Dispatch] 🚚 Multi-Merchant OUTSTATION detected for Order #${order.order_number}: ${outstationLogReasons.join('; ')}`);
+            console.log(`[Auto-Dispatch] 🚫 Skipped Local Delivery Boy for long-distance merchant items.`);
+            console.log(`[Auto-Dispatch] 📦 Dispatching merchant items to Pan-India Courier Partner (Shiprocket)...`);
 
             const [[settingsRow]] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key = 'is_shiprocket_active'").catch(() => [[null]]);
             const isShiprocketActive = settingsRow ? parseInt(settingsRow.setting_value, 10) === 1 : true;
 
+            const dispatchedShipments = [];
+
             if (isShiprocketActive) {
                 const shiprocketService = require('../Services/shiprocketService');
 
-                const shiprocketItems = items.map(it => ({
-                    name: it.product_name || "Catalog Product",
-                    sku: `PROD-${it.product_id}`,
-                    units: it.quantity || 1,
-                    selling_price: parseFloat(it.price_per_unit || it.total_price || 0)
-                }));
+                for (const mKey in merchantGroups) {
+                    const group = merchantGroups[mKey];
 
-                const isPrepaid = (order.payment_method === 'WALLET' || order.payment_method === 'ONLINE' || order.payment_method === 'PAYU' || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID');
-                const pickupLocationName = primaryPickupMerchant?.business_name
-                    ? String(primaryPickupMerchant.business_name).substring(0, 36)
-                    : "Primary";
+                    // Sub-order ID for Shiprocket (e.g. ORD-2026-09-001-M5 for multi-merchant)
+                    const groupSubOrderId = totalMerchantCount > 1
+                        ? `${order.order_number}-M${group.merchantId}`
+                        : order.order_number;
 
-                const shipmentResult = await shiprocketService.createForwardOrder({
-                    order_id: order.order_number,
-                    order_date: new Date().toISOString(),
-                    pickup_location: pickupLocationName,
-                    billing_customer_name: order.customer_name || "Customer",
-                    billing_address: order.address_line_1 || "Address",
-                    billing_city: order.city || "City",
-                    billing_pincode: shippingPincode,
-                    billing_state: order.state || "State",
-                    billing_country: "India",
-                    billing_email: "support@earn24.in",
-                    billing_phone: order.customer_phone || "9999999999",
-                    shipping_is_billing: true,
-                    order_items: shiprocketItems.length > 0 ? shiprocketItems : [{ name: "Catalog Items", sku: "EARN24-PROD", units: 1, selling_price: order.total_amount }],
-                    payment_method: isPrepaid ? "Prepaid" : "COD",
-                    sub_total: parseFloat(order.total_amount || 0),
-                    length: 10, width: 10, height: 10, weight: 0.5
-                }).catch(err => ({ success: false, error: err.message }));
+                    const shiprocketItems = group.items.map(it => ({
+                        name: it.product_name || "Catalog Product",
+                        sku: `PROD-${it.product_id}`,
+                        units: it.quantity || 1,
+                        selling_price: parseFloat(it.price_per_unit || it.total_price || 0)
+                    }));
 
-                if (shipmentResult.success) {
-                    const awb = shipmentResult.awb_code || shipmentResult.shipment_id;
-                    const courierName = shipmentResult.courier_name || 'Delhivery Express';
+                    const groupTotal = group.items.reduce((sum, it) => sum + parseFloat(it.total_price || (it.price_per_unit * it.quantity) || 0), 0);
+                    const isPrepaid = (order.payment_method === 'WALLET' || order.payment_method === 'ONLINE' || order.payment_method === 'PAYU' || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID');
+                    const pickupLocationName = group.merchantName ? String(group.merchantName).substring(0, 36) : "Primary";
 
-                    await db.query(
-                        `UPDATE orders 
-                         SET order_status = 'SHIPPED_SHIPROCKET', 
-                             dispatch_mode = 'SHIPROCKET_COURIER',
-                             delivery_agent_id = NULL,
-                             tracking_number = ?,
-                             courier_name = ?
-                         WHERE id = ?`,
-                        [awb, courierName, orderId]
-                    ).catch(async () => {
-                        await db.query(
-                            "UPDATE orders SET order_status = 'SHIPPED_SHIPROCKET', delivery_agent_id = NULL, tracking_number = ? WHERE id = ?",
-                            [awb, orderId]
-                        );
-                    });
+                    const shipmentResult = await shiprocketService.createForwardOrder({
+                        order_id: groupSubOrderId,
+                        order_date: new Date().toISOString(),
+                        pickup_location: pickupLocationName,
+                        billing_customer_name: order.customer_name || "Customer",
+                        billing_address: order.address_line_1 || "Address",
+                        billing_city: order.city || "City",
+                        billing_pincode: shippingPincode,
+                        billing_state: order.state || "State",
+                        billing_country: "India",
+                        billing_email: "support@earn24.in",
+                        billing_phone: order.customer_phone || "9999999999",
+                        shipping_is_billing: true,
+                        order_items: shiprocketItems.length > 0 ? shiprocketItems : [{ name: "Catalog Items", sku: "EARN24-PROD", units: 1, selling_price: groupTotal }],
+                        payment_method: isPrepaid ? "Prepaid" : "COD",
+                        sub_total: groupTotal > 0 ? groupTotal : parseFloat(order.total_amount || 0),
+                        length: 10, width: 10, height: 10, weight: 0.5
+                    }).catch(err => ({ success: false, error: err.message }));
 
-                    console.log(`[Auto-Dispatch] ✅ Order #${order.order_number} successfully routed to Courier: ${courierName}, Tracking: ${awb}`);
-                    return { success: true, mode: 'SHIPROCKET_COURIER', courierName, awb, shipment: shipmentResult };
-                } else {
-                    console.warn(`[Auto-Dispatch] Shiprocket dispatch failed for #${order.order_number}:`, shipmentResult.error);
+                    if (shipmentResult.success) {
+                        const awb = shipmentResult.awb_code || shipmentResult.shipment_id;
+                        const courierName = shipmentResult.courier_name || 'Delhivery Express';
+
+                        const itemIds = group.items.map(it => it.order_item_id);
+                        if (itemIds.length > 0) {
+                            await db.query(
+                                `UPDATE order_items 
+                                 SET tracking_number = ?, 
+                                     courier_name = ?, 
+                                     dispatch_mode = 'SHIPROCKET_COURIER', 
+                                     item_status = 'SHIPPED' 
+                                 WHERE id IN (?)`,
+                                [awb, courierName, itemIds]
+                            ).catch(async () => {
+                                for (const iId of itemIds) {
+                                    await db.query(
+                                        "UPDATE order_items SET item_status = 'SHIPPED' WHERE id = ?",
+                                        [iId]
+                                    ).catch(() => {});
+                                }
+                            });
+                        }
+
+                        dispatchedShipments.push({
+                            merchantId: group.merchantId,
+                            merchantName: group.merchantName,
+                            subOrderId: groupSubOrderId,
+                            courierName,
+                            awb,
+                            itemCount: group.items.length
+                        });
+
+                        console.log(`[Auto-Dispatch] ✅ Multi-Merchant: Merchant #${group.merchantId} (${group.merchantName}) routed to Courier: ${courierName}, Tracking: ${awb}`);
+                    } else {
+                        console.warn(`[Auto-Dispatch] Shiprocket dispatch failed for Merchant #${group.merchantId} in Order #${order.order_number}:`, shipmentResult.error);
+                    }
                 }
+            }
+
+            if (dispatchedShipments.length > 0) {
+                const primaryAwb = dispatchedShipments[0].awb;
+                const primaryCourier = dispatchedShipments[0].courierName;
+
+                await db.query(
+                    `UPDATE orders 
+                     SET order_status = 'SHIPPED_SHIPROCKET', 
+                         dispatch_mode = 'SHIPROCKET_COURIER',
+                         delivery_agent_id = NULL,
+                         tracking_number = ?,
+                         courier_name = ?
+                     WHERE id = ?`,
+                    [primaryAwb, primaryCourier, orderId]
+                ).catch(async () => {
+                    await db.query(
+                        "UPDATE orders SET order_status = 'SHIPPED_SHIPROCKET', delivery_agent_id = NULL, tracking_number = ? WHERE id = ?",
+                        [primaryAwb, orderId]
+                    );
+                });
+
+                console.log(`[Auto-Dispatch] ✅ Order #${order.order_number} successfully split & dispatched across ${dispatchedShipments.length} merchant courier shipment(s).`);
+                return { 
+                    success: true, 
+                    mode: 'SHIPROCKET_COURIER', 
+                    shipments: dispatchedShipments,
+                    message: `Dispatched ${dispatchedShipments.length} merchant parcel(s) via Courier Partner.`
+                };
             }
 
             // If Shiprocket toggle is OFF or failed, ensure delivery_agent_id stays NULL to protect riders
