@@ -25,7 +25,19 @@ class OrderItem {
     has_return_policy,
     is_replacement_available,
     return_window_days,
-    replacement_window_days
+    replacement_window_days,
+    seller_name,
+    seller_city,
+    seller_state,
+    seller_address,
+    tracking_number,
+    courier_name,
+    dispatch_mode,
+    delivery_agent_name,
+    delivery_agent_phone,
+    pickup_status,
+    picked_up_at,
+    delivered_at
   }) {
     const timeZone = 'Asia/Kolkata';
 
@@ -55,6 +67,20 @@ class OrderItem {
     this.isReplacementAvailable = this.is_replacement_available === 1;
     this.returnWindowDays = parseInt(return_window_days || 7, 10);
     this.replacementWindowDays = parseInt(replacement_window_days || 7, 10);
+
+    // Seller & Logistics Tracking data
+    this.sellerName = seller_name || '';
+    this.sellerCity = seller_city || '';
+    this.sellerState = seller_state || '';
+    this.sellerAddress = seller_address || '';
+    this.trackingNumber = tracking_number || null;
+    this.courierName = courier_name || null;
+    this.dispatchMode = dispatch_mode || 'LOCAL_RIDER';
+    this.deliveryAgentName = delivery_agent_name || null;
+    this.deliveryAgentPhone = delivery_agent_phone || null;
+    this.pickupStatus = pickup_status || 'PENDING';
+    this.pickedUpAt = picked_up_at ? moment(picked_up_at).tz(timeZone).format('YYYY-MM-DD HH:mm:ss') : null;
+    this.deliveredAt = delivered_at ? moment(delivered_at).tz(timeZone).format('YYYY-MM-DD HH:mm:ss') : null;
 
     let parsedAttributes = null;
     let finalImageUrl = main_image_url || null;
