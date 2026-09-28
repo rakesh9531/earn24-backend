@@ -450,9 +450,8 @@ exports.getOrderDetails = async (req, res) => {
                    IFNULL(sp.replacement_window_days, IFNULL(psc.replacement_window_days, 7)) as replacement_window_days,
                    IFNULL(sp.is_returnable, 1) as is_returnable,
                    COALESCE(m.business_name, s.display_name, 'Earn24 Seller') as seller_name,
-                   COALESCE(m.city, '') as seller_city,
-                   COALESCE(m.state, '') as seller_state,
                    COALESCE(m.business_address, '') as seller_address,
+                   COALESCE(m.pincode, '') as seller_pincode,
                    COALESCE(da.full_name, '') as delivery_agent_name,
                    COALESCE(da.phone_number, '') as delivery_agent_phone
             FROM order_items oi
@@ -520,6 +519,18 @@ exports.getOrderDetails = async (req, res) => {
                     ? item.item_status 
                     : (orderRows[0].order_status || 'CONFIRMED');
 
+                let sCity = '';
+                let sState = '';
+                if (item.seller_address) {
+                    const parts = item.seller_address.split(',').map(p => p.trim()).filter(Boolean);
+                    if (parts.length >= 2) {
+                        sCity = parts[parts.length - 2];
+                        sState = parts[parts.length - 1];
+                    } else if (parts.length === 1) {
+                        sCity = parts[0];
+                    }
+                }
+
                 return new OrderItem({
                     ...item,
                     item_status: itemStatusResolved,
@@ -532,8 +543,8 @@ exports.getOrderDetails = async (req, res) => {
                     return_window_days: item.return_window_days,
                     replacement_window_days: item.replacement_window_days,
                     seller_name: item.seller_name,
-                    seller_city: item.seller_city,
-                    seller_state: item.seller_state,
+                    seller_city: sCity,
+                    seller_state: sState,
                     seller_address: item.seller_address,
                     tracking_number: item.tracking_number || orderRows[0].tracking_number || null,
                     courier_name: item.courier_name || orderRows[0].courier_name || null,
