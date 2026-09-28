@@ -289,10 +289,10 @@ exports.getOrderHistory = async (req, res) => {
 
         const ordersWithImages = await Promise.all(orderRows.map(async (order) => {
             const [items] = await db.query(`
-                SELECT oi.product_name, oi.attributes_snapshot, p.main_image_url 
+                SELECT oi.id, oi.product_name, oi.attributes_snapshot, p.main_image_url 
                 FROM order_items oi
                 JOIN products p ON oi.product_id = p.id
-                WHERE oi.order_id = ? LIMIT 1
+                WHERE oi.order_id = ?
             `, [order.id]);
             let displayImg = items[0]?.main_image_url || null;
             if (items[0]?.attributes_snapshot) {
@@ -313,6 +313,7 @@ exports.getOrderHistory = async (req, res) => {
                 ...order,
                 display_image_url: displayImg,
                 first_item_name: items[0]?.product_name || null,
+                total_items: items ? items.length : 1,
                 return_status: returns && returns[0] ? returns[0].status : null,
                 return_type: returns && returns[0] ? returns[0].request_type : null
             };
