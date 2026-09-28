@@ -448,12 +448,22 @@ exports.getOrderDetails = async (req, res) => {
                    IFNULL(sp.has_return_policy, IFNULL(psc.has_return_policy, 1)) as has_return_policy,
                    IFNULL(sp.is_replacement_available, IFNULL(psc.is_replacement_available, 1)) as is_replacement_available,
                    IFNULL(sp.replacement_window_days, IFNULL(psc.replacement_window_days, 7)) as replacement_window_days,
-                   IFNULL(sp.is_returnable, 1) as is_returnable
+                   IFNULL(sp.is_returnable, 1) as is_returnable,
+                   COALESCE(m.business_name, s.display_name, 'Earn24 Seller') as seller_name,
+                   COALESCE(m.city, '') as seller_city,
+                   COALESCE(m.state, '') as seller_state,
+                   COALESCE(m.business_address, '') as seller_address,
+                   COALESCE(da.full_name, '') as delivery_agent_name,
+                   COALESCE(da.phone_number, '') as delivery_agent_phone
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
             LEFT JOIN product_subcategories psc ON p.subcategory_id = psc.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN sellers s ON sp.seller_id = s.id
+            LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+            LEFT JOIN orders o ON oi.order_id = o.id
+            LEFT JOIN delivery_agents da ON o.delivery_agent_id = da.id
             ${hasVariantCol ? 'LEFT JOIN seller_product_variants spv ON oi.seller_product_variant_id = spv.id' : ''}
             WHERE oi.order_id = ?
         `;
@@ -506,9 +516,13 @@ exports.getOrderDetails = async (req, res) => {
                 }
                 
                 const itemReturn = (returnRows || []).find(r => r.order_item_id == item.id && !['REJECTED', 'CLOSED'].includes(r.status)) || (returnRows || []).find(r => r.order_item_id == item.id) || null;
+                const itemStatusResolved = (item.item_status && item.item_status !== 'ACTIVE') 
+                    ? item.item_status 
+                    : (orderRows[0].order_status || 'CONFIRMED');
 
                 return new OrderItem({
                     ...item,
+                    item_status: itemStatusResolved,
                     brand_name: item.brand_name || '',
                     variant_title: vTitle || (vColor ? `${vColor} ${vSize || ''}`.trim() : ''),
                     sku: vSku,
@@ -516,7 +530,19 @@ exports.getOrderDetails = async (req, res) => {
                     has_return_policy: item.has_return_policy,
                     is_replacement_available: item.is_replacement_available,
                     return_window_days: item.return_window_days,
-                    replacement_window_days: item.replacement_window_days
+                    replacement_window_days: item.replacement_window_days,
+                    seller_name: item.seller_name,
+                    seller_city: item.seller_city,
+                    seller_state: item.seller_state,
+                    seller_address: item.seller_address,
+                    tracking_number: item.tracking_number || orderRows[0].tracking_number || null,
+                    courier_name: item.courier_name || orderRows[0].courier_name || null,
+                    dispatch_mode: item.dispatch_mode || orderRows[0].dispatch_mode || 'LOCAL_RIDER',
+                    delivery_agent_name: item.delivery_agent_name,
+                    delivery_agent_phone: item.delivery_agent_phone,
+                    pickup_status: item.pickup_status || orderRows[0].pickup_status || 'PENDING',
+                    picked_up_at: item.picked_up_at || orderRows[0].picked_up_at || null,
+                    delivered_at: item.delivered_at || (orderRows[0].order_status === 'DELIVERED' ? orderRows[0].delivered_at : null)
                 });
             }),
             return_request: returnRows && returnRows[0] ? {

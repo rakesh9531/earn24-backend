@@ -667,6 +667,7 @@ exports.getMerchantOrders = async (req, res) => {
                 const confirmedTime = r.assigned_at || (r.order_status !== 'PENDING' && r.order_status !== 'PENDING_PAYMENT' ? (r.updated_at || r.created_at) : null);
 
                 ordersMap.set(r.order_id, {
+                    id: r.order_id,
                     order_id: r.order_id,
                     order_number: r.order_number,
                     order_status: r.order_status,
