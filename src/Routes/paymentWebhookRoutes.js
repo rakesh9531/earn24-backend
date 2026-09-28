@@ -16,6 +16,8 @@ router.post('/payment-success', webhookController.handlePaymentSuccess);
  * @desc    Shiprocket tracking webhook for courier milestones (In Transit, Out for Delivery, Delivered)
  * @access  Public
  */
+router.all('/courier-tracking', webhookController.handleShiprocketWebhook);
+router.all('/delivery-update', webhookController.handleShiprocketWebhook);
 router.all('/shiprocket', webhookController.handleShiprocketWebhook);
 router.all('/shiprocket/webhook', webhookController.handleShiprocketWebhook);
 
