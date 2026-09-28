@@ -11,8 +11,12 @@ const webhookController = require('../Controllers/webhookController');
  */
 router.post('/payment-success', webhookController.handlePaymentSuccess);
 
-// You can add other webhook routes here in the future if needed, for example:
-// router.post('/payment-failed', webhookController.handlePaymentFailure);
-// router.post('/refund-processed', webhookController.handleRefund);
+/**
+ * @route   POST/ALL /api/webhooks/shiprocket
+ * @desc    Shiprocket tracking webhook for courier milestones (In Transit, Out for Delivery, Delivered)
+ * @access  Public
+ */
+router.all('/shiprocket', webhookController.handleShiprocketWebhook);
+router.all('/shiprocket/webhook', webhookController.handleShiprocketWebhook);
 
 module.exports = router;
