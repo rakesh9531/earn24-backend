@@ -995,3 +995,139 @@ exports.verifyPickupOtp = async (req, res) => {
         res.status(500).json({ status: false, message: "An error occurred during pickup verification: " + error.message });
     }
 };
+
+/**
+ * POST /api/admin/orders/:orderId/dispatch-shiprocket
+ * Admin dispatches order / central hub items via Shiprocket courier
+ */
+exports.dispatchAdminOrderShiprocket = async (req, res) => {
+    const { orderId } = req.params;
+    const { pickupLocation: customPickupLocation } = req.body || {};
+
+    try {
+        const [orderRows] = await db.query(`
+            SELECT o.*, u.full_name as customer_name, u.mobile_number as customer_phone,
+                   ua.address_line_1, ua.address_line_2, ua.city, ua.state, ua.pincode
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            LEFT JOIN user_addresses ua ON o.shipping_address_id = ua.id
+            WHERE o.id = ?
+        `, [orderId]);
+
+        if (orderRows.length === 0) {
+            return res.status(404).json({ status: false, message: "Order not found." });
+        }
+        const order = orderRows[0];
+
+        if (['DELIVERED', 'CANCELLED', 'RETURNED'].includes((order.order_status || '').toUpperCase())) {
+            return res.status(400).json({ status: false, message: `Cannot dispatch order with status '${order.order_status}'.` });
+        }
+
+        // Strict Check: Block assigning orders with unconfirmed online payment
+        const payMethod = (order.payment_method || '').toUpperCase();
+        const payStatus = (order.payment_status || '').toUpperCase();
+        const isOnline = ['ONLINE', 'PAYU', 'RAZORPAY', 'WALLET'].includes(payMethod);
+        const isPaid = ['PAID', 'COMPLETED', 'SUCCESS'].includes(payStatus);
+
+        if (isOnline && !isPaid) {
+            return res.status(400).json({ 
+                status: false, 
+                message: `Payment is ${order.payment_status || 'PENDING'}. Cannot dispatch courier until online payment is confirmed.` 
+            });
+        }
+
+        // Fetch order items belonging to Admin / Central Hub, or all items not yet dispatched
+        const [items] = await db.query(`
+            SELECT oi.id, oi.product_id, oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price,
+                   s.sellerable_type, s.sellerable_id
+            FROM order_items oi
+            LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN sellers s ON sp.seller_id = s.id
+            WHERE oi.order_id = ?
+        `, [orderId]);
+
+        if (items.length === 0) {
+            return res.status(400).json({ status: false, message: "No items found in this order." });
+        }
+
+        // Filter items that Admin is dispatching (Central hub / Admin products, or all non-dispatched items)
+        const adminItems = items.filter(it => it.sellerable_type !== 'Merchant' || !it.sellerable_id);
+        const itemsToDispatch = adminItems.length > 0 ? adminItems : items;
+
+        const pickupLocation = customPickupLocation 
+            ? String(customPickupLocation).trim().substring(0, 36) 
+            : (process.env.SHIPROCKET_PICKUP_LOCATION || "Primary");
+
+        const groupTotal = itemsToDispatch.reduce((sum, it) => sum + parseFloat(it.total_price || (it.price_per_unit * it.quantity) || 0), 0);
+        const isPrepaid = isOnline || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID';
+
+        const shiprocketItems = itemsToDispatch.map(it => ({
+            name: it.product_name || "Catalog Product",
+            sku: `PROD-${it.product_id}`,
+            units: it.quantity || 1,
+            selling_price: parseFloat(it.price_per_unit || 0)
+        }));
+
+        const subOrderId = order.order_number;
+
+        let shipmentResult;
+        try {
+            const shiprocketService = require('../Services/shiprocketService');
+            shipmentResult = await shiprocketService.createForwardOrder({
+                order_id: subOrderId,
+                order_date: new Date(),
+                pickup_location: pickupLocation,
+                billing_customer_name: order.customer_name || "Customer",
+                billing_address: order.address_line_1 || "Address",
+                billing_city: order.city || "City",
+                billing_pincode: order.pincode || "828207",
+                billing_state: order.state || "State",
+                billing_country: "India",
+                billing_email: "support@earn24.in",
+                billing_phone: order.customer_phone || "9999999999",
+                shipping_is_billing: true,
+                order_items: shiprocketItems,
+                payment_method: isPrepaid ? "Prepaid" : "COD",
+                sub_total: groupTotal > 0 ? groupTotal : parseFloat(order.total_amount || 0),
+                length: 10, breadth: 10, height: 10, weight: 0.5
+            });
+        } catch (srErr) {
+            return res.status(400).json({ status: false, message: `Shiprocket Error: ${srErr.message}` });
+        }
+
+        const awb = shipmentResult?.awb_code || shipmentResult?.shipment_id || `AWB-${Date.now()}`;
+        const courierName = shipmentResult?.courier_name || 'Shiprocket Express';
+        const itemIds = itemsToDispatch.map(i => i.id);
+
+        await db.query(`
+            UPDATE order_items 
+            SET tracking_number = ?, 
+                courier_name = ?, 
+                dispatch_mode = 'SHIPROCKET_COURIER', 
+                item_status = 'SHIPPED' 
+            WHERE id IN (?)
+        `, [awb, courierName, itemIds]);
+
+        await db.query(`
+            UPDATE orders 
+            SET order_status = 'SHIPPED', 
+                dispatch_mode = 'SHIPROCKET_COURIER',
+                delivery_agent_id = NULL,
+                tracking_number = IFNULL(tracking_number, ?),
+                courier_name = IFNULL(courier_name, ?)
+            WHERE id = ?
+        `, [awb, courierName, orderId]);
+
+        return res.status(200).json({
+            status: true,
+            message: `Order successfully dispatched to Shiprocket! Tracking AWB: ${awb}`,
+            tracking_number: awb,
+            courier_name: courierName,
+            shipment_id: shipmentResult?.shipment_id
+        });
+
+    } catch (error) {
+        console.error("dispatchAdminOrderShiprocket Error:", error);
+        return res.status(500).json({ status: false, message: "Could not dispatch order via Shiprocket: " + error.message });
+    }
+};

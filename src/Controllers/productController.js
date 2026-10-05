@@ -1365,14 +1365,25 @@ exports.getTrendingSearches = async (req, res) => {
 //     }
 // };
 
+const STOP_WORDS = new Set(['&', 'and', 'or', 'the', 'in', 'on', 'at', 'to', 'for', 'of', 'a', 'an', 'is', 'by', 'with', 'from', 'all']);
+
 const extractSearchStems = (text) => {
     if (!text || typeof text !== 'string') return [];
     const cleaned = text.toLowerCase().trim();
-    const words = cleaned.split(/\s+/).filter(w => w.length > 0);
-    if (words.length > 1) {
-        return [cleaned, ...words];
+    const words = cleaned
+        .split(/[^a-zA-Z0-9]+/)
+        .filter(w => w.length > 1 && !STOP_WORDS.has(w));
+    
+    const stems = [];
+    if (cleaned.length > 2 && !STOP_WORDS.has(cleaned)) {
+        stems.push(cleaned);
     }
-    return words.length > 0 ? words : [cleaned];
+    for (const w of words) {
+        if (!stems.includes(w)) {
+            stems.push(w);
+        }
+    }
+    return stems.length > 0 ? stems : [cleaned];
 };
 
 exports.searchProducts = async (req, res) => {
@@ -1419,6 +1430,32 @@ exports.searchProducts = async (req, res) => {
       console.log(`[SEARCH DIAGNOSTIC] Seller_products matching name LIKE '%${query}%':`, diagSellerProds);
     }
 
+    // --- Exact Category / Subcategory Detection (For Trending Categories) ---
+    let matchedCategoryId = categoryId || null;
+    let matchedSubcategoryId = null;
+
+    if (!matchedCategoryId && query && query.trim().length > 0) {
+      const trimmedQuery = query.trim().toLowerCase();
+      const [catMatch] = await db.query(
+        "SELECT id FROM product_categories WHERE LOWER(TRIM(name)) = ? AND (is_deleted = 0 OR is_deleted IS NULL) LIMIT 1",
+        [trimmedQuery]
+      ).catch(() => [[]]);
+
+      if (catMatch && catMatch.length > 0) {
+        matchedCategoryId = catMatch[0].id;
+        console.log(`[SEARCH] Query "${query}" resolved to exact Category ID: ${matchedCategoryId}`);
+      } else {
+        const [subCatMatch] = await db.query(
+          "SELECT id, category_id FROM product_subcategories WHERE LOWER(TRIM(name)) = ? AND (is_deleted = 0 OR is_deleted IS NULL) LIMIT 1",
+          [trimmedQuery]
+        ).catch(() => [[]]);
+        if (subCatMatch && subCatMatch.length > 0) {
+          matchedSubcategoryId = subCatMatch[0].id;
+          console.log(`[SEARCH] Query "${query}" resolved to exact Subcategory ID: ${matchedSubcategoryId}`);
+        }
+      }
+    }
+
     // --- 2. Build WHERE Clauses ---
     let whereClauses = [
       "(p.is_deleted = 0 OR p.is_deleted IS NULL)",
@@ -1428,7 +1465,13 @@ exports.searchProducts = async (req, res) => {
     ];
     let queryParams = [];
 
-    if (query && query.trim().length > 0) {
+    if (matchedCategoryId) {
+      whereClauses.push("p.category_id = ?");
+      queryParams.push(matchedCategoryId);
+    } else if (matchedSubcategoryId) {
+      whereClauses.push("p.subcategory_id = ?");
+      queryParams.push(matchedSubcategoryId);
+    } else if (query && query.trim().length > 0) {
       const stems = extractSearchStems(query);
       const searchConditions = stems
         .map((stem) => {
@@ -1448,10 +1491,6 @@ exports.searchProducts = async (req, res) => {
       whereClauses.push(`(${searchConditions})`);
     }
 
-    if (categoryId) {
-      whereClauses.push("p.category_id = ?");
-      queryParams.push(categoryId);
-    }
     if (brandId) {
       whereClauses.push("p.brand_id = ?");
       queryParams.push(brandId);
@@ -1487,6 +1526,30 @@ exports.searchProducts = async (req, res) => {
     // --- 3. Handle Sorting & Search Relevance ---
     let sortParts = [];
     const dataQueryParams = [...queryParams];
+    let isExplicitSort = false;
+
+    switch (sortBy) {
+      case "price_asc":
+        sortParts.push("sp.selling_price ASC");
+        isExplicitSort = true;
+        break;
+      case "price_desc":
+        sortParts.push("sp.selling_price DESC");
+        isExplicitSort = true;
+        break;
+      case "rating":
+      case "ratings":
+        sortParts.push("IFNULL(sp.avg_rating, IFNULL(p.avg_rating, 0)) DESC, IFNULL(sp.total_reviews, IFNULL(p.total_reviews, 0)) DESC, sp.selling_price ASC");
+        isExplicitSort = true;
+        break;
+      case "discount":
+        sortParts.push("IFNULL(ROUND(((sp.mrp - sp.selling_price) / NULLIF(sp.mrp, 0)) * 100), 0) DESC, sp.selling_price ASC");
+        isExplicitSort = true;
+        break;
+      default:
+        isExplicitSort = false;
+        break;
+    }
 
     if (isPincodeProvided) {
       sortParts.push(`(
@@ -1498,7 +1561,7 @@ exports.searchProducts = async (req, res) => {
       dataQueryParams.push(pincode);
     }
 
-    if (query && query.trim().length > 0) {
+    if (!isExplicitSort && query && query.trim().length > 0 && !matchedCategoryId && !matchedSubcategoryId) {
       const trimmed = query.trim().toLowerCase();
       const exactMatch = trimmed;
       const startsWithPattern = `${trimmed}%`;
@@ -1515,16 +1578,8 @@ exports.searchProducts = async (req, res) => {
       dataQueryParams.push(exactMatch, startsWithPattern, containsPattern);
     }
 
-    switch (sortBy) {
-      case "price_asc":
-        sortParts.push("sp.selling_price ASC");
-        break;
-      case "price_desc":
-        sortParts.push("sp.selling_price DESC");
-        break;
-      default:
-        sortParts.push("p.popularity DESC");
-        break;
+    if (!isExplicitSort) {
+      sortParts.push("p.popularity DESC");
     }
 
     const orderByClause = `ORDER BY ${sortParts.join(", ")}`;
@@ -1562,6 +1617,9 @@ exports.searchProducts = async (req, res) => {
                 sp.mrp, 
                 sp.minimum_order_quantity,
                 p.popularity,
+                IFNULL(sp.avg_rating, IFNULL(p.avg_rating, 0)) as avg_rating,
+                IFNULL(sp.total_reviews, IFNULL(p.total_reviews, 0)) as total_reviews,
+                IFNULL(ROUND(((sp.mrp - sp.selling_price) / NULLIF(sp.mrp, 0)) * 100), 0) as discount_percentage,
                 COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
                 sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
@@ -1617,6 +1675,10 @@ exports.searchProducts = async (req, res) => {
         id: p.product_id,
         product_id: p.product_id,
         offer_id: p.offer_id,
+        avg_rating: parseFloat(p.avg_rating || 0).toFixed(1),
+        total_reviews: parseInt(p.total_reviews || 0, 10),
+        discount_percentage: parseFloat(p.discount_percentage || 0),
+        discount: parseFloat(p.discount_percentage || 0),
         has_return_policy: rawHasReturn ? 1 : 0,
         return_window_days: returnDays,
         is_replacement_available: rawHasReplacement ? 1 : 0,
