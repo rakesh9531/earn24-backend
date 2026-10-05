@@ -1376,7 +1376,9 @@ exports.dispatchMerchantOrderShiprocket = async (req, res) => {
 
         const merchantInfo = items[0];
         const subOrderId = `${order.order_number}-M${merchantId}`;
-        const pickupLocation = merchantInfo.business_name ? String(merchantInfo.business_name).substring(0, 36) : "Primary";
+        const pickupLocation = req.body?.pickupLocation 
+            ? String(req.body.pickupLocation).trim().substring(0, 36) 
+            : (merchantInfo.business_name ? String(merchantInfo.business_name).substring(0, 36) : "Primary");
         const groupTotal = items.reduce((sum, it) => sum + parseFloat(it.total_price || (it.price_per_unit * it.quantity) || 0), 0);
         const isPrepaid = ['WALLET', 'ONLINE', 'PAYU'].includes((order.payment_method || '').toUpperCase()) || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID';
 
@@ -1392,7 +1394,7 @@ exports.dispatchMerchantOrderShiprocket = async (req, res) => {
             const shiprocketService = require('../Services/shiprocketService');
             shipmentResult = await shiprocketService.createForwardOrder({
                 order_id: subOrderId,
-                order_date: new Date().toISOString(),
+                order_date: new Date(),
                 pickup_location: pickupLocation,
                 billing_customer_name: order.customer_name || "Customer",
                 billing_address: order.address_line_1 || "Address",
@@ -1406,7 +1408,7 @@ exports.dispatchMerchantOrderShiprocket = async (req, res) => {
                 order_items: shiprocketItems,
                 payment_method: isPrepaid ? "Prepaid" : "COD",
                 sub_total: groupTotal > 0 ? groupTotal : parseFloat(order.total_amount || 0),
-                length: 10, width: 10, height: 10, weight: 0.5
+                length: 10, breadth: 10, height: 10, weight: 0.5
             });
         } catch (srErr) {
             return res.status(400).json({ status: false, message: `Shiprocket Error: ${srErr.message}` });
