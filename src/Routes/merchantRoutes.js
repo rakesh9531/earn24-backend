@@ -27,6 +27,8 @@ router.put('/products/:id',    auth, productUploadMiddleware, merchant.updateMer
 router.get('/products',        auth, merchant.getMerchantProducts);
 router.get('/orders',          auth, merchant.getMerchantOrders);
 router.post('/orders/:orderId/verify-pickup', auth, merchant.verifyMerchantPickupOtp);
+router.post('/orders/:orderId/assign-delivery', auth, merchant.assignMerchantOrderDelivery);
+router.post('/orders/:orderId/dispatch-shiprocket', auth, merchant.dispatchMerchantOrderShiprocket);
 
 // ══ Wallet & Earnings ══
 router.get('/wallet/summary',       auth, wallet.getWalletSummary);
