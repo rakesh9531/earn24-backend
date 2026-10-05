@@ -898,15 +898,28 @@ exports.getHistory = async (req, res) => {
     const page = parseInt(req.query.page) || 1; // Default to page 1
     const limit = 10; // Number of records per page
     const offset = (page - 1) * limit;
+    const search = (req.query.search || '').trim();
 
     try {
+        let searchClause = "";
+        let searchParams = [];
+
+        if (search) {
+            searchClause = " AND (o.order_number LIKE ? OR u.full_name LIKE ? OR u.mobile_number LIKE ?)";
+            const pattern = `%${search}%`;
+            searchParams = [pattern, pattern, pattern];
+        }
+
         // 1. Get the total count of history items (to calculate total pages)
         const [countResult] = await db.query(
-            "SELECT COUNT(*) as total FROM orders WHERE delivery_agent_id = ? AND order_status IN ('DELIVERED', 'CANCELLED')", 
-            [agentId]
+            `SELECT COUNT(*) as total 
+             FROM orders o
+             JOIN users u ON o.user_id = u.id
+             WHERE o.delivery_agent_id = ? AND o.order_status IN ('DELIVERED', 'CANCELLED') ${searchClause}`, 
+            [agentId, ...searchParams]
         );
         const totalItems = countResult[0].total;
-        const totalPages = Math.ceil(totalItems / limit);
+        const totalPages = Math.ceil(totalItems / limit) || 1;
 
         // 2. Fetch the paginated data (Includes cancellation details and proper date ordering)
         const query = `
@@ -915,11 +928,11 @@ exports.getHistory = async (req, res) => {
                    u.full_name as customer_name
             FROM orders o
             JOIN users u ON o.user_id = u.id
-            WHERE o.delivery_agent_id = ? AND o.order_status IN ('DELIVERED', 'CANCELLED')
+            WHERE o.delivery_agent_id = ? AND o.order_status IN ('DELIVERED', 'CANCELLED') ${searchClause}
             ORDER BY COALESCE(o.delivered_at, o.cancelled_at, o.updated_at) DESC 
             LIMIT ? OFFSET ?`;
             
-        const [rows] = await db.query(query, [agentId, limit, offset]);
+        const [rows] = await db.query(query, [agentId, ...searchParams, limit, offset]);
 
         res.json({ 
             status: true, 

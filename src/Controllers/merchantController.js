@@ -1226,3 +1226,223 @@ exports.getDeliveryAgents = async (req, res) => {
         res.status(500).json({ status: false, message: "Could not fetch delivery agents." });
     }
 };
+
+/**
+ * POST /api/merchant/orders/:orderId/assign-delivery
+ * Merchant assigns a delivery agent specifically for their own order items
+ */
+exports.assignMerchantOrderDelivery = async (req, res) => {
+    const merchantId = req.user.id;
+    const { orderId } = req.params;
+    const { deliveryAgentId } = req.body;
+
+    if (!deliveryAgentId) {
+        return res.status(400).json({ status: false, message: "Delivery agent ID is required." });
+    }
+
+    try {
+        const [orderRows] = await db.query(
+            "SELECT id, order_number, order_status, payment_method, payment_status, total_amount FROM orders WHERE id = ?",
+            [orderId]
+        );
+        if (orderRows.length === 0) {
+            return res.status(404).json({ status: false, message: "Order not found." });
+        }
+        const order = orderRows[0];
+
+        // Fetch merchant's items for this order
+        const [items] = await db.query(`
+            SELECT oi.id, oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price, oi.item_status,
+                   m.business_name, m.business_address, m.phone_number as merchant_phone
+            FROM order_items oi
+            JOIN seller_products sp ON oi.seller_product_id = sp.id
+            JOIN sellers s ON sp.seller_id = s.id
+            JOIN merchants m ON s.sellerable_id = m.id
+            WHERE oi.order_id = ? AND s.sellerable_type = 'Merchant' AND s.sellerable_id = ?
+        `, [orderId, merchantId]);
+
+        if (items.length === 0) {
+            return res.status(403).json({ status: false, message: "You do not have any items in this order to assign." });
+        }
+
+        // Verify agent
+        const [agents] = await db.query("SELECT id, full_name, phone_number FROM delivery_agents WHERE id = ? AND is_active = 1", [deliveryAgentId]);
+        if (agents.length === 0) {
+            return res.status(404).json({ status: false, message: "Active delivery agent not found." });
+        }
+        const agent = agents[0];
+
+        // Generate 4-digit pickup OTP for this merchant
+        const pickupOtp = Math.floor(1000 + Math.random() * 9000).toString();
+        const itemIds = items.map(i => i.id);
+
+        // Update merchant's order_items
+        await db.query(`
+            UPDATE order_items 
+            SET pickup_otp = ?, 
+                pickup_status = 'PENDING', 
+                item_status = 'SHIPPED', 
+                dispatch_mode = 'LOCAL_RIDER'
+            WHERE id IN (?)
+        `, [pickupOtp, itemIds]);
+
+        await db.query(
+            `UPDATE order_items SET delivery_agent_id = ? WHERE id IN (?)`,
+            [deliveryAgentId, itemIds]
+        ).catch(() => {});
+
+        // Update orders table
+        await db.query(`
+            UPDATE orders 
+            SET order_status = 'SHIPPED',
+                delivery_agent_id = IFNULL(delivery_agent_id, ?),
+                pickup_otp = IFNULL(pickup_otp, ?),
+                pickup_status = IFNULL(pickup_status, 'PENDING'),
+                assignment_status = 'PENDING_ACCEPTANCE',
+                assigned_at = NOW()
+            WHERE id = ?
+        `, [deliveryAgentId, pickupOtp, orderId]);
+
+        // Emit socket notifications to rider and admin
+        const io = req.app.get('socketio');
+        if (io) {
+            io.to(`agent_${deliveryAgentId}`).emit('order_assigned', {
+                orderId: order.id,
+                orderNumber: order.order_number,
+                deliveryAgentId,
+                pickupOtp,
+                merchantName: items[0]?.business_name || 'Merchant',
+                pickupAddress: items[0]?.business_address || 'Merchant Store',
+                message: `New order #${order.order_number} assigned from ${items[0]?.business_name || 'Merchant'}. Please accept and collect with OTP.`
+            });
+            io.to('admins').emit('order_status_updated', {
+                orderId: order.id,
+                orderNumber: order.order_number,
+                status: 'SHIPPED',
+                merchantId,
+                agentName: agent.full_name
+            });
+        }
+
+        return res.status(200).json({
+            status: true,
+            message: `Order assigned to ${agent.full_name} successfully. Share Pickup OTP (${pickupOtp}) with rider when they arrive at your store.`,
+            pickupOtp
+        });
+
+    } catch (error) {
+        console.error("assignMerchantOrderDelivery Error:", error);
+        return res.status(500).json({ status: false, message: error.message || "Could not assign delivery agent." });
+    }
+};
+
+/**
+ * POST /api/merchant/orders/:orderId/dispatch-shiprocket
+ * Merchant dispatches their own items in an order via Shiprocket courier
+ */
+exports.dispatchMerchantOrderShiprocket = async (req, res) => {
+    const merchantId = req.user.id;
+    const { orderId } = req.params;
+
+    try {
+        const [orderRows] = await db.query(`
+            SELECT o.*, u.full_name as customer_name, u.mobile_number as customer_phone,
+                   ua.address_line_1, ua.address_line_2, ua.city, ua.state, ua.pincode
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            LEFT JOIN user_addresses ua ON o.shipping_address_id = ua.id
+            WHERE o.id = ?
+        `, [orderId]);
+
+        if (orderRows.length === 0) {
+            return res.status(404).json({ status: false, message: "Order not found." });
+        }
+        const order = orderRows[0];
+
+        // Fetch merchant details & items
+        const [items] = await db.query(`
+            SELECT oi.id, oi.product_id, oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price,
+                   m.business_name, m.business_address, m.pincode as merchant_pincode, m.city as merchant_city, m.state as merchant_state, m.phone_number as merchant_phone
+            FROM order_items oi
+            JOIN seller_products sp ON oi.seller_product_id = sp.id
+            JOIN sellers s ON sp.seller_id = s.id
+            JOIN merchants m ON s.sellerable_id = m.id
+            WHERE oi.order_id = ? AND s.sellerable_type = 'Merchant' AND s.sellerable_id = ?
+        `, [orderId, merchantId]);
+
+        if (items.length === 0) {
+            return res.status(403).json({ status: false, message: "No items belonging to you found in this order." });
+        }
+
+        const merchantInfo = items[0];
+        const subOrderId = `${order.order_number}-M${merchantId}`;
+        const pickupLocation = merchantInfo.business_name ? String(merchantInfo.business_name).substring(0, 36) : "Primary";
+        const groupTotal = items.reduce((sum, it) => sum + parseFloat(it.total_price || (it.price_per_unit * it.quantity) || 0), 0);
+        const isPrepaid = ['WALLET', 'ONLINE', 'PAYU'].includes((order.payment_method || '').toUpperCase()) || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID';
+
+        const shiprocketItems = items.map(it => ({
+            name: it.product_name || "Merchant Product",
+            sku: `PROD-${it.product_id}`,
+            units: it.quantity || 1,
+            selling_price: parseFloat(it.price_per_unit || 0)
+        }));
+
+        let shipmentResult;
+        try {
+            const shiprocketService = require('../Services/shiprocketService');
+            shipmentResult = await shiprocketService.createForwardOrder({
+                order_id: subOrderId,
+                order_date: new Date().toISOString(),
+                pickup_location: pickupLocation,
+                billing_customer_name: order.customer_name || "Customer",
+                billing_address: order.address_line_1 || "Address",
+                billing_city: order.city || "City",
+                billing_pincode: order.pincode || "828207",
+                billing_state: order.state || "State",
+                billing_country: "India",
+                billing_email: "support@earn24.in",
+                billing_phone: order.customer_phone || "9999999999",
+                shipping_is_billing: true,
+                order_items: shiprocketItems,
+                payment_method: isPrepaid ? "Prepaid" : "COD",
+                sub_total: groupTotal > 0 ? groupTotal : parseFloat(order.total_amount || 0),
+                length: 10, width: 10, height: 10, weight: 0.5
+            });
+        } catch (srErr) {
+            return res.status(400).json({ status: false, message: `Shiprocket Error: ${srErr.message}` });
+        }
+
+        const awb = shipmentResult?.awb_code || shipmentResult?.shipment_id || `AWB-${Date.now()}`;
+        const courierName = shipmentResult?.courier_name || 'Shiprocket Express';
+        const itemIds = items.map(i => i.id);
+
+        await db.query(`
+            UPDATE order_items 
+            SET tracking_number = ?, 
+                courier_name = ?, 
+                dispatch_mode = 'SHIPROCKET_COURIER', 
+                item_status = 'SHIPPED' 
+            WHERE id IN (?)
+        `, [awb, courierName, itemIds]);
+
+        await db.query(`
+            UPDATE orders 
+            SET order_status = 'SHIPPED', 
+                dispatch_mode = 'SHIPROCKET_COURIER',
+                tracking_number = IFNULL(tracking_number, ?),
+                courier_name = IFNULL(courier_name, ?)
+            WHERE id = ?
+        `, [awb, courierName, orderId]);
+
+        return res.status(200).json({
+            status: true,
+            message: `Dispatched via ${courierName}! Tracking number: ${awb}`,
+            tracking_number: awb,
+            courier_name: courierName
+        });
+
+    } catch (error) {
+        console.error("dispatchMerchantOrderShiprocket Error:", error);
+        return res.status(500).json({ status: false, message: error.message || "Failed to dispatch via Shiprocket." });
+    }
+};

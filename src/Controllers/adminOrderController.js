@@ -15,8 +15,21 @@ exports.getOrdersByStatus = async (req, res) => {
         if (status === 'CONFIRMED') {
             whereClause = "WHERE o.order_status IN ('CONFIRMED', 'PLACED', 'SHIPPED', 'OUT_FOR_DELIVERY')";
         } else if (status === 'ALL') {
-            // Process New Orders should only include active processing orders, not delivered or cancelled orders
-            whereClause = "WHERE o.order_status NOT IN ('PENDING', 'PENDING_PAYMENT', 'DELIVERED', 'CANCELLED')";
+            // Process New Orders should only include active processing orders needing Admin assignment:
+            // 1. Must contain Admin / Non-merchant products (merchant-only orders are processed by their respective merchants)
+            // 2. Must not be already picked up by rider (o.pickup_status != 'PICKED_UP')
+            // 3. Must not be already dispatched via courier
+            // 4. Must not be completed or cancelled
+            whereClause = `WHERE o.order_status NOT IN ('PENDING', 'PENDING_PAYMENT', 'DELIVERED', 'CANCELLED', 'OUT_FOR_DELIVERY')
+                           AND (o.pickup_status IS NULL OR o.pickup_status != 'PICKED_UP')
+                           AND NOT (o.dispatch_mode = 'SHIPROCKET_COURIER' AND o.tracking_number IS NOT NULL)
+                           AND EXISTS (
+                               SELECT 1 FROM order_items oi 
+                               LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id 
+                               LEFT JOIN sellers s ON sp.seller_id = s.id 
+                               WHERE oi.order_id = o.id 
+                               AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
+                           )`;
         } else {
             whereClause = "WHERE o.order_status = ?";
             params = [status];
@@ -469,6 +482,8 @@ exports.getAllOrdersHistory = async (req, res) => {
     const status = (req.query.status || 'ALL').toUpperCase();
     const offset = (page - 1) * limit;
     const searchPattern = `%${search}%`;
+    const merchantId = req.query.merchant_id || req.query.merchantId;
+    const sortBy = req.query.sort_by || 'DATE_DESC';
 
     try {
         let whereClauses = [];
@@ -477,6 +492,28 @@ exports.getAllOrdersHistory = async (req, res) => {
         if (search) {
             whereClauses.push(`(o.order_number LIKE ? OR u.full_name LIKE ? OR u.mobile_number LIKE ? OR da.full_name LIKE ?)`);
             params.push(searchPattern, searchPattern, searchPattern, searchPattern);
+        }
+
+        if (merchantId && merchantId !== 'ALL') {
+            if (merchantId === 'ADMIN') {
+                whereClauses.push(`EXISTS (
+                    SELECT 1 FROM order_items oi 
+                    LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id 
+                    LEFT JOIN sellers s ON sp.seller_id = s.id 
+                    WHERE oi.order_id = o.id 
+                    AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
+                )`);
+            } else {
+                whereClauses.push(`EXISTS (
+                    SELECT 1 FROM order_items oi 
+                    JOIN seller_products sp ON oi.seller_product_id = sp.id 
+                    JOIN sellers s ON sp.seller_id = s.id 
+                    WHERE oi.order_id = o.id 
+                    AND s.sellerable_type = 'Merchant' 
+                    AND s.sellerable_id = ?
+                )`);
+                params.push(merchantId);
+            }
         }
 
         if (status === 'RETURNS') {
@@ -494,6 +531,19 @@ exports.getAllOrdersHistory = async (req, res) => {
 
         const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
+        let orderSql = 'ORDER BY o.created_at DESC';
+        if (sortBy === 'DATE_ASC') {
+            orderSql = 'ORDER BY o.created_at ASC';
+        } else if (sortBy === 'AMOUNT_HIGH') {
+            orderSql = 'ORDER BY o.total_amount DESC';
+        } else if (sortBy === 'AMOUNT_LOW') {
+            orderSql = 'ORDER BY o.total_amount ASC';
+        } else if (sortBy === 'MERCHANT_ASC') {
+            orderSql = 'ORDER BY merchant_names ASC, o.created_at DESC';
+        } else if (sortBy === 'MERCHANT_DESC') {
+            orderSql = 'ORDER BY merchant_names DESC, o.created_at DESC';
+        }
+
         const query = `
             SELECT o.*, 
                    u.full_name as customer_name, u.mobile_number as customer_phone,
@@ -503,7 +553,15 @@ exports.getAllOrdersHistory = async (req, res) => {
                    (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,
                    (SELECT product_name FROM order_items WHERE order_id = o.id LIMIT 1) as first_item_name,
                    (SELECT p.main_image_url FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = o.id LIMIT 1) as first_item_image,
-                   (SELECT attributes_snapshot FROM order_items WHERE order_id = o.id LIMIT 1) as first_item_attributes
+                   (SELECT attributes_snapshot FROM order_items WHERE order_id = o.id LIMIT 1) as first_item_attributes,
+                   (
+                       SELECT GROUP_CONCAT(DISTINCT COALESCE(m.business_name, s.display_name, 'Earn24 Admin') SEPARATOR ', ')
+                       FROM order_items oi
+                       LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+                       LEFT JOIN sellers s ON sp.seller_id = s.id
+                       LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+                       WHERE oi.order_id = o.id
+                   ) as merchant_names
             FROM orders o
             JOIN users u ON o.user_id = u.id
             LEFT JOIN delivery_agents da ON o.delivery_agent_id = da.id
@@ -513,7 +571,7 @@ exports.getAllOrdersHistory = async (req, res) => {
                 ORDER BY r2.id DESC LIMIT 1
             )
             ${whereSql}
-            ORDER BY o.created_at DESC
+            ${orderSql}
             LIMIT ? OFFSET ?`;
 
         const queryParams = [...params, limit, offset];
@@ -560,6 +618,23 @@ exports.getAllOrdersHistory = async (req, res) => {
         });
     } catch (e) {
         console.error('[getAllOrdersHistory Error]', e);
+        res.status(500).json({ status: false, message: e.message });
+    }
+};
+
+/**
+ * GET /api/admin/orders/merchants-filter-list
+ * Lightweight list of active merchants for the dropdown filter in Order History
+ */
+exports.getMerchantsFilterList = async (req, res) => {
+    try {
+        const [rows] = await db.query(
+            "SELECT id, business_name FROM merchants WHERE is_approved = 1 ORDER BY business_name ASC"
+        ).catch(async () => {
+            return await db.query("SELECT id, business_name FROM merchants ORDER BY business_name ASC");
+        });
+        res.status(200).json({ status: true, data: rows });
+    } catch (e) {
         res.status(500).json({ status: false, message: e.message });
     }
 };
