@@ -5,13 +5,20 @@ const smsService = require('../utils/smsHelper'); // Import the SMS utility
 const commissionService = require('../Services/commissionService');
 const distributionService = require('../Services/distributionService');
 
-// Self-healing columns for courier vs local rider dispatching
+// Self-healing columns for courier vs local rider dispatching and tracking timestamps
 const ensureOrderCourierColumns = async () => {
     try {
         await db.query("ALTER TABLE orders ADD COLUMN dispatch_mode ENUM('LOCAL_RIDER', 'SHIPROCKET_COURIER') DEFAULT 'LOCAL_RIDER'").catch(() => {});
         await db.query("ALTER TABLE orders ADD COLUMN courier_name VARCHAR(100) NULL").catch(() => {});
         await db.query("ALTER TABLE orders ADD COLUMN tracking_number VARCHAR(100) NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN confirmed_at DATETIME NULL").catch(() => {});
         await db.query("ALTER TABLE orders ADD COLUMN assigned_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN accepted_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN picked_up_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN trip_started_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN out_for_delivery_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN shipped_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN delivered_at DATETIME NULL").catch(() => {});
 
         // Self-healing columns on order_items for per-merchant multi-shipment tracking
         await db.query("ALTER TABLE order_items ADD COLUMN delivery_agent_id INT NULL").catch(() => {});
@@ -20,6 +27,8 @@ const ensureOrderCourierColumns = async () => {
         await db.query("ALTER TABLE order_items ADD COLUMN courier_name VARCHAR(100) NULL").catch(() => {});
         await db.query("ALTER TABLE order_items ADD COLUMN dispatch_mode VARCHAR(50) DEFAULT 'LOCAL_RIDER'").catch(() => {});
         await db.query("ALTER TABLE order_items ADD COLUMN pickup_status VARCHAR(50) DEFAULT 'PENDING'").catch(() => {});
+        await db.query("ALTER TABLE order_items ADD COLUMN assigned_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE order_items ADD COLUMN accepted_at DATETIME NULL").catch(() => {});
         await db.query("ALTER TABLE order_items ADD COLUMN picked_up_at DATETIME NULL").catch(() => {});
         await db.query("ALTER TABLE order_items ADD COLUMN delivered_at DATETIME NULL").catch(() => {});
     } catch (e) {}
@@ -399,7 +408,10 @@ exports.startDelivery = async (req, res) => {
             });
         }
 
-        await db.query("UPDATE orders SET order_status = 'OUT_FOR_DELIVERY' WHERE id = ? AND order_status != 'CANCELLED'", [orderId]);
+        await db.query(
+            "UPDATE orders SET order_status = 'OUT_FOR_DELIVERY', trip_started_at = COALESCE(trip_started_at, NOW()), out_for_delivery_at = COALESCE(out_for_delivery_at, NOW()), shipped_at = COALESCE(shipped_at, NOW()) WHERE id = ? AND order_status != 'CANCELLED'", 
+            [orderId]
+        );
         
         const io = req.app.get('socketio');
         if (io) {
@@ -928,9 +940,13 @@ exports.acceptAssignment = async (req, res) => {
         }
 
         await db.query(
-            "UPDATE orders SET assignment_status = 'ACCEPTED' WHERE id = ?",
+            "UPDATE orders SET assignment_status = 'ACCEPTED', accepted_at = COALESCE(accepted_at, NOW()) WHERE id = ?",
             [orderId]
         );
+        await db.query(
+            "UPDATE order_items SET accepted_at = COALESCE(accepted_at, NOW()) WHERE order_id = ? AND delivery_agent_id = ?",
+            [orderId, agentId]
+        ).catch(() => {});
 
         const io = req.app.get('socketio');
         if (io) {
