@@ -195,6 +195,7 @@ async function getPrimaryPickupLocation(token) {
  * Adheres strictly to Shiprocket API specification (/orders/create/adhoc).
  */
 async function createForwardOrder(orderPayload) {
+    let cleanPayload = null;
     try {
         const token = await getAuthToken();
         if (token === "MOCK_SHIPROCKET_TOKEN") {
@@ -273,7 +274,7 @@ async function createForwardOrder(orderPayload) {
         let cleanPincode = String(orderPayload.billing_pincode || "").trim().replace(/\D/g, '').slice(-6);
         if (cleanPincode.length !== 6) cleanPincode = "828207";
 
-        const cleanPayload = {
+        cleanPayload = {
             order_id: String(orderPayload.order_id).substring(0, 50),
             order_date: formattedDate,
             pickup_location: resolvedPickup.substring(0, 36),
