@@ -621,17 +621,15 @@ exports.getMerchantOrders = async (req, res) => {
         const query = `
             SELECT o.id as order_id, o.order_number, o.order_status, o.payment_method, o.payment_status, o.subtotal, o.delivery_fee, o.total_amount, o.created_at,
                    ${assignedAtCol}, o.delivered_at, o.cancelled_at, o.updated_at,
-                   o.delivery_agent_id,
-                   ${trackingCol},
-                   ${courierCol},
-                   ${dispatchCol},
-                   IFNULL(o.pickup_status, 'PENDING') as pickup_status,
-                   o.picked_up_at,
-                   o.pickup_otp,
-                   da.full_name as delivery_agent_name, da.phone_number as delivery_agent_phone,
-                   oi.id as item_id, IFNULL(oi.item_status, o.order_status) as item_status, 
+                   oi.delivery_agent_id,
+                   oi.tracking_number as item_tracking_number,
+                   oi.courier_name as item_courier_name,
+                   oi.dispatch_mode as item_dispatch_mode,
                    IFNULL(oi.pickup_status, 'PENDING') as item_pickup_status,
                    oi.picked_up_at as item_picked_up_at,
+                   oi.pickup_otp as item_pickup_otp,
+                   da.full_name as delivery_agent_name, da.phone_number as delivery_agent_phone,
+                   oi.id as item_id, IFNULL(oi.item_status, o.order_status) as item_status, 
                    oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price, oi.attributes_snapshot, p.main_image_url,
                    u.full_name as customer_name, IFNULL(u.mobile_number, '') as customer_phone,
                    ua.address_line_1, ua.address_line_2, ua.city, ua.state, ua.pincode, ua.landmark,
@@ -645,7 +643,7 @@ exports.getMerchantOrders = async (req, res) => {
             JOIN users u ON o.user_id = u.id
             LEFT JOIN products p ON oi.product_id = p.id
             LEFT JOIN user_addresses ua ON o.shipping_address_id = ua.id
-            LEFT JOIN delivery_agents da ON o.delivery_agent_id = da.id
+            LEFT JOIN delivery_agents da ON oi.delivery_agent_id = da.id
             LEFT JOIN order_returns parent_ret ON (parent_ret.replacement_order_id = o.id OR parent_ret.replacement_order_id = o.order_number)
             LEFT JOIN orders parent_o ON parent_ret.order_id = parent_o.id
             LEFT JOIN order_returns active_ret ON (active_ret.order_id = o.id AND active_ret.status NOT IN ('CANCELLED', 'REJECTED'))
@@ -663,7 +661,7 @@ exports.getMerchantOrders = async (req, res) => {
 
             if (!ordersMap.has(r.order_id)) {
                 const isReplacement = Boolean((r.order_number && r.order_number.startsWith('R-')) || r.payment_method === 'REPLACEMENT' || r.parent_order_number);
-                const isCourierShipment = (r.dispatch_mode === 'SHIPROCKET_COURIER' || r.order_status === 'SHIPPED_SHIPROCKET' || Boolean(r.tracking_number));
+                const isCourierShipment = (r.item_dispatch_mode === 'SHIPROCKET_COURIER' || Boolean(r.item_tracking_number));
                 const confirmedTime = r.assigned_at || (r.order_status !== 'PENDING' && r.order_status !== 'PENDING_PAYMENT' ? (r.updated_at || r.created_at) : null);
 
                 ordersMap.set(r.order_id, {
@@ -672,9 +670,9 @@ exports.getMerchantOrders = async (req, res) => {
                     order_number: r.order_number,
                     order_status: r.order_status,
                     product_status: r.item_status || r.order_status,
-                    dispatch_mode: r.dispatch_mode || (isCourierShipment ? 'SHIPROCKET_COURIER' : 'LOCAL_RIDER'),
-                    courier_name: r.courier_name || (isCourierShipment ? 'Shiprocket Courier' : null),
-                    tracking_number: r.tracking_number || null,
+                    dispatch_mode: r.item_dispatch_mode || (isCourierShipment ? 'SHIPROCKET_COURIER' : 'LOCAL_RIDER'),
+                    courier_name: r.item_courier_name || (isCourierShipment ? 'Shiprocket Courier' : null),
+                    tracking_number: r.item_tracking_number || null,
                     payment_method: r.payment_method || 'COD',
                     payment_status: displayPaymentStatus,
                     full_payment_status: fullPaymentDisplay,
@@ -685,14 +683,14 @@ exports.getMerchantOrders = async (req, res) => {
                     created_at: r.created_at,
                     confirmed_at: confirmedTime,
                     assigned_at: r.assigned_at || r.updated_at || r.created_at,
-                    picked_up_at: r.picked_up_at || r.item_picked_up_at || null,
+                    picked_up_at: r.item_picked_up_at || null,
                     delivered_at: r.delivered_at || null,
                     cancelled_at: r.cancelled_at || null,
                     updated_at: r.updated_at,
                     customer_name: r.customer_name,
                     customer_phone: r.customer_phone,
-                    pickup_status: r.pickup_status || 'PENDING',
-                    pickup_otp: r.pickup_otp || null,
+                    pickup_status: r.item_pickup_status || 'PENDING',
+                    pickup_otp: r.item_pickup_otp || null,
                     shipping_address: {
                         address_line_1: r.address_line_1,
                         address_line_2: r.address_line_2,
@@ -1147,7 +1145,7 @@ exports.verifyMerchantPickupOtp = async (req, res) => {
 
         if (itemRows.length > 0) {
             // Normal order — mark items for this merchant as PICKED_UP
-            const itemIdsToUpdate = isMasterMatched ? itemRows.map(i => i.id) : matchingItems.map(i => i.id);
+            const itemIdsToUpdate = matchingItems.length > 0 ? matchingItems.map(i => i.id) : itemRows.map(i => i.id);
             await db.query(
                 "UPDATE order_items SET pickup_status = 'PICKED_UP', picked_up_at = NOW() WHERE id IN (?)",
                 [itemIdsToUpdate]

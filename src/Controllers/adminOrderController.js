@@ -106,35 +106,35 @@ exports.assignOrderForDelivery = async (req, res) => {
         // Generate a 4-digit secure Pickup OTP for Warehouse / Store handover
         const masterPickupOtp = Math.floor(1000 + Math.random() * 9000).toString();
 
-        // Check if order items are from multiple sellers / merchants
-        const [distinctSellers] = await db.query(`
-            SELECT DISTINCT sp.seller_id, s.sellerable_type, s.sellerable_id
+        // Fetch Admin / Central Hub items only (Items not belonging to any external merchant)
+        const [adminItems] = await db.query(`
+            SELECT oi.id
             FROM order_items oi
-            JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
             LEFT JOIN sellers s ON sp.seller_id = s.id
             WHERE oi.order_id = ?
-        `, [orderId]).catch(() => [[]]);
+              AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
+        `, [orderId]);
 
-        if (distinctSellers && distinctSellers.length > 1) {
-            // Multi-seller / multi-location order: Assign unique 4-digit OTP per distinct seller location
-            for (let idx = 0; idx < distinctSellers.length; idx++) {
-                const s = distinctSellers[idx];
-                const sellerOtp = idx === 0 ? masterPickupOtp : Math.floor(1000 + Math.random() * 9000).toString();
-                await db.query(`
-                    UPDATE order_items oi
-                    JOIN seller_products sp ON oi.seller_product_id = sp.id
-                    SET oi.pickup_otp = ?, oi.pickup_status = 'PENDING'
-                    WHERE oi.order_id = ? AND sp.seller_id = ?
-                `, [sellerOtp, orderId, s.seller_id]).catch(() => {});
-            }
-        } else {
-            // Single location / Central Warehouse order
-            await db.query(`
-                UPDATE order_items 
-                SET pickup_otp = ?, pickup_status = 'PENDING' 
-                WHERE order_id = ?
-            `, [masterPickupOtp, orderId]).catch(() => {});
+        if (adminItems.length === 0) {
+            return res.status(400).json({ 
+                status: false, 
+                message: "No Admin products found in this order. Merchant products must be assigned independently by merchants." 
+            });
         }
+
+        const adminItemIds = adminItems.map(it => it.id);
+
+        // Update ONLY Admin items with this deliveryAgentId, OTP, and status
+        await db.query(`
+            UPDATE order_items 
+            SET delivery_agent_id = ?,
+                pickup_otp = ?, 
+                pickup_status = 'PENDING',
+                dispatch_mode = 'LOCAL_RIDER',
+                item_status = 'SHIPPED'
+            WHERE id IN (?)
+        `, [deliveryAgentId, masterPickupOtp, adminItemIds]);
 
         // Update the order status and assign the delivery agent with PENDING_ACCEPTANCE
         const query = `
@@ -930,12 +930,16 @@ exports.verifyPickupOtp = async (req, res) => {
             });
         }
 
-        // Mark matching items or all items as PICKED_UP
+        // Mark matching items or all admin items as PICKED_UP
         if (isMasterMatched) {
-            await db.query(
-                "UPDATE order_items SET pickup_status = 'PICKED_UP', picked_up_at = NOW() WHERE order_id = ?",
-                [orderId]
-            );
+            await db.query(`
+                UPDATE order_items oi
+                LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+                LEFT JOIN sellers s ON sp.seller_id = s.id
+                SET oi.pickup_status = 'PICKED_UP', oi.picked_up_at = NOW() 
+                WHERE oi.order_id = ?
+                  AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
+            `, [orderId]);
         } else {
             const matchedIds = matchingItems.map(i => i.id);
             await db.query(
@@ -944,14 +948,19 @@ exports.verifyPickupOtp = async (req, res) => {
             );
         }
 
-        // Check if any items are still pending pickup
-        const [remaining] = await db.query(
-            "SELECT COUNT(*) as count FROM order_items WHERE order_id = ? AND IFNULL(pickup_status, 'PENDING') != 'PICKED_UP'",
-            [orderId]
-        );
-        const allPickedUp = (remaining[0]?.count || 0) === 0;
+        // Check if any Admin items are still pending pickup
+        const [remainingAdmin] = await db.query(`
+            SELECT COUNT(*) as count 
+            FROM order_items oi
+            LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN sellers s ON sp.seller_id = s.id
+            WHERE oi.order_id = ? 
+              AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
+              AND IFNULL(oi.pickup_status, 'PENDING') != 'PICKED_UP'
+        `, [orderId]);
+        const allAdminPickedUp = (remainingAdmin[0]?.count || 0) === 0;
 
-        if (allPickedUp) {
+        if (allAdminPickedUp) {
             await db.query(
                 "UPDATE orders SET pickup_status = 'PICKED_UP', picked_up_at = NOW(), order_status = 'SHIPPED' WHERE id = ?",
                 [orderId]
