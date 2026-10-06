@@ -71,10 +71,13 @@ exports.updateSettings = async (req, res) => {
         await connection.beginTransaction();
 
         const updatePromises = settingsToUpdate.map(setting => {
-            const query = "UPDATE app_settings SET setting_value = ? WHERE setting_key = ?";
-            // Note: We use the original string value for the DB, not the parsed float
+            const query = `
+                INSERT INTO app_settings (setting_key, setting_value) 
+                VALUES (?, ?) 
+                ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
+            `;
             const originalSetting = settingsToUpdate.find(s => s.key === setting.key);
-            return connection.query(query, [originalSetting.value, originalSetting.key]);
+            return connection.query(query, [originalSetting.key, originalSetting.value]);
         });
         
         await Promise.all(updatePromises);

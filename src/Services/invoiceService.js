@@ -10,10 +10,10 @@ const PDFDocument = require('pdfkit');
 exports.generateThermalInvoiceHTML = (order, user, seller) => {
     const company = {
         name: seller?.display_name || seller?.name || "EARN24",
-        tagline: "SHOP MORE | EARN MORE | HELP MORE",
+        tagline: seller?.tagline || "SHOP MORE | EARN MORE | HELP MORE",
         address: seller?.address || "Ground Floor, Galfarbari Badi Maszid,\nGalfarbari More, Near Kumardhubi Hospital,\nP.O. Kumardhubi, Egyarkund, Kumardhubi,\nDhanbad, Jharkhand – 828203 (India)",
         gstin: seller?.gstin || "20EIMPK5093M1ZU",
-        supportEmail: "support@earn24.in"
+        supportEmail: seller?.email || "support@earn24.in"
     };
 
     const d = order.created_at ? new Date(order.created_at) : new Date();
@@ -436,10 +436,10 @@ exports.generateInvoicePDF = (order, user, seller) => {
 
         const companyInfo = {
             name: seller?.display_name || seller?.name || "EARN24",
-            tagline: "SHOP MORE | EARN MORE | HELP MORE",
+            tagline: seller?.tagline || "SHOP MORE | EARN MORE | HELP MORE",
             address: seller?.address || "Ground Floor, Galfarbari Badi Maszid,\nGalfarbari More, Near Kumardhubi Hospital,\nP.O. Kumardhubi, Egyarkund, Kumardhubi,\nDhanbad, Jharkhand – 828203 (India)",
             gstin: seller?.gstin || "20EIMPK5093M1ZU",
-            email: "support@earn24.in"
+            email: seller?.email || "support@earn24.in"
         };
 
         const d = order.created_at ? new Date(order.created_at) : new Date();
