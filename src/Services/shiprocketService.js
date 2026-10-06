@@ -156,6 +156,40 @@ async function checkServiceability(pickupPincode, deliveryPincode, weightKg = 0.
     }
 }
 
+let cachedPickupLocation = null;
+let pickupLocationCacheTime = 0;
+
+/**
+ * Fetches the registered pickup location nickname from Shiprocket.
+ * Defaults to "warehouse" or configured env variable.
+ */
+async function getPrimaryPickupLocation(token) {
+    const now = Date.now();
+    if (cachedPickupLocation && (now - pickupLocationCacheTime < 3600000)) {
+        return cachedPickupLocation;
+    }
+    try {
+        const authToken = token || await getAuthToken();
+        const response = await axios.get(`${SHIPROCKET_BASE_URL}/settings/company/pickup`, {
+            headers: { Authorization: `Bearer ${authToken}` },
+            timeout: 10000
+        });
+        const locations = response.data?.data?.shipping_address || response.data?.shipping_address || [];
+        if (Array.isArray(locations) && locations.length > 0) {
+            const primary = locations.find(l => l.is_primary_location === 1) || locations[0];
+            if (primary && primary.pickup_location) {
+                cachedPickupLocation = primary.pickup_location;
+                pickupLocationCacheTime = now;
+                console.log(`[Shiprocket] Resolved primary pickup location: "${cachedPickupLocation}"`);
+                return cachedPickupLocation;
+            }
+        }
+    } catch (err) {
+        console.error("[Shiprocket] Could not fetch pickup locations:", err.message);
+    }
+    return process.env.SHIPROCKET_PICKUP_LOCATION || "warehouse";
+}
+
 /**
  * Creates an ad-hoc pickup shipment in Shiprocket.
  * Adheres strictly to Shiprocket API specification (/orders/create/adhoc).
@@ -189,7 +223,20 @@ async function createForwardOrder(orderPayload) {
         const firstName = nameParts[0] || 'Customer';
         const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : 'Customer';
 
-        // 3. Normalize items
+        // 3. Resolve Pickup Location dynamically
+        let resolvedPickup = String(orderPayload.pickup_location || "").trim();
+        if (!resolvedPickup || resolvedPickup.toLowerCase() === 'primary') {
+            resolvedPickup = await getPrimaryPickupLocation(token);
+        }
+
+        // 4. Normalize and validate phone number (Must be 10 digits starting with 6-9 for India)
+        let cleanPhone = String(orderPayload.billing_phone || "").replace(/[^0-9]/g, '').slice(-10);
+        if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
+            console.warn(`[Shiprocket] Phone "${cleanPhone}" is invalid for Indian courier. Falling back to default contact.`);
+            cleanPhone = "7323952235";
+        }
+
+        // 5. Normalize items
         const rawItems = Array.isArray(orderPayload.order_items) && orderPayload.order_items.length > 0
             ? orderPayload.order_items
             : [{ name: "Catalog Items", sku: "EARN24-PROD", units: 1, selling_price: parseFloat(orderPayload.sub_total || 100) }];
@@ -204,7 +251,7 @@ async function createForwardOrder(orderPayload) {
             hsn: it.hsn ? parseInt(it.hsn, 10) : undefined
         }));
 
-        // 4. Dimensions and weight (Shiprocket requires length, breadth, height, weight)
+        // 6. Dimensions and weight (Shiprocket requires length, breadth, height, weight)
         const length = parseFloat(orderPayload.length || 10);
         const breadth = parseFloat(orderPayload.breadth || orderPayload.width || 10);
         const height = parseFloat(orderPayload.height || 10);
@@ -213,7 +260,7 @@ async function createForwardOrder(orderPayload) {
         const cleanPayload = {
             order_id: String(orderPayload.order_id).substring(0, 50),
             order_date: formattedDate,
-            pickup_location: String(orderPayload.pickup_location || "Primary").substring(0, 36),
+            pickup_location: resolvedPickup.substring(0, 36),
             billing_customer_name: firstName.substring(0, 50),
             billing_last_name: lastName.substring(0, 50),
             billing_address: String(orderPayload.billing_address || "Delivery Address").substring(0, 200),
@@ -223,7 +270,7 @@ async function createForwardOrder(orderPayload) {
             billing_state: String(orderPayload.billing_state || "State").substring(0, 50),
             billing_country: "India",
             billing_email: orderPayload.billing_email || "support@earn24.in",
-            billing_phone: String(orderPayload.billing_phone || "9999999999").replace(/[^0-9]/g, '').slice(-10),
+            billing_phone: cleanPhone,
             shipping_is_billing: true,
             order_items: cleanItems,
             payment_method: String(orderPayload.payment_method || "Prepaid").toUpperCase() === "COD" ? "COD" : "Prepaid",
@@ -245,6 +292,14 @@ async function createForwardOrder(orderPayload) {
         });
 
         const resData = response.data;
+
+        // STRICT VALIDATION: Check if Shiprocket actually created the order
+        if (!resData.shipment_id && !resData.order_id) {
+            const errDetail = resData.message || (typeof resData.data === 'string' ? resData.data : JSON.stringify(resData.data)) || "Shiprocket rejected order creation.";
+            console.error(`[Shiprocket] ❌ Order #${cleanPayload.order_id} rejected by Shiprocket:`, errDetail);
+            throw new Error(`Shiprocket rejected order: ${errDetail}`);
+        }
+
         console.log(`[Shiprocket] ✅ Order #${cleanPayload.order_id} created successfully! Shipment ID: ${resData.shipment_id}, AWB: ${resData.awb_code || 'Pending'}`);
 
         return {
