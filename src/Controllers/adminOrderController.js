@@ -269,8 +269,8 @@ exports.getAdminOrderDetails = async (req, res) => {
                 m.business_name as seller_business_name,
                 m.owner_name as seller_owner_name,
                 m.phone_number as seller_phone,
-                m.city as seller_city,
-                m.state as seller_state,
+                m.pincode as seller_pincode,
+                m.business_address as seller_address,
                 CASE 
                     WHEN s.sellerable_type = 'Merchant' AND m.business_name IS NOT NULL THEN m.business_name 
                     ELSE 'Earn24 Admin' 

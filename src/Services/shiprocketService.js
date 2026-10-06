@@ -345,6 +345,40 @@ async function createForwardOrder(orderPayload) {
                 }
             }
         }
+
+        // Automatic Self-Healing Retry: If pickup location is invalid, fetch actual primary location and retry
+        if (errorMsg.includes('Wrong Pickup location') || errorMsg.includes('Pickup location')) {
+            try {
+                const verifiedPrimary = await getPrimaryPickupLocation(null);
+                if (verifiedPrimary && verifiedPrimary !== cleanPayload.pickup_location) {
+                    console.warn(`[Shiprocket] Retrying Order #${cleanPayload.order_id} with verified primary pickup location "${verifiedPrimary}"...`);
+                    cleanPayload.pickup_location = verifiedPrimary;
+                    const retryRes = await axios.post(`${SHIPROCKET_BASE_URL}/orders/create/adhoc`, cleanPayload, {
+                        headers: { 
+                            Authorization: `Bearer ${await getAuthToken()}`,
+                            'Content-Type': 'application/json'
+                        },
+                        timeout: 25000
+                    });
+                    const resData = retryRes.data;
+                    if (resData.shipment_id || resData.order_id) {
+                        console.log(`[Shiprocket] ✅ Order #${cleanPayload.order_id} created successfully on retry! Shipment ID: ${resData.shipment_id}`);
+                        return {
+                            success: true,
+                            order_id: resData.order_id,
+                            shipment_id: resData.shipment_id,
+                            awb_code: resData.awb_code || null,
+                            courier_name: resData.courier_name || 'Shiprocket Express',
+                            status: resData.status,
+                            raw: resData
+                        };
+                    }
+                }
+            } catch (retryErr) {
+                console.error("[Shiprocket Retry Error]:", retryErr.message);
+            }
+        }
+
         console.error("Shiprocket Create Order Error:", errorMsg, error.response?.data || error.message);
         throw new Error(errorMsg);
     }
