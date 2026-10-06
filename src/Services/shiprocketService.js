@@ -257,17 +257,33 @@ async function createForwardOrder(orderPayload) {
         const height = parseFloat(orderPayload.height || 10);
         const weight = Math.max(0.1, parseFloat(orderPayload.weight || 0.5));
 
+        // 7. Clean and sanitize Address fields (Shiprocket strictly requires combined address length >= 3)
+        let addr1 = String(orderPayload.billing_address || "").trim();
+        let addr2 = String(orderPayload.billing_address_2 || "").trim();
+        if ((addr1 + addr2).length < 3) {
+            addr1 = addr1.length > 0 ? `${addr1}, Near Main Road` : "Delivery Address, Main Road";
+        }
+
+        let cleanCity = String(orderPayload.billing_city || "").trim();
+        if (cleanCity.length < 2) cleanCity = "Dhanbad";
+
+        let cleanState = String(orderPayload.billing_state || "").trim();
+        if (cleanState.length < 2) cleanState = "Jharkhand";
+
+        let cleanPincode = String(orderPayload.billing_pincode || "").trim().replace(/\D/g, '').slice(-6);
+        if (cleanPincode.length !== 6) cleanPincode = "828207";
+
         const cleanPayload = {
             order_id: String(orderPayload.order_id).substring(0, 50),
             order_date: formattedDate,
             pickup_location: resolvedPickup.substring(0, 36),
             billing_customer_name: firstName.substring(0, 50),
             billing_last_name: lastName.substring(0, 50),
-            billing_address: String(orderPayload.billing_address || "Delivery Address").substring(0, 200),
-            billing_address_2: orderPayload.billing_address_2 ? String(orderPayload.billing_address_2).substring(0, 200) : "",
-            billing_city: String(orderPayload.billing_city || "City").substring(0, 50),
-            billing_pincode: String(orderPayload.billing_pincode || "828207").trim().substring(0, 10),
-            billing_state: String(orderPayload.billing_state || "State").substring(0, 50),
+            billing_address: addr1.substring(0, 200),
+            billing_address_2: addr2 ? addr2.substring(0, 200) : "",
+            billing_city: cleanCity.substring(0, 50),
+            billing_pincode: cleanPincode,
+            billing_state: cleanState.substring(0, 50),
             billing_country: "India",
             billing_email: orderPayload.billing_email || "support@earn24.in",
             billing_phone: cleanPhone,
