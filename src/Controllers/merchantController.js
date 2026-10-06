@@ -1362,7 +1362,7 @@ exports.dispatchMerchantOrderShiprocket = async (req, res) => {
         // Fetch merchant details & items
         const [items] = await db.query(`
             SELECT oi.id, oi.product_id, oi.product_name, oi.quantity, oi.price_per_unit, oi.total_price,
-                   m.business_name, m.business_address, m.pincode as merchant_pincode, m.city as merchant_city, m.state as merchant_state, m.phone_number as merchant_phone
+                   m.business_name, m.business_address, m.pincode as merchant_pincode, m.phone_number as merchant_phone
             FROM order_items oi
             JOIN seller_products sp ON oi.seller_product_id = sp.id
             JOIN sellers s ON sp.seller_id = s.id
