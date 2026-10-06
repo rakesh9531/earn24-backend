@@ -1185,16 +1185,15 @@ exports.autoDispatchOrder = async (orderId) => {
             [orderId]
         );
 
-        // Check if order contains products belonging to Merchant sellers
-        const hasMerchantItems = items.some(it => it.sellerable_type === 'Merchant' && (it.merchant_id || it.sellerable_id));
-        if (hasMerchantItems) {
-            console.log(`[Auto-Dispatch] ⏸️ Order #${order.order_number} contains Merchant products. Skipping automatic dispatch so merchant can manually assign delivery partner (Local Rider or Shiprocket) from Merchant Panel.`);
-            return {
-                success: true,
-                mode: 'MERCHANT_MANUAL_ASSIGNMENT',
-                message: 'Order left unassigned for merchant manual dispatch.'
-            };
-        }
+        // Manual assignment pool: Do not automatically route any orders to Shiprocket
+        // Keeps all orders available in Admin Panel ("Process New Orders") and Merchant Panel ("Customers Order")
+        // so Admin / Merchant can manually assign their Local Delivery Boy (or Shiprocket Courier)
+        console.log(`[Auto-Dispatch] ⏸️ Order #${order.order_number} held in pool for manual assignment to Local Delivery Boy.`);
+        return {
+            success: true,
+            mode: 'MANUAL_ASSIGNMENT',
+            message: 'Order held for manual delivery boy assignment.'
+        };
 
         // 1. Group items by Merchant / Pickup Hub for Multi-Merchant Splitting
         const merchantGroups = {};
