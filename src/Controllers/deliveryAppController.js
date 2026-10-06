@@ -14,6 +14,8 @@ const ensureOrderCourierColumns = async () => {
         await db.query("ALTER TABLE orders ADD COLUMN assigned_at DATETIME NULL").catch(() => {});
 
         // Self-healing columns on order_items for per-merchant multi-shipment tracking
+        await db.query("ALTER TABLE order_items ADD COLUMN delivery_agent_id INT NULL").catch(() => {});
+        await db.query("ALTER TABLE order_items ADD COLUMN pickup_otp VARCHAR(20) NULL").catch(() => {});
         await db.query("ALTER TABLE order_items ADD COLUMN tracking_number VARCHAR(100) NULL").catch(() => {});
         await db.query("ALTER TABLE order_items ADD COLUMN courier_name VARCHAR(100) NULL").catch(() => {});
         await db.query("ALTER TABLE order_items ADD COLUMN dispatch_mode VARCHAR(50) DEFAULT 'LOCAL_RIDER'").catch(() => {});
@@ -172,7 +174,7 @@ exports.login = async (req, res) => {
 exports.getMyOrders = async (req, res) => {
     const agentId = req.user.id;
     try {
-        // Fetch Order and Customer/Address details
+        // Fetch Order and Customer/Address details for orders that have items assigned to THIS agent
         const query = `
             SELECT o.id, o.order_number, o.total_amount, o.payment_method, o.payment_status, o.order_status,
                    o.picked_up_at, o.delivered_at,
@@ -184,33 +186,39 @@ exports.getMyOrders = async (req, res) => {
             FROM orders o
             JOIN users u ON o.user_id = u.id
             JOIN user_addresses sa ON o.shipping_address_id = sa.id
-            WHERE o.delivery_agent_id = ? AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')
+            WHERE (
+                EXISTS (
+                    SELECT 1 FROM order_items oi
+                    LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+                    LEFT JOIN sellers s ON sp.seller_id = s.id
+                    WHERE oi.order_id = o.id
+                      AND (
+                          oi.delivery_agent_id = ?
+                          OR (
+                              oi.delivery_agent_id IS NULL 
+                              AND o.delivery_agent_id = ? 
+                              AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
+                          )
+                      )
+                )
+            )
+            AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')
             ORDER BY o.created_at DESC`;
         
-        const [orders] = await db.query(query, [agentId]);
+        const [orders] = await db.query(query, [agentId, agentId]);
+        const validOrders = [];
 
         for (let order of orders) {
-            // Auto-heal / Auto-generate 4-digit Pickup OTP if missing on assigned order
-            if (!order.pickup_otp || String(order.pickup_otp).trim() === '') {
-                const autoOtp = Math.floor(1000 + Math.random() * 9000).toString();
-                order.pickup_otp = autoOtp;
-                await db.query("UPDATE orders SET pickup_otp = ? WHERE id = ?", [autoOtp, order.id]).catch(() => {});
-                await db.query("UPDATE order_items SET pickup_otp = ? WHERE order_id = ? AND (pickup_otp IS NULL OR pickup_otp = '')", [autoOtp, order.id]).catch(() => {});
-            }
-
-            const isPrepaid = (order.payment_method === 'WALLET' || order.payment_method === 'ONLINE' || order.payment_method === 'PAYU' || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID');
-            order.is_paid = isPrepaid ? 1 : 0;
-            order.collectable_amount = isPrepaid ? 0.00 : parseFloat(order.total_amount);
-            order.payment_instruction = isPrepaid ? "PREPAID / WALLET (Do NOT collect cash)" : `COLLECT CASH: ₹${parseFloat(order.total_amount).toFixed(2)}`;
-            
-            // Detailed items query with Pickup Status, OTP, and Warehouse/Merchant Location info
+            // Detailed items query filtered STRICTLY for items assigned to THIS rider
             const itemQuery = `
                 SELECT 
                     oi.id as order_item_id,
                     oi.product_name, 
                     oi.quantity, 
+                    oi.price_per_unit,
+                    oi.total_price,
                     oi.attributes_snapshot,
-                    IFNULL(oi.pickup_otp, o.pickup_otp) as item_pickup_otp,
+                    COALESCE(oi.pickup_otp, o.pickup_otp) as item_pickup_otp,
                     IFNULL(oi.pickup_status, 'PENDING') as item_pickup_status,
                     oi.picked_up_at,
                     p.main_image_url,
@@ -237,10 +245,21 @@ exports.getMyOrders = async (req, res) => {
                 LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
                 LEFT JOIN sellers s ON sp.seller_id = s.id
                 LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
-                WHERE oi.order_id = ?`;
+                WHERE oi.order_id = ?
+                  AND (
+                      oi.delivery_agent_id = ?
+                      OR (
+                          oi.delivery_agent_id IS NULL 
+                          AND o.delivery_agent_id = ? 
+                          AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
+                      )
+                  )`;
             
-            const [items] = await db.query(itemQuery, [order.id]);
-            
+            const [items] = await db.query(itemQuery, [order.id, agentId, agentId]);
+            if (items.length === 0) {
+                continue;
+            }
+
             // Map items and parse attributes
             const processedItems = items.map(item => ({
                 ...item,
@@ -249,6 +268,36 @@ exports.getMyOrders = async (req, res) => {
                     : {}
             }));
             order.items = processedItems;
+
+            // Auto-heal / Auto-generate 4-digit Pickup OTP if missing on assigned items
+            const firstOtp = processedItems.find(it => it.item_pickup_otp)?.item_pickup_otp || order.pickup_otp;
+            let currentPickupOtp = firstOtp;
+            if (!currentPickupOtp || String(currentPickupOtp).trim() === '') {
+                currentPickupOtp = Math.floor(1000 + Math.random() * 9000).toString();
+                const assignedItemIds = processedItems.map(it => it.order_item_id);
+                await db.query("UPDATE order_items SET pickup_otp = ? WHERE id IN (?)", [currentPickupOtp, assignedItemIds]).catch(() => {});
+            }
+            order.pickup_otp = currentPickupOtp;
+
+            const isPrepaid = (order.payment_method === 'WALLET' || order.payment_method === 'ONLINE' || order.payment_method === 'PAYU' || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID');
+            order.is_paid = isPrepaid ? 1 : 0;
+
+            // Calculate collectable amount:
+            // Check if all order items are assigned to this rider or only part
+            const [allOrderItems] = await db.query("SELECT COUNT(*) as totalCnt FROM order_items WHERE order_id = ?", [order.id]).catch(() => [[{ totalCnt: processedItems.length }]]);
+            const isPartialOrder = allOrderItems[0]?.totalCnt > processedItems.length;
+            const assignedItemsSum = processedItems.reduce((sum, it) => sum + parseFloat(it.total_price || (it.price_per_unit * it.quantity) || 0), 0);
+
+            if (isPrepaid) {
+                order.collectable_amount = 0.00;
+                order.payment_instruction = "PREPAID / WALLET (Do NOT collect cash)";
+            } else if (isPartialOrder && assignedItemsSum > 0) {
+                order.collectable_amount = parseFloat(assignedItemsSum);
+                order.payment_instruction = `COLLECT CASH: ₹${parseFloat(assignedItemsSum).toFixed(2)}`;
+            } else {
+                order.collectable_amount = parseFloat(order.total_amount);
+                order.payment_instruction = `COLLECT CASH: ₹${parseFloat(order.total_amount).toFixed(2)}`;
+            }
 
             // Group items into pickup locations for rider handshake guidance
             const locationMap = {};
@@ -272,20 +321,21 @@ exports.getMyOrders = async (req, res) => {
                 locationMap[locKey].items.push(item);
             }
             order.pickup_locations = Object.values(locationMap);
-            order.all_picked_up = (order.pickup_status === 'PICKED_UP') || (order.pickup_locations.length > 0 && order.pickup_locations.every(l => l.pickup_status === 'PICKED_UP'));
+            order.all_picked_up = order.pickup_locations.length > 0 && order.pickup_locations.every(l => l.pickup_status === 'PICKED_UP');
+            order.pickup_verified = order.all_picked_up;
+            order.pickup_status = order.all_picked_up ? 'PICKED_UP' : 'PENDING';
+            order.can_start_trip = order.all_picked_up;
 
             // Replacement order detection — used by delivery app to show correct UI
             order.is_replacement = Boolean(
                 (order.order_number && order.order_number.startsWith('R-')) ||
                 order.payment_method === 'REPLACEMENT'
             );
-            // pickup_verified is true when merchant has verified the OTP for warehouse handover
-            order.pickup_verified = (order.pickup_status === 'PICKED_UP');
-            // can_start_trip: only if pickup is verified (merchant OTP confirmed)
-            order.can_start_trip = order.all_picked_up || order.pickup_verified;
+
+            validOrders.push(order);
         }
 
-        res.json({ status: true, data: orders });
+        res.json({ status: true, data: validOrders });
     } catch (e) { 
         console.error("Fetch Orders Error:", e.message);
         res.status(500).json({ status: false, message: "Failed to fetch orders." }); 
@@ -325,10 +375,25 @@ exports.startDelivery = async (req, res) => {
                 message: "Please accept the delivery assignment first before starting trip."
             });
         }
-        if (check[0].pickup_status !== 'PICKED_UP') {
+        const agentId = req.user.id;
+        // Verify pickup verification for all items assigned to THIS rider
+        const [pendingItems] = await db.query(`
+            SELECT COUNT(*) as cnt 
+            FROM order_items oi
+            LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN sellers s ON sp.seller_id = s.id
+            WHERE oi.order_id = ?
+              AND (
+                  oi.delivery_agent_id = ? 
+                  OR (oi.delivery_agent_id IS NULL AND (SELECT delivery_agent_id FROM orders WHERE id = ?) = ? AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL))
+              )
+              AND IFNULL(oi.pickup_status, 'PENDING') != 'PICKED_UP'
+        `, [orderId, agentId, orderId, agentId]);
+
+        if (pendingItems[0]?.cnt > 0) {
             return res.status(400).json({
                 status: false,
-                message: "Warehouse / Store pickup verification pending! Please collect the products and have your Pickup OTP verified at counter before starting delivery trip."
+                message: "Warehouse / Store pickup verification pending! Please collect your assigned products and have your Pickup OTP verified before starting delivery trip."
             });
         }
 
@@ -401,20 +466,43 @@ exports.completeDelivery = async (req, res) => {
         const recordedCollectionMode = isPrepaid ? null : (paymentMode || 'COD');
         const recordedCollectionAmount = isPrepaid ? 0 : (existingOrder ? existingOrder.total_amount : 0);
 
-        // 1. Update Order & Order Items Status with Return Window Expiry Date
+        const agentId = req.user.id;
+        // 1. Update Order Items Status for items assigned to THIS delivery agent
         await connection.query(`
             UPDATE order_items oi
             JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN sellers s ON sp.seller_id = s.id
             SET oi.delivered_at = NOW(),
                 oi.item_status = 'DELIVERED',
                 oi.return_window_expiry_date = DATE_ADD(NOW(), INTERVAL IFNULL(sp.return_window_days, 7) DAY)
             WHERE oi.order_id = ?
-        `, [orderId]).catch(() => {});
+              AND (
+                  oi.delivery_agent_id = ? 
+                  OR (oi.delivery_agent_id IS NULL AND (SELECT delivery_agent_id FROM orders WHERE id = ?) = ? AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL))
+              )
+        `, [orderId, agentId, orderId, agentId]).catch(() => {});
 
-        const [updateResult] = await connection.query(
-            "UPDATE orders SET order_status='DELIVERED', payment_status='COMPLETED', payment_method=?, delivery_payment_mode=?, delivery_amount_collected=?, delivery_otp=NULL, delivered_at=NOW() WHERE id=? AND order_status != 'DELIVERED'", 
-            [finalPaymentMethod, recordedCollectionMode, recordedCollectionAmount, orderId]
-        );
+        // Check if all items in order are delivered
+        const [undeliveredItems] = await connection.query(`
+            SELECT COUNT(*) as count 
+            FROM order_items 
+            WHERE order_id = ? AND IFNULL(item_status, 'PENDING') != 'DELIVERED'
+        `, [orderId]);
+        const allItemsDelivered = (undeliveredItems[0]?.count || 0) === 0;
+
+        let updateResult = { affectedRows: 0 };
+        if (allItemsDelivered) {
+            const [res] = await connection.query(
+                "UPDATE orders SET order_status='DELIVERED', payment_status='COMPLETED', payment_method=?, delivery_payment_mode=?, delivery_amount_collected=IFNULL(delivery_amount_collected, 0) + ?, delivery_otp=NULL, delivered_at=NOW() WHERE id=? AND order_status != 'DELIVERED'", 
+                [finalPaymentMethod, recordedCollectionMode, recordedCollectionAmount, orderId]
+            );
+            updateResult = res;
+        } else {
+            await connection.query(
+                "UPDATE orders SET delivery_amount_collected=IFNULL(delivery_amount_collected, 0) + ?, delivery_otp=NULL WHERE id=?", 
+                [recordedCollectionAmount, orderId]
+            );
+        }
 
         if (updateResult.affectedRows > 0) {
             const [winCheck] = await connection.query(`
