@@ -47,13 +47,34 @@ async function getAuthToken() {
         return cachedToken;
     }
 
+    // 1. Direct Bearer token from .env or DB (Bypasses login & avoids rate-limit/blocking)
+    let staticToken = process.env.SHIPROCKET_TOKEN;
+    if (!staticToken) {
+        try {
+            const db = require('../../db');
+            const [rows] = await db.query(
+                "SELECT setting_value FROM app_settings WHERE setting_key = 'shiprocket_token'"
+            ).catch(() => [[]]);
+            if (rows && rows[0] && rows[0].setting_value) {
+                staticToken = String(rows[0].setting_value).trim();
+            }
+        } catch (e) {}
+    }
+
+    if (staticToken) {
+        console.log(`[Shiprocket] Using pre-configured Bearer token.`);
+        cachedToken = staticToken;
+        tokenExpiryTime = now + (30 * 24 * 60 * 60 * 1000);
+        return cachedToken;
+    }
+
     const { email, password } = await getCredentials();
 
     if (!email || !password) {
         if (process.env.NODE_ENV === 'test') {
             return "MOCK_SHIPROCKET_TOKEN";
         }
-        throw new Error("Shiprocket credentials are not configured. Please set SHIPROCKET_EMAIL and SHIPROCKET_PASSWORD in server .env or Admin Settings.");
+        throw new Error("Shiprocket credentials are not configured. Please set SHIPROCKET_EMAIL and SHIPROCKET_PASSWORD (or SHIPROCKET_TOKEN) in server .env or Admin Settings.");
     }
 
     try {
