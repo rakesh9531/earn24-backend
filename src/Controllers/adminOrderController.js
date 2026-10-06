@@ -1,6 +1,26 @@
 const db = require('../../db');
 const moment = require('moment-timezone');
 
+// Self-healing columns for lifecycle tracking
+const ensureTrackingColumns = async () => {
+    try {
+        await db.query("ALTER TABLE orders ADD COLUMN confirmed_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN assigned_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN accepted_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN picked_up_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN trip_started_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN out_for_delivery_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN shipped_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE orders ADD COLUMN delivered_at DATETIME NULL").catch(() => {});
+
+        await db.query("ALTER TABLE order_items ADD COLUMN assigned_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE order_items ADD COLUMN accepted_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE order_items ADD COLUMN picked_up_at DATETIME NULL").catch(() => {});
+        await db.query("ALTER TABLE order_items ADD COLUMN delivered_at DATETIME NULL").catch(() => {});
+    } catch (e) {}
+};
+ensureTrackingColumns().catch(() => {});
+
 /**
  * Fetches orders for the admin panel, filterable by status.
  * Primarily used to get 'CONFIRMED' orders that need to be processed.
@@ -132,7 +152,8 @@ exports.assignOrderForDelivery = async (req, res) => {
                 pickup_otp = ?, 
                 pickup_status = 'PENDING',
                 dispatch_mode = 'LOCAL_RIDER',
-                item_status = 'SHIPPED'
+                item_status = 'SHIPPED',
+                assigned_at = NOW()
             WHERE id IN (?)
         `, [deliveryAgentId, masterPickupOtp, adminItemIds]);
 
@@ -222,6 +243,7 @@ exports.getAdminOrderDetails = async (req, res) => {
         const itemsQuery = `
             SELECT 
                 oi.id as order_item_id,
+                oi.product_id,
                 oi.product_name, 
                 oi.quantity, 
                 oi.price_per_unit, 
@@ -233,10 +255,26 @@ exports.getAdminOrderDetails = async (req, res) => {
                 IFNULL(oi.pickup_otp, o.pickup_otp) as pickup_otp,
                 IFNULL(oi.pickup_status, 'PENDING') as pickup_status,
                 oi.picked_up_at,
+                oi.assigned_at,
+                oi.accepted_at,
+                oi.delivered_at,
+                oi.dispatch_mode as item_dispatch_mode,
+                oi.tracking_number as item_tracking_number,
+                oi.courier_name as item_courier_name,
                 p.main_image_url,
                 b.name as brand_name,
                 sp.seller_id,
                 s.sellerable_type,
+                s.sellerable_id,
+                m.business_name as seller_business_name,
+                m.owner_name as seller_owner_name,
+                m.phone_number as seller_phone,
+                m.city as seller_city,
+                m.state as seller_state,
+                CASE 
+                    WHEN s.sellerable_type = 'Merchant' AND m.business_name IS NOT NULL THEN m.business_name 
+                    ELSE 'Earn24 Admin' 
+                END as seller_display_name,
                 CASE 
                     WHEN s.sellerable_type = 'Merchant' AND m.business_name IS NOT NULL THEN m.business_name 
                     ELSE 'Central Warehouse / Earn24 Hub' 
@@ -277,7 +315,221 @@ exports.getAdminOrderDetails = async (req, res) => {
             };
         });
 
-        // 4. Fetch Return / Replacement info linked to this order
+        // 4. Build 8-Stage Order Fulfillment Tracking Timeline (Local Delivery Agent & Shiprocket Courier)
+        const orderMain = orderRows[0];
+        const isCourier = (orderMain.dispatch_mode === 'SHIPROCKET_COURIER') || Boolean(orderMain.tracking_number);
+        const orderStatus = (orderMain.order_status || '').toUpperCase();
+        const pickupStatus = (orderMain.pickup_status || '').toUpperCase();
+        const assignmentStatus = (orderMain.assignment_status || '').toUpperCase();
+
+        const timeline = [];
+
+        // 1. Order Placed
+        timeline.push({
+            step_number: 1,
+            title: 'Order Placed',
+            subtitle: `Customer placed order #${orderMain.order_number}`,
+            timestamp: orderMain.created_at,
+            is_done: true,
+            is_active: false,
+            is_error: false,
+            icon: 'fa-shopping-cart'
+        });
+
+        // 2. Confirmed & Packed
+        const isConfirmed = orderStatus !== 'PENDING' && orderStatus !== 'PENDING_PAYMENT' && orderStatus !== 'CANCELLED';
+        timeline.push({
+            step_number: 2,
+            title: 'Confirmed & Packed',
+            subtitle: isConfirmed ? 'Order confirmed and packed at warehouse/seller' : 'Awaiting confirmation & packing',
+            timestamp: orderMain.confirmed_at || (isConfirmed ? orderMain.created_at : null),
+            is_done: isConfirmed,
+            is_active: orderStatus === 'PENDING' || orderStatus === 'PENDING_PAYMENT',
+            is_error: false,
+            icon: 'fa-box-open'
+        });
+
+        if (isCourier) {
+            // Shiprocket Courier Flow
+            const hasCourier = Boolean(orderMain.tracking_number || orderMain.courier_name);
+            timeline.push({
+                step_number: 3,
+                title: 'Courier Partner Assigned',
+                subtitle: hasCourier 
+                    ? `Assigned to ${orderMain.courier_name || 'Shiprocket'} (AWB: ${orderMain.tracking_number || 'Generated'})`
+                    : 'Awaiting courier assignment',
+                timestamp: orderMain.assigned_at || (hasCourier ? (orderMain.shipped_at || orderMain.created_at) : null),
+                is_done: hasCourier,
+                is_active: isConfirmed && !hasCourier,
+                is_error: false,
+                icon: 'fa-truck-loading'
+            });
+
+            timeline.push({
+                step_number: 4,
+                title: 'Courier Accepted & Scheduled',
+                subtitle: hasCourier 
+                    ? `Pickup manifest generated for ${orderMain.courier_name || 'Shiprocket Express'}`
+                    : 'Pending courier scheduling',
+                timestamp: orderMain.accepted_at || (hasCourier ? (orderMain.assigned_at || orderMain.shipped_at) : null),
+                is_done: hasCourier,
+                is_active: false,
+                is_error: false,
+                icon: 'fa-calendar-check'
+            });
+
+            const isPickedUp = pickupStatus === 'PICKED_UP' || Boolean(orderMain.picked_up_at) || ['SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED'].includes(orderStatus);
+            timeline.push({
+                step_number: 5,
+                title: 'Warehouse OTP Verified / Picked Up',
+                subtitle: isPickedUp 
+                    ? 'Parcel handed over to Shiprocket courier pickup executive from warehouse'
+                    : 'Awaiting warehouse handover to courier',
+                timestamp: orderMain.picked_up_at || (isPickedUp ? (orderMain.shipped_at || orderMain.assigned_at) : null),
+                is_done: isPickedUp,
+                is_active: hasCourier && !isPickedUp,
+                is_error: false,
+                icon: 'fa-warehouse'
+            });
+
+            const isTripStarted = ['SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED'].includes(orderStatus);
+            timeline.push({
+                step_number: 6,
+                title: 'Trip Started / In Transit',
+                subtitle: isTripStarted 
+                    ? `Package moving through ${orderMain.courier_name || 'Shiprocket'} transit hubs`
+                    : 'Awaiting dispatch from local hub',
+                timestamp: orderMain.trip_started_at || orderMain.shipped_at || (isTripStarted ? orderMain.picked_up_at : null),
+                is_done: isTripStarted,
+                is_active: isPickedUp && !isTripStarted,
+                is_error: false,
+                icon: 'fa-shipping-fast'
+            });
+
+            const isOut = ['OUT_FOR_DELIVERY', 'DELIVERED'].includes(orderStatus);
+            timeline.push({
+                step_number: 7,
+                title: 'Out for Delivery',
+                subtitle: isOut 
+                    ? 'Courier delivery executive is out for doorstep delivery'
+                    : 'Will be out for delivery upon reaching destination hub',
+                timestamp: orderMain.out_for_delivery_at || (isOut ? (orderMain.shipped_at || orderMain.trip_started_at) : null),
+                is_done: isOut,
+                is_active: isTripStarted && !isOut,
+                is_error: false,
+                icon: 'fa-truck'
+            });
+
+            const isDelivered = orderStatus === 'DELIVERED';
+            timeline.push({
+                step_number: 8,
+                title: 'Delivered',
+                subtitle: isDelivered 
+                    ? 'Shipment successfully delivered to recipient'
+                    : 'Pending final doorstep delivery',
+                timestamp: orderMain.delivered_at,
+                is_done: isDelivered,
+                is_active: isOut && !isDelivered,
+                is_error: false,
+                icon: 'fa-home'
+            });
+        } else {
+            // Local Delivery Agent Flow
+            const agentAssigned = Boolean(orderMain.delivery_agent_id || orderMain.assigned_at);
+            timeline.push({
+                step_number: 3,
+                title: 'Delivery Boy Assigned',
+                subtitle: agentAssigned 
+                    ? `Assigned to ${orderMain.agent_name || 'Delivery Partner'} (${orderMain.agent_phone || ''})`
+                    : 'Awaiting delivery partner assignment by Admin',
+                timestamp: orderMain.assigned_at,
+                is_done: agentAssigned,
+                is_active: isConfirmed && !agentAssigned,
+                is_error: false,
+                icon: 'fa-user-check'
+            });
+
+            const agentAccepted = agentAssigned && (
+                assignmentStatus === 'ACCEPTED' || 
+                pickupStatus === 'PICKED_UP' || 
+                Boolean(orderMain.picked_up_at) || 
+                ['OUT_FOR_DELIVERY', 'DELIVERED'].includes(orderStatus)
+            );
+            timeline.push({
+                step_number: 4,
+                title: 'Delivery Boy Accepted',
+                subtitle: agentAccepted 
+                    ? `${orderMain.agent_name || 'Delivery partner'} accepted the assignment`
+                    : (assignmentStatus === 'REJECTED' 
+                        ? `Assignment rejected: ${orderMain.rejection_reason || 'Rider declined'}`
+                        : (agentAssigned ? `Pending acceptance by ${orderMain.agent_name || 'delivery partner'}` : 'Awaiting assignment')),
+                timestamp: orderMain.accepted_at || (agentAccepted ? orderMain.assigned_at : null),
+                is_done: agentAccepted,
+                is_active: agentAssigned && !agentAccepted && assignmentStatus !== 'REJECTED',
+                is_error: assignmentStatus === 'REJECTED',
+                icon: 'fa-check-circle'
+            });
+
+            const isPickedUp = pickupStatus === 'PICKED_UP' || Boolean(orderMain.picked_up_at) || ['OUT_FOR_DELIVERY', 'DELIVERED'].includes(orderStatus);
+            timeline.push({
+                step_number: 5,
+                title: 'Warehouse OTP Verified / Picked Up',
+                subtitle: isPickedUp 
+                    ? 'Pickup OTP verified at warehouse. Parcel collected by rider'
+                    : (orderMain.pickup_otp 
+                        ? `Pending OTP verification at warehouse (Pickup OTP: ${orderMain.pickup_otp})` 
+                        : 'Pending warehouse OTP handshake'),
+                timestamp: orderMain.picked_up_at,
+                is_done: isPickedUp,
+                is_active: agentAccepted && !isPickedUp,
+                is_error: false,
+                icon: 'fa-warehouse'
+            });
+
+            const isTripStarted = Boolean(orderMain.trip_started_at) || ['OUT_FOR_DELIVERY', 'DELIVERED'].includes(orderStatus);
+            timeline.push({
+                step_number: 6,
+                title: 'Trip Started / In Transit',
+                subtitle: isTripStarted 
+                    ? `${orderMain.agent_name || 'Rider'} started trip from warehouse towards customer location`
+                    : 'Awaiting rider to start delivery trip',
+                timestamp: orderMain.trip_started_at || (isTripStarted ? (orderMain.out_for_delivery_at || orderMain.picked_up_at) : null),
+                is_done: isTripStarted,
+                is_active: isPickedUp && !isTripStarted,
+                is_error: false,
+                icon: 'fa-motorcycle'
+            });
+
+            const isOut = ['OUT_FOR_DELIVERY', 'DELIVERED'].includes(orderStatus);
+            timeline.push({
+                step_number: 7,
+                title: 'Out for Delivery',
+                subtitle: isOut 
+                    ? `${orderMain.agent_name || 'Delivery partner'} is heading to customer doorstep`
+                    : 'Awaiting doorstep dispatch',
+                timestamp: orderMain.out_for_delivery_at || (isOut ? (orderMain.trip_started_at || orderMain.shipped_at) : null),
+                is_done: isOut,
+                is_active: isTripStarted && !isOut,
+                is_error: false,
+                icon: 'fa-route'
+            });
+
+            const isDelivered = orderStatus === 'DELIVERED';
+            timeline.push({
+                step_number: 8,
+                title: 'Delivered',
+                subtitle: isDelivered 
+                    ? `Parcel delivered to ${orderMain.customer_name}. Doorstep OTP verified & payment collected`
+                    : `Pending doorstep delivery to ${orderMain.customer_name}`,
+                timestamp: orderMain.delivered_at,
+                is_done: isDelivered,
+                is_active: isOut && !isDelivered,
+                is_error: false,
+                icon: 'fa-home'
+            });
+        }
+
+        // 5. Fetch Return / Replacement info linked to this order
         const [returnRows] = await db.query(`
             SELECT r.*, 
                    COALESCE(da.full_name, '') as return_agent_name, 
@@ -342,7 +594,7 @@ exports.getAdminOrderDetails = async (req, res) => {
             };
         }
 
-        // 5. If this is a child replacement order (starts with R-), find the original parent order
+        // 6. If this is a child replacement order (starts with R-), find the original parent order
         let parentOrder = null;
         if (realOrderNum.startsWith('R-') || orderRows[0].payment_method === 'REPLACEMENT') {
             const [parentRows] = await db.query(`
@@ -359,10 +611,11 @@ exports.getAdminOrderDetails = async (req, res) => {
             }
         }
 
-        // 6. Combine results into a single rich object
+        // 7. Combine results into a single rich object
         const orderDetails = {
             ...orderRows[0], 
             items: processedItems,
+            tracking_timeline: timeline,
             return_request: returnDetails,
             parent_order: parentOrder,
             unlock_date: orderRows[0].delivered_at ? moment(orderRows[0].delivered_at).add(7, 'days').format('YYYY-MM-DD') : null
@@ -521,7 +774,7 @@ exports.getAllOrdersHistory = async (req, res) => {
         } else if (status === 'REPLACEMENTS') {
             whereClauses.push(`(o.order_number LIKE 'R-%' OR ret.request_type = 'REPLACEMENT')`);
         } else if (status === 'PENDING') {
-            whereClauses.push(`o.order_status IN ('PENDING', 'PENDING_PAYMENT', 'CONFIRMED')`);
+            whereClauses.push(`o.order_status IN ('PENDING', 'PENDING_PAYMENT', 'PLACED', 'CONFIRMED', 'SHIPPED', 'OUT_FOR_DELIVERY') AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')`);
         } else if (status === 'SHIPPED') {
             whereClauses.push(`o.order_status IN ('SHIPPED', 'OUT_FOR_DELIVERY')`);
         } else if (status !== 'ALL') {
@@ -1118,7 +1371,10 @@ exports.dispatchAdminOrderShiprocket = async (req, res) => {
             SET tracking_number = ?, 
                 courier_name = ?, 
                 dispatch_mode = 'SHIPROCKET_COURIER', 
-                item_status = 'SHIPPED' 
+                item_status = 'SHIPPED',
+                assigned_at = COALESCE(assigned_at, NOW()),
+                accepted_at = COALESCE(accepted_at, NOW()),
+                picked_up_at = COALESCE(picked_up_at, NOW())
             WHERE id IN (?)
         `, [awb, courierName, itemIds]);
 
@@ -1128,7 +1384,12 @@ exports.dispatchAdminOrderShiprocket = async (req, res) => {
                 dispatch_mode = 'SHIPROCKET_COURIER',
                 delivery_agent_id = NULL,
                 tracking_number = IFNULL(tracking_number, ?),
-                courier_name = IFNULL(courier_name, ?)
+                courier_name = IFNULL(courier_name, ?),
+                assigned_at = COALESCE(assigned_at, NOW()),
+                accepted_at = COALESCE(accepted_at, NOW()),
+                picked_up_at = COALESCE(picked_up_at, NOW()),
+                shipped_at = COALESCE(shipped_at, NOW()),
+                trip_started_at = COALESCE(trip_started_at, NOW())
             WHERE id = ?
         `, [awb, courierName, orderId]);
 
