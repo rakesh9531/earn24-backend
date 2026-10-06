@@ -243,12 +243,12 @@ exports.getAdminOrderDetails = async (req, res) => {
                 da.full_name as agent_name,
                 da.phone_number as agent_phone
             FROM orders o 
-            JOIN users u ON o.user_id = u.id
+            LEFT JOIN users u ON o.user_id = u.id
             LEFT JOIN user_addresses ua ON o.shipping_address_id = ua.id
             LEFT JOIN delivery_agents da ON o.delivery_agent_id = da.id
-            WHERE o.id = ?
+            WHERE o.id = ? OR o.order_number = ?
         `;
-        const [orderRows] = await db.query(orderQuery, [orderId]);
+        const [orderRows] = await db.query(orderQuery, [orderId, orderId]);
         
         if (orderRows.length === 0) {
             return res.status(404).json({ status: false, message: 'Order not found.' });
@@ -307,7 +307,7 @@ exports.getAdminOrderDetails = async (req, res) => {
                 END as pickup_contact_phone
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.id
-            JOIN products p ON oi.product_id = p.id
+            LEFT JOIN products p ON oi.product_id = p.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
             LEFT JOIN sellers s ON sp.seller_id = s.id
@@ -646,7 +646,9 @@ exports.getAdminOrderDetails = async (req, res) => {
             tracking_timeline: timeline,
             return_request: returnDetails,
             parent_order: parentOrder,
-            unlock_date: orderRows[0].delivered_at ? moment(orderRows[0].delivered_at).add(7, 'days').format('YYYY-MM-DD') : null
+            unlock_date: (orderRows[0].delivered_at && moment(orderRows[0].delivered_at).isValid()) 
+                ? moment(orderRows[0].delivered_at).add(7, 'days').format('YYYY-MM-DD') 
+                : null
         };
         
         res.status(200).json({ status: true, data: orderDetails });
