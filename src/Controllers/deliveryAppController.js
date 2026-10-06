@@ -200,6 +200,7 @@ exports.getMyOrders = async (req, res) => {
                               AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
                           )
                       )
+                      AND IFNULL(oi.item_status, 'PENDING') != 'DELIVERED'
                 )
             )
             AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')
@@ -209,7 +210,7 @@ exports.getMyOrders = async (req, res) => {
         const validOrders = [];
 
         for (let order of orders) {
-            // Detailed items query filtered STRICTLY for items assigned to THIS rider
+            // Detailed items query filtered STRICTLY for items assigned to THIS rider that are NOT YET DELIVERED
             const itemQuery = `
                 SELECT 
                     oi.id as order_item_id,
@@ -253,7 +254,8 @@ exports.getMyOrders = async (req, res) => {
                           AND o.delivery_agent_id = ? 
                           AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
                       )
-                  )`;
+                  )
+                  AND IFNULL(oi.item_status, 'PENDING') != 'DELIVERED'`;
             
             const [items] = await db.query(itemQuery, [order.id, agentId, agentId]);
             if (items.length === 0) {
@@ -557,15 +559,20 @@ exports.getAgentStats = async (req, res) => {
     try {
         const query = `
             SELECT 
-                COUNT(CASE WHEN order_status = 'DELIVERED' THEN 1 END) as delivered_count,
-                COUNT(CASE WHEN order_status = 'CANCELLED' THEN 1 END) as rejected_count,
-                COUNT(CASE WHEN order_status = 'RETURNED' THEN 1 END) as returned_count,
-                SUM(CASE WHEN order_status = 'DELIVERED' AND payment_method = 'COD' THEN total_amount ELSE 0 END) as cash_collected,
-                SUM(CASE WHEN order_status = 'DELIVERED' AND payment_method = 'ONLINE' THEN total_amount ELSE 0 END) as online_collected
-            FROM orders 
-            WHERE delivery_agent_id = ?
+                COUNT(DISTINCT CASE 
+                    WHEN o.order_status = 'DELIVERED' 
+                      OR (EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND (oi.delivery_agent_id = ? OR o.delivery_agent_id = ?)) 
+                          AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND (oi.delivery_agent_id = ? OR o.delivery_agent_id = ?) AND IFNULL(oi.item_status, 'PENDING') != 'DELIVERED')) 
+                    THEN o.id 
+                END) as delivered_count,
+                COUNT(DISTINCT CASE WHEN o.order_status = 'CANCELLED' THEN o.id END) as rejected_count,
+                COUNT(DISTINCT CASE WHEN o.order_status = 'RETURNED' THEN o.id END) as returned_count,
+                SUM(CASE WHEN (o.order_status = 'DELIVERED' OR EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND (oi.delivery_agent_id = ? OR o.delivery_agent_id = ?) AND oi.item_status = 'DELIVERED')) AND o.payment_method = 'COD' THEN IFNULL(o.delivery_amount_collected, o.total_amount) ELSE 0 END) as cash_collected,
+                SUM(CASE WHEN (o.order_status = 'DELIVERED' OR EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND (oi.delivery_agent_id = ? OR o.delivery_agent_id = ?) AND oi.item_status = 'DELIVERED')) AND o.payment_method = 'ONLINE' THEN o.total_amount ELSE 0 END) as online_collected
+            FROM orders o 
+            WHERE (o.delivery_agent_id = ? OR EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND oi.delivery_agent_id = ?))
         `;
-        const [earnings] = await db.query(query, [agentId]);
+        const [earnings] = await db.query(query, [agentId, agentId, agentId, agentId, agentId, agentId, agentId, agentId, agentId, agentId]);
         res.json({ status: true, data: earnings[0] || {} });
     } catch (e) {
         res.status(500).json({ status: false, message: e.message });
@@ -1000,11 +1007,18 @@ exports.getHistory = async (req, res) => {
 
         // 1. Get the total count of history items (to calculate total pages)
         const [countResult] = await db.query(
-            `SELECT COUNT(*) as total 
+            `SELECT COUNT(DISTINCT o.id) as total 
              FROM orders o
              JOIN users u ON o.user_id = u.id
-             WHERE o.delivery_agent_id = ? AND o.order_status IN ('DELIVERED', 'CANCELLED') ${searchClause}`, 
-            [agentId, ...searchParams]
+             WHERE (o.delivery_agent_id = ? OR EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND oi.delivery_agent_id = ?))
+               AND (
+                   o.order_status IN ('DELIVERED', 'CANCELLED')
+                   OR (
+                       EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND (oi.delivery_agent_id = ? OR o.delivery_agent_id = ?))
+                       AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND (oi.delivery_agent_id = ? OR o.delivery_agent_id = ?) AND IFNULL(oi.item_status, 'PENDING') != 'DELIVERED')
+                   )
+               ) ${searchClause}`, 
+            [agentId, agentId, agentId, agentId, agentId, agentId, ...searchParams]
         );
         const totalItems = countResult[0].total;
         const totalPages = Math.ceil(totalItems / limit) || 1;
@@ -1016,11 +1030,18 @@ exports.getHistory = async (req, res) => {
                    u.full_name as customer_name
             FROM orders o
             JOIN users u ON o.user_id = u.id
-            WHERE o.delivery_agent_id = ? AND o.order_status IN ('DELIVERED', 'CANCELLED') ${searchClause}
+            WHERE (o.delivery_agent_id = ? OR EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND oi.delivery_agent_id = ?))
+              AND (
+                  o.order_status IN ('DELIVERED', 'CANCELLED')
+                  OR (
+                      EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND (oi.delivery_agent_id = ? OR o.delivery_agent_id = ?))
+                      AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND (oi.delivery_agent_id = ? OR o.delivery_agent_id = ?) AND IFNULL(oi.item_status, 'PENDING') != 'DELIVERED')
+                  )
+              ) ${searchClause}
             ORDER BY COALESCE(o.delivered_at, o.cancelled_at, o.updated_at) DESC 
             LIMIT ? OFFSET ?`;
             
-        const [rows] = await db.query(query, [agentId, ...searchParams, limit, offset]);
+        const [rows] = await db.query(query, [agentId, agentId, agentId, agentId, agentId, agentId, ...searchParams, limit, offset]);
 
         res.json({ 
             status: true, 
