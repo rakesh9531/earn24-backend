@@ -428,6 +428,24 @@ async function testDatabaseConnection() {
       console.log("Migration: Added payout_mode setting (default manual).");
     }
 
+    // Auto-migration for Dynamic Admin Invoice Settings (Company Name, Address, GSTIN, Tagline)
+    const invoiceDefaults = [
+      { key: 'invoice_admin_name', val: 'EARN24', desc: 'Official Seller Name on Admin Order Invoices' },
+      { key: 'invoice_admin_tagline', val: 'SHOP MORE | EARN MORE | HELP MORE', desc: 'Company Tagline on Invoices' },
+      { key: 'invoice_admin_address', val: 'Ground Floor, Galfarbari Badi Maszid,\nGalfarbari More, Near Kumardhubi Hospital,\nP.O. Kumardhubi, Egyarkund, Kumardhubi,\nDhanbad, Jharkhand – 828203 (India)', desc: 'Official Seller Registered Address on Admin Invoices' },
+      { key: 'invoice_admin_gstin', val: '20EIMPK5093M1ZU', desc: 'Official GSTIN Number on Admin Invoices' },
+      { key: 'invoice_admin_email', val: 'support@earn24.in', desc: 'Support Email on Invoices' }
+    ];
+    for (const item of invoiceDefaults) {
+      const [exists] = await connection.query("SELECT id FROM app_settings WHERE setting_key = ?", [item.key]);
+      if (exists.length === 0) {
+        await connection.query(
+          "INSERT INTO app_settings (setting_key, setting_value, description) VALUES (?, ?, ?)",
+          [item.key, item.val, item.desc]
+        ).catch(() => {});
+      }
+    }
+
     // Auto-migration for KYC document upload columns
     const [kycColumns] = await connection.query("SHOW COLUMNS FROM user_kyc LIKE 'pan_card_doc'");
     if (kycColumns.length === 0) {
