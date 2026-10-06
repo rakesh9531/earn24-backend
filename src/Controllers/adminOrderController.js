@@ -65,7 +65,25 @@ exports.getOrdersByStatus = async (req, res) => {
         const dispatchCol = colSet.has('dispatch_mode') ? 'o.dispatch_mode' : "'LOCAL_RIDER' as dispatch_mode";
 
         const query = `
-            SELECT o.id, o.order_number, o.total_amount, o.order_status, o.created_at, o.payment_method, o.payment_status,
+            SELECT o.id, o.order_number, 
+                   CASE 
+                       WHEN EXISTS (
+                           SELECT 1 FROM order_items oi_m 
+                           JOIN seller_products sp_m ON oi_m.seller_product_id = sp_m.id 
+                           JOIN sellers s_m ON sp_m.seller_id = s_m.id 
+                           WHERE oi_m.order_id = o.id AND s_m.sellerable_type = 'Merchant' AND s_m.sellerable_id IS NOT NULL
+                       ) THEN (
+                           SELECT IFNULL(SUM(oi_a.total_price), 0)
+                           FROM order_items oi_a
+                           LEFT JOIN seller_products sp_a ON oi_a.seller_product_id = sp_a.id
+                           LEFT JOIN sellers s_a ON sp_a.seller_id = s_a.id
+                           WHERE oi_a.order_id = o.id 
+                             AND (sp_a.id IS NULL OR s_a.sellerable_type != 'Merchant' OR s_a.sellerable_id IS NULL)
+                       )
+                       ELSE o.total_amount 
+                   END as total_amount,
+                   o.total_amount as full_order_grand_total,
+                   o.order_status, o.created_at, o.payment_method, o.payment_status,
                    o.assignment_status, o.pickup_otp, o.pickup_status,
                    ${trackingCol}, ${courierCol}, ${dispatchCol},
                    u.full_name as customer_name, u.mobile_number as customer_phone,
@@ -611,10 +629,20 @@ exports.getAdminOrderDetails = async (req, res) => {
             }
         }
 
+        // Check if this order contains items from both Admin and Merchant
+        const hasMerchantItems = processedItems.some(it => it.sellerable_type === 'Merchant' && it.sellerable_id);
+        const adminItems = processedItems.filter(it => !it.seller_product_id || it.sellerable_type !== 'Merchant' || !it.sellerable_id);
+        const adminItemsTotal = adminItems.reduce((sum, it) => sum + parseFloat(it.total_price || 0), 0);
+
         // 7. Combine results into a single rich object
         const orderDetails = {
             ...orderRows[0], 
             items: processedItems,
+            has_merchant_items: hasMerchantItems,
+            admin_items_total: adminItemsTotal,
+            admin_subtotal: adminItemsTotal,
+            admin_items_count: adminItems.length,
+            full_order_grand_total: orderRows[0].total_amount,
             tracking_timeline: timeline,
             return_request: returnDetails,
             parent_order: parentOrder,
