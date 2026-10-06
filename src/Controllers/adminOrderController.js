@@ -959,6 +959,7 @@ exports.verifyPickupOtp = async (req, res) => {
               AND IFNULL(oi.pickup_status, 'PENDING') != 'PICKED_UP'
         `, [orderId]);
         const allAdminPickedUp = (remainingAdmin[0]?.count || 0) === 0;
+        const allPickedUp = allAdminPickedUp;
 
         if (allAdminPickedUp) {
             await db.query(
