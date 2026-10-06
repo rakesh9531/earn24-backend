@@ -1234,7 +1234,7 @@ exports.getDeliveryAgents = async (req, res) => {
 exports.assignMerchantOrderDelivery = async (req, res) => {
     const merchantId = req.user.id;
     const { orderId } = req.params;
-    const { deliveryAgentId } = req.body;
+    const deliveryAgentId = req.body.deliveryAgentId || req.body.delivery_agent_id;
 
     if (!deliveryAgentId) {
         return res.status(400).json({ status: false, message: "Delivery agent ID is required." });
@@ -1378,7 +1378,7 @@ exports.dispatchMerchantOrderShiprocket = async (req, res) => {
         const subOrderId = `${order.order_number}-M${merchantId}`;
         const pickupLocation = req.body?.pickupLocation 
             ? String(req.body.pickupLocation).trim().substring(0, 36) 
-            : (merchantInfo.business_name ? String(merchantInfo.business_name).substring(0, 36) : "Primary");
+            : (process.env.SHIPROCKET_PICKUP_LOCATION || "warehouse");
         const groupTotal = items.reduce((sum, it) => sum + parseFloat(it.total_price || (it.price_per_unit * it.quantity) || 0), 0);
         const isPrepaid = ['WALLET', 'ONLINE', 'PAYU'].includes((order.payment_method || '').toUpperCase()) || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID';
 
@@ -1403,7 +1403,7 @@ exports.dispatchMerchantOrderShiprocket = async (req, res) => {
                 billing_state: order.state || "State",
                 billing_country: "India",
                 billing_email: "support@earn24.in",
-                billing_phone: order.customer_phone || "9999999999",
+                billing_phone: order.customer_phone || "7323952235",
                 shipping_is_billing: true,
                 order_items: shiprocketItems,
                 payment_method: isPrepaid ? "Prepaid" : "COD",
@@ -1414,7 +1414,11 @@ exports.dispatchMerchantOrderShiprocket = async (req, res) => {
             return res.status(400).json({ status: false, message: `Shiprocket Error: ${srErr.message}` });
         }
 
-        const awb = shipmentResult?.awb_code || shipmentResult?.shipment_id || `AWB-${Date.now()}`;
+        if (!shipmentResult?.shipment_id && !shipmentResult?.order_id) {
+            return res.status(400).json({ status: false, message: "Failed to generate shipment in Shiprocket." });
+        }
+
+        const awb = shipmentResult?.awb_code || `SR-SHIP-${shipmentResult?.shipment_id}`;
         const courierName = shipmentResult?.courier_name || 'Shiprocket Express';
         const itemIds = items.map(i => i.id);
 
@@ -1438,9 +1442,10 @@ exports.dispatchMerchantOrderShiprocket = async (req, res) => {
 
         return res.status(200).json({
             status: true,
-            message: `Dispatched via ${courierName}! Tracking number: ${awb}`,
+            message: `Order successfully dispatched to Shiprocket! Tracking AWB: ${awb}`,
             tracking_number: awb,
-            courier_name: courierName
+            courier_name: courierName,
+            shipment_id: shipmentResult?.shipment_id
         });
 
     } catch (error) {
