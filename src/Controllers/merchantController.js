@@ -753,8 +753,16 @@ exports.getMerchantOrders = async (req, res) => {
             const firstItemName = ord.items[0]?.product_name || 'Item';
             const extraCount = ord.items.length - 1;
             const summary = extraCount > 0 ? `${firstItemName} (+${extraCount} more)` : firstItemName;
+            
+            // Calculate merchant's items subtotal and total so merchant only sees their own products' amount
+            const merchantItemsTotal = ord.items.reduce((sum, it) => sum + parseFloat(it.total_price || 0), 0);
+            const displayTotal = (ord.is_replacement && ord.total_amount === 0) ? 0 : merchantItemsTotal;
+
             return {
                 ...ord,
+                subtotal: merchantItemsTotal,
+                total_amount: displayTotal,
+                full_order_grand_total: ord.total_amount,
                 product_name: summary,
                 items_summary: summary,
                 items_count: ord.items.length

@@ -2085,8 +2085,17 @@ exports.getOrderJourneyDetails = async (req, res) => {
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
             LEFT JOIN sellers s ON sp.seller_id = s.id
             LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+            LEFT JOIN orders o ON oi.order_id = o.id
             WHERE oi.order_id = ?
-        `, [order.id]);
+              AND (
+                  oi.delivery_agent_id = ?
+                  OR (
+                      oi.delivery_agent_id IS NULL 
+                      AND (o.delivery_agent_id = ? OR ? IS NULL)
+                      AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
+                  )
+              )
+        `, [order.id, agentId, agentId, agentId]);
 
         // 3. Check for return / replacement requests
         const [returnRows] = await db.query(`
