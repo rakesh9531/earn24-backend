@@ -1056,7 +1056,7 @@ exports.dispatchAdminOrderShiprocket = async (req, res) => {
 
         const pickupLocation = customPickupLocation 
             ? String(customPickupLocation).trim().substring(0, 36) 
-            : (process.env.SHIPROCKET_PICKUP_LOCATION || "Primary");
+            : (process.env.SHIPROCKET_PICKUP_LOCATION || "warehouse");
 
         const groupTotal = itemsToDispatch.reduce((sum, it) => sum + parseFloat(it.total_price || (it.price_per_unit * it.quantity) || 0), 0);
         const isPrepaid = isOnline || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID';
@@ -1084,7 +1084,7 @@ exports.dispatchAdminOrderShiprocket = async (req, res) => {
                 billing_state: order.state || "State",
                 billing_country: "India",
                 billing_email: "support@earn24.in",
-                billing_phone: order.customer_phone || "9999999999",
+                billing_phone: order.customer_phone || "7323952235",
                 shipping_is_billing: true,
                 order_items: shiprocketItems,
                 payment_method: isPrepaid ? "Prepaid" : "COD",
@@ -1095,7 +1095,11 @@ exports.dispatchAdminOrderShiprocket = async (req, res) => {
             return res.status(400).json({ status: false, message: `Shiprocket Error: ${srErr.message}` });
         }
 
-        const awb = shipmentResult?.awb_code || shipmentResult?.shipment_id || `AWB-${Date.now()}`;
+        if (!shipmentResult?.shipment_id && !shipmentResult?.order_id) {
+            return res.status(400).json({ status: false, message: "Failed to generate shipment in Shiprocket." });
+        }
+
+        const awb = shipmentResult?.awb_code || `SR-SHIP-${shipmentResult?.shipment_id}`;
         const courierName = shipmentResult?.courier_name || 'Shiprocket Express';
         const itemIds = itemsToDispatch.map(i => i.id);
 
