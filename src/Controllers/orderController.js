@@ -672,9 +672,14 @@ exports.downloadInvoice = async (req, res) => {
         // 4. Get Items with HSN Code and Seller Info (Support both Merchant and Admin sellers)
         const itemsQuery = `
             SELECT oi.*, h.hsn_code, h.gst_percentage, 
-                   COALESCE(m.business_name, s.display_name, 'EARN24') as seller_name, 
-                   COALESCE(m.business_address, s.address, 'Central Fulfillment Hub') as seller_address, 
-                   COALESCE(m.gst_number, s.gstin, 'N/A') as seller_gstin
+                   s.sellerable_type,
+                   m.business_name as merchant_name,
+                   m.business_address as merchant_address,
+                   m.pincode as merchant_pincode,
+                   m.gst_number as merchant_gstin,
+                   s.display_name as seller_display_name,
+                   s.address as seller_db_address,
+                   s.gstin as seller_db_gstin
             FROM order_items oi
             LEFT JOIN products p ON oi.product_id = p.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
@@ -686,19 +691,72 @@ exports.downloadInvoice = async (req, res) => {
         const [itemRows] = await db.query(itemsQuery, [order.id]);
         order.items = itemRows;
 
-        const seller = {
-            display_name: itemRows[0]?.seller_name || "EARN24",
-            address: itemRows[0]?.seller_address || "Central Fulfillment Hub",
-            gstin: itemRows[0]?.seller_gstin || "N/A"
-        };
+        // Dynamic Seller Resolution:
+        // - Admin Seller: EARN24 official address & GSTIN
+        // - Merchant Seller: Merchant's own profile address, pincode & GSTIN
+        const firstItem = itemRows[0] || {};
+        const isMerchantItem = firstItem.sellerable_type === 'Merchant' && (firstItem.merchant_name || firstItem.merchant_address);
 
-        // 5. Generate PDF
-        const pdfBuffer = await invoiceService.generateInvoicePDF(order, user, seller);
+        let seller = {};
+        if (isMerchantItem) {
+            const mAddress = [
+                firstItem.merchant_address,
+                firstItem.merchant_pincode ? `Pincode: ${firstItem.merchant_pincode}` : ''
+            ].filter(Boolean).join('\n');
 
-        // 6. Send Response
-        res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `inline; filename=Invoice-${order.order_number}.pdf`);
-        res.send(pdfBuffer);
+            seller = {
+                seller_type: 'Merchant',
+                display_name: firstItem.merchant_name || firstItem.seller_display_name || "Merchant Partner",
+                address: mAddress || "Merchant Store Address",
+                gstin: firstItem.merchant_gstin || "N/A"
+            };
+        } else if (requester?.role?.toLowerCase() === 'merchant') {
+            // Fallback for merchant requester
+            const [mRows] = await db.query('SELECT business_name, business_address, pincode, gst_number FROM merchants WHERE id = ?', [requester.id]);
+            if (mRows.length > 0) {
+                const m = mRows[0];
+                const mAddress = [m.business_address, m.pincode ? `Pincode: ${m.pincode}` : ''].filter(Boolean).join('\n');
+                seller = {
+                    seller_type: 'Merchant',
+                    display_name: m.business_name || 'Merchant Partner',
+                    address: mAddress || 'Merchant Store Address',
+                    gstin: m.gst_number || 'N/A'
+                };
+            }
+        }
+
+        if (!seller.display_name) {
+            // Load dynamic admin invoice settings from app_settings
+            const [adminSettingsRows] = await db.query(
+                "SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'invoice_admin_%'"
+            ).catch(() => [[]]);
+            const adminSettingsMap = (adminSettingsRows || []).reduce((acc, row) => {
+                acc[row.setting_key] = row.setting_value;
+                return acc;
+            }, {});
+
+            seller = {
+                seller_type: 'Admin',
+                display_name: adminSettingsMap['invoice_admin_name'] || "EARN24",
+                tagline: adminSettingsMap['invoice_admin_tagline'] || "SHOP MORE | EARN MORE | HELP MORE",
+                address: adminSettingsMap['invoice_admin_address'] || "Ground Floor, Galfarbari Badi Maszid,\nGalfarbari More, Near Kumardhubi Hospital,\nP.O. Kumardhubi, Egyarkund, Kumardhubi,\nDhanbad, Jharkhand – 828203 (India)",
+                gstin: adminSettingsMap['invoice_admin_gstin'] || "20EIMPK5093M1ZU",
+                email: adminSettingsMap['invoice_admin_email'] || "support@earn24.in"
+            };
+        }
+
+        // 5. If explicitly requested format=pdf, send 80mm PDF
+        if (req.query.format === 'pdf') {
+            const pdfBuffer = await invoiceService.generateInvoicePDF(order, user, seller);
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `inline; filename=Invoice-${order.order_number}.pdf`);
+            return res.send(pdfBuffer);
+        }
+
+        // 6. Default: Send Ready-to-print Thermal Slip HTML (Swipe Cart / POS Receipt Machine format)
+        const slipHtml = invoiceService.generateThermalInvoiceHTML(order, user, seller);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        return res.send(slipHtml);
 
     } catch (error) {
         console.error("Error generating invoice:", error);
