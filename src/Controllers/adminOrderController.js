@@ -32,26 +32,29 @@ exports.getOrdersByStatus = async (req, res) => {
         let whereClause = "";
         let params = [];
 
+        const adminItemActiveCondition = `EXISTS (
+            SELECT 1 FROM order_items oi 
+            LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id 
+            LEFT JOIN sellers s ON sp.seller_id = s.id 
+            WHERE oi.order_id = o.id 
+            AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
+            AND (oi.item_status IS NULL OR oi.item_status NOT IN ('CANCELLED', 'RETURNED'))
+        )`;
+
         if (status === 'CONFIRMED') {
-            whereClause = "WHERE o.order_status IN ('CONFIRMED', 'PLACED', 'SHIPPED', 'OUT_FOR_DELIVERY')";
+            whereClause = `WHERE o.order_status IN ('CONFIRMED', 'PLACED', 'SHIPPED', 'OUT_FOR_DELIVERY') AND ${adminItemActiveCondition}`;
         } else if (status === 'ALL') {
             // Process New Orders should only include active processing orders needing Admin assignment:
-            // 1. Must contain Admin / Non-merchant products (merchant-only orders are processed by their respective merchants)
+            // 1. Must contain active Admin / Non-merchant products (not cancelled or returned)
             // 2. Must not be already picked up by rider (o.pickup_status != 'PICKED_UP')
             // 3. Must not be already dispatched via courier
             // 4. Must not be completed or cancelled
             whereClause = `WHERE o.order_status NOT IN ('PENDING', 'PENDING_PAYMENT', 'DELIVERED', 'CANCELLED', 'OUT_FOR_DELIVERY')
                            AND (o.pickup_status IS NULL OR o.pickup_status != 'PICKED_UP')
                            AND NOT (o.dispatch_mode = 'SHIPROCKET_COURIER' AND o.tracking_number IS NOT NULL)
-                           AND EXISTS (
-                               SELECT 1 FROM order_items oi 
-                               LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id 
-                               LEFT JOIN sellers s ON sp.seller_id = s.id 
-                               WHERE oi.order_id = o.id 
-                               AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
-                           )`;
+                           AND ${adminItemActiveCondition}`;
         } else {
-            whereClause = "WHERE o.order_status = ?";
+            whereClause = `WHERE o.order_status = ? AND ${adminItemActiveCondition}`;
             params = [status];
         }
 
@@ -79,6 +82,7 @@ exports.getOrdersByStatus = async (req, res) => {
                            LEFT JOIN sellers s_a ON sp_a.seller_id = s_a.id
                            WHERE oi_a.order_id = o.id 
                              AND (sp_a.id IS NULL OR s_a.sellerable_type != 'Merchant' OR s_a.sellerable_id IS NULL)
+                             AND (oi_a.item_status IS NULL OR oi_a.item_status NOT IN ('CANCELLED', 'RETURNED'))
                        )
                        ELSE o.total_amount 
                    END as total_amount,
@@ -144,7 +148,7 @@ exports.assignOrderForDelivery = async (req, res) => {
         // Generate a 4-digit secure Pickup OTP for Warehouse / Store handover
         const masterPickupOtp = Math.floor(1000 + Math.random() * 9000).toString();
 
-        // Fetch Admin / Central Hub items only (Items not belonging to any external merchant)
+        // Fetch Admin / Central Hub items only (Active items not belonging to any external merchant)
         const [adminItems] = await db.query(`
             SELECT oi.id
             FROM order_items oi
@@ -152,12 +156,13 @@ exports.assignOrderForDelivery = async (req, res) => {
             LEFT JOIN sellers s ON sp.seller_id = s.id
             WHERE oi.order_id = ?
               AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
+              AND (oi.item_status IS NULL OR oi.item_status NOT IN ('CANCELLED', 'RETURNED'))
         `, [orderId]);
 
         if (adminItems.length === 0) {
             return res.status(400).json({ 
                 status: false, 
-                message: "No Admin products found in this order. Merchant products must be assigned independently by merchants." 
+                message: "No active Admin products found in this order to assign (products may be cancelled or belonging to merchants)." 
             });
         }
 
@@ -756,9 +761,7 @@ exports.verifySettlement = async (req, res) => {
     } finally {
         if (connection) connection.release();
     }
-};
-
-exports.getAllOrdersHistory = async (req, res) => {
+};exports.getAllOrdersHistory = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const search = (req.query.search || '').trim();
@@ -773,28 +776,15 @@ exports.getAllOrdersHistory = async (req, res) => {
         let params = [];
 
         if (search) {
-            whereClauses.push(`(o.order_number LIKE ? OR u.full_name LIKE ? OR u.mobile_number LIKE ? OR da.full_name LIKE ?)`);
-            params.push(searchPattern, searchPattern, searchPattern, searchPattern);
+            whereClauses.push(`(o.order_number LIKE ? OR oi.product_name LIKE ? OR u.full_name LIKE ? OR u.mobile_number LIKE ? OR da.full_name LIKE ? OR item_da.full_name LIKE ?)`);
+            params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
         }
 
         if (merchantId && merchantId !== 'ALL') {
             if (merchantId === 'ADMIN') {
-                whereClauses.push(`EXISTS (
-                    SELECT 1 FROM order_items oi 
-                    LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id 
-                    LEFT JOIN sellers s ON sp.seller_id = s.id 
-                    WHERE oi.order_id = o.id 
-                    AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
-                )`);
+                whereClauses.push(`(sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)`);
             } else {
-                whereClauses.push(`EXISTS (
-                    SELECT 1 FROM order_items oi 
-                    JOIN seller_products sp ON oi.seller_product_id = sp.id 
-                    JOIN sellers s ON sp.seller_id = s.id 
-                    WHERE oi.order_id = o.id 
-                    AND s.sellerable_type = 'Merchant' 
-                    AND s.sellerable_id = ?
-                )`);
+                whereClauses.push(`s.sellerable_type = 'Merchant' AND s.sellerable_id = ?`);
                 params.push(merchantId);
             }
         }
@@ -804,53 +794,126 @@ exports.getAllOrdersHistory = async (req, res) => {
         } else if (status === 'REPLACEMENTS') {
             whereClauses.push(`(o.order_number LIKE 'R-%' OR ret.request_type = 'REPLACEMENT')`);
         } else if (status === 'PENDING') {
-            whereClauses.push(`o.order_status IN ('PENDING', 'PENDING_PAYMENT', 'PLACED', 'CONFIRMED', 'SHIPPED', 'OUT_FOR_DELIVERY') AND o.order_status NOT IN ('DELIVERED', 'CANCELLED')`);
+            whereClauses.push(`COALESCE(oi.item_status, o.order_status) IN ('PENDING', 'PENDING_PAYMENT', 'PLACED', 'CONFIRMED', 'SHIPPED', 'OUT_FOR_DELIVERY') AND COALESCE(oi.item_status, o.order_status) NOT IN ('DELIVERED', 'CANCELLED')`);
         } else if (status === 'SHIPPED') {
-            whereClauses.push(`o.order_status IN ('SHIPPED', 'OUT_FOR_DELIVERY')`);
+            whereClauses.push(`COALESCE(oi.item_status, o.order_status) IN ('SHIPPED', 'OUT_FOR_DELIVERY')`);
+        } else if (status === 'DELIVERED') {
+            whereClauses.push(`COALESCE(oi.item_status, o.order_status) = 'DELIVERED'`);
+        } else if (status === 'CANCELLED') {
+            whereClauses.push(`COALESCE(oi.item_status, o.order_status) = 'CANCELLED'`);
         } else if (status !== 'ALL') {
-            whereClauses.push(`o.order_status = ?`);
+            whereClauses.push(`COALESCE(oi.item_status, o.order_status) = ?`);
             params.push(status);
         }
 
         const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-        let orderSql = 'ORDER BY o.created_at DESC';
+        let orderSql = 'ORDER BY o.created_at DESC, oi.id DESC';
         if (sortBy === 'DATE_ASC') {
-            orderSql = 'ORDER BY o.created_at ASC';
+            orderSql = 'ORDER BY o.created_at ASC, oi.id ASC';
         } else if (sortBy === 'AMOUNT_HIGH') {
-            orderSql = 'ORDER BY o.total_amount DESC';
+            orderSql = 'ORDER BY oi.total_price DESC';
         } else if (sortBy === 'AMOUNT_LOW') {
-            orderSql = 'ORDER BY o.total_amount ASC';
+            orderSql = 'ORDER BY oi.total_price ASC';
         } else if (sortBy === 'MERCHANT_ASC') {
-            orderSql = 'ORDER BY merchant_names ASC, o.created_at DESC';
+            orderSql = 'ORDER BY seller_name ASC, o.created_at DESC';
         } else if (sortBy === 'MERCHANT_DESC') {
-            orderSql = 'ORDER BY merchant_names DESC, o.created_at DESC';
+            orderSql = 'ORDER BY seller_name DESC, o.created_at DESC';
         }
 
         const query = `
-            SELECT o.*, 
-                   u.full_name as customer_name, u.mobile_number as customer_phone,
-                   da.full_name as agent_name, da.phone_number as agent_phone,
-                   ret.id as return_id, ret.status as return_status, ret.request_type as return_type,
-                   ret.refund_amount as return_refund_amount, ret.refund_status as return_refund_status,
-                   (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,
-                   (SELECT product_name FROM order_items WHERE order_id = o.id LIMIT 1) as first_item_name,
-                   (SELECT p.main_image_url FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = o.id LIMIT 1) as first_item_image,
-                   (SELECT attributes_snapshot FROM order_items WHERE order_id = o.id LIMIT 1) as first_item_attributes,
-                   (
-                       SELECT GROUP_CONCAT(DISTINCT COALESCE(m.business_name, s.display_name, 'Earn24 Admin') SEPARATOR ', ')
-                       FROM order_items oi
-                       LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
-                       LEFT JOIN sellers s ON sp.seller_id = s.id
-                       LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
-                       WHERE oi.order_id = o.id
-                   ) as merchant_names
-            FROM orders o
+            SELECT oi.id as order_item_id,
+                   oi.order_id,
+                   oi.product_id,
+                   oi.product_name,
+                   oi.quantity,
+                   oi.price_per_unit,
+                   oi.total_price,
+                   oi.total_bv_earned,
+                   COALESCE(oi.item_status, o.order_status) as item_status,
+                   oi.attributes_snapshot,
+                   oi.pickup_otp as item_pickup_otp,
+                   oi.pickup_status as item_pickup_status,
+                   oi.picked_up_at as item_picked_up_at,
+                   oi.assigned_at as item_assigned_at,
+                   oi.accepted_at as item_accepted_at,
+                   oi.delivered_at as item_delivered_at,
+                   oi.dispatch_mode as item_dispatch_mode,
+                   oi.tracking_number as item_tracking_number,
+                   oi.courier_name as item_courier_name,
+                   p.main_image_url as product_image,
+                   b.name as brand_name,
+                   
+                   -- Order Master fields
+                   o.id as id,
+                   o.order_number,
+                   o.total_amount as full_order_total,
+                   o.total_amount as total_amount,
+                   o.subtotal as full_order_subtotal,
+                   o.delivery_fee,
+                   o.order_status,
+                   o.created_at,
+                   o.payment_method,
+                   o.payment_status,
+                   o.assignment_status,
+                   o.dispatch_mode,
+                   o.tracking_number,
+                   o.courier_name,
+                   o.pickup_otp,
+                   o.pickup_status,
+                   o.address_line_1,
+                   o.address_line_2,
+                   o.city,
+                   o.state,
+                   o.pincode,
+                   o.landmark,
+                   
+                   -- Customer fields
+                   u.full_name as customer_name,
+                   u.mobile_number as customer_phone,
+                   u.email as customer_email,
+                   
+                   -- Delivery Agent
+                   COALESCE(item_da.full_name, da.full_name) as agent_name,
+                   COALESCE(item_da.phone_number, da.phone_number) as agent_phone,
+                   
+                   -- Return / Replacement linked to this specific item (or order)
+                   ret.id as return_id,
+                   ret.status as return_status,
+                   ret.request_type as return_type,
+                   ret.refund_amount as return_refund_amount,
+                   ret.refund_status as return_refund_status,
+                   
+                   -- Seller classification
+                   s.sellerable_type,
+                   s.sellerable_id,
+                   m.business_name as merchant_business_name,
+                   CASE 
+                       WHEN s.sellerable_type = 'Merchant' AND m.business_name IS NOT NULL THEN 'Merchant'
+                       ELSE 'Admin'
+                   END as seller_type,
+                   CASE 
+                       WHEN s.sellerable_type = 'Merchant' AND m.business_name IS NOT NULL THEN CONCAT(m.business_name, ' (Merchant)')
+                       ELSE 'Earn24 (Admin)'
+                   END as seller_name,
+                   CASE 
+                       WHEN s.sellerable_type = 'Merchant' AND m.business_name IS NOT NULL THEN m.business_name
+                       ELSE 'Earn24 (Admin)'
+                   END as merchant_names
+
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.id
             JOIN users u ON o.user_id = u.id
+            LEFT JOIN products p ON oi.product_id = p.id
+            LEFT JOIN brands b ON p.brand_id = b.id
+            LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
+            LEFT JOIN sellers s ON sp.seller_id = s.id
+            LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+            LEFT JOIN delivery_agents item_da ON oi.delivery_agent_id = item_da.id
             LEFT JOIN delivery_agents da ON o.delivery_agent_id = da.id
             LEFT JOIN order_returns ret ON ret.id = (
                 SELECT r2.id FROM order_returns r2 
-                WHERE r2.order_id = o.id 
+                WHERE (r2.order_item_id = oi.id OR (r2.order_id = o.id AND r2.order_item_id IS NULL))
                 ORDER BY r2.id DESC LIMIT 1
             )
             ${whereSql}
@@ -862,12 +925,17 @@ exports.getAllOrdersHistory = async (req, res) => {
 
         const countQuery = `
             SELECT COUNT(*) as total 
-            FROM orders o 
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.id 
             JOIN users u ON o.user_id = u.id 
+            LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id 
+            LEFT JOIN sellers s ON sp.seller_id = s.id 
+            LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+            LEFT JOIN delivery_agents item_da ON oi.delivery_agent_id = item_da.id
             LEFT JOIN delivery_agents da ON o.delivery_agent_id = da.id
             LEFT JOIN order_returns ret ON ret.id = (
                 SELECT r2.id FROM order_returns r2 
-                WHERE r2.order_id = o.id 
+                WHERE (r2.order_item_id = oi.id OR (r2.order_id = o.id AND r2.order_item_id IS NULL))
                 ORDER BY r2.id DESC LIMIT 1
             )
             ${whereSql}
@@ -875,18 +943,20 @@ exports.getAllOrdersHistory = async (req, res) => {
         const [countRows] = await db.query(countQuery, params);
 
         const processedRows = rows.map(r => {
-            let img = r.first_item_image;
-            if (r.first_item_attributes) {
+            let img = r.product_image;
+            if (r.attributes_snapshot) {
                 try {
-                    const snap = typeof r.first_item_attributes === 'string' ? JSON.parse(r.first_item_attributes) : r.first_item_attributes;
-                    if (snap && snap['Variant Image']) {
-                        img = snap['Variant Image'];
+                    const snap = typeof r.attributes_snapshot === 'string' ? JSON.parse(r.attributes_snapshot) : r.attributes_snapshot;
+                    if (snap && (snap['Variant Image'] || snap['variant_image'])) {
+                        img = snap['Variant Image'] || snap['variant_image'];
                     }
                 } catch(e) {}
             }
             return {
                 ...r,
-                display_image_url: img
+                display_image_url: img,
+                first_item_name: r.product_name,
+                item_count: 1
             };
         });
 
@@ -1126,7 +1196,14 @@ exports.cancelAdminOrder = async (req, res) => {
             refundProcessed = true;
         }
 
-        // 5. Update order details
+        // 5. Update order and items details
+        await connection.query(
+            `UPDATE order_items 
+             SET item_status = 'CANCELLED', cancellation_reason = ? 
+             WHERE order_id = ?`,
+            [reason, orderId]
+        );
+
         await connection.query(
             `UPDATE orders 
              SET order_status = 'CANCELLED', 
@@ -1337,10 +1414,11 @@ exports.dispatchAdminOrderShiprocket = async (req, res) => {
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
             LEFT JOIN sellers s ON sp.seller_id = s.id
             WHERE oi.order_id = ?
+              AND (oi.item_status IS NULL OR oi.item_status NOT IN ('CANCELLED', 'RETURNED'))
         `, [orderId]);
 
         if (items.length === 0) {
-            return res.status(400).json({ status: false, message: "No items found in this order." });
+            return res.status(400).json({ status: false, message: "No active items found in this order to dispatch." });
         }
 
         // Filter items that Admin is dispatching (Central hub / Admin products, or all non-dispatched items)
