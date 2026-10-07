@@ -452,6 +452,15 @@ exports.addMerchantProduct = async (req, res) => {
         if (typeof attributeValueIds === 'string') {
             try { attributeValueIds = JSON.parse(attributeValueIds); } catch (e) { attributeValueIds = []; }
         }
+        if ((!Array.isArray(attributeValueIds) || attributeValueIds.length === 0) && body.productAttributes) {
+            let pAttrs = body.productAttributes;
+            if (typeof pAttrs === 'string') {
+                try { pAttrs = JSON.parse(pAttrs); } catch (e) { pAttrs = {}; }
+            }
+            if (typeof pAttrs === 'object' && pAttrs !== null) {
+                attributeValueIds = Object.values(pAttrs).map(v => parseInt(v, 10)).filter(v => !isNaN(v));
+            }
+        }
         if (Array.isArray(attributeValueIds) && attributeValueIds.length > 0 && productId) {
             try {
                 await connection.query('DELETE FROM product_attributes WHERE product_id = ?', [productId]);
@@ -930,6 +939,30 @@ exports.updateMerchantProduct = async (req, res) => {
                 'INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url, variant_image_urls) VALUES ?',
                 [variantValues]
             );
+        }
+
+        // Update Dynamic Category Attributes if provided
+        let attributeValueIds = body.attributeValueIds;
+        if (typeof attributeValueIds === 'string') {
+            try { attributeValueIds = JSON.parse(attributeValueIds); } catch (e) { attributeValueIds = []; }
+        }
+        if ((!Array.isArray(attributeValueIds) || attributeValueIds.length === 0) && body.productAttributes) {
+            let pAttrs = body.productAttributes;
+            if (typeof pAttrs === 'string') {
+                try { pAttrs = JSON.parse(pAttrs); } catch (e) { pAttrs = {}; }
+            }
+            if (typeof pAttrs === 'object' && pAttrs !== null) {
+                attributeValueIds = Object.values(pAttrs).map(v => parseInt(v, 10)).filter(v => !isNaN(v));
+            }
+        }
+        if (Array.isArray(attributeValueIds) && attributeValueIds.length > 0 && productId) {
+            try {
+                await connection.query('DELETE FROM product_attributes WHERE product_id = ?', [productId]);
+                const attrValues = attributeValueIds.map(valId => [productId, parseInt(valId, 10)]);
+                await connection.query('INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?', [attrValues]);
+            } catch (attrErr) {
+                console.warn("Could not save product attributes on update:", attrErr.message);
+            }
         }
 
         await connection.commit();
