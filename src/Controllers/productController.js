@@ -1774,16 +1774,16 @@ exports.getProductForUser = async (req, res) => {
 
     let whereClause = "(p.id = ? OR sp.id = ?)";
     let orderParams = [activePincode, activePincode, id, id, id];
-    let orderByClause = "(CASE WHEN p.id = ? THEN 0 ELSE 1 END), sp.selling_price ASC";
+    let orderByClause = "(CASE WHEN p.id = ? THEN 0 ELSE 1 END), (CASE WHEN sp.has_variants = 1 OR EXISTS(SELECT 1 FROM seller_product_variants v_check WHERE v_check.seller_product_id = sp.id OR v_check.product_id = p.id) THEN 0 ELSE 1 END), sp.selling_price ASC";
 
     if (targetOfferId) {
-      whereClause = "(sp.id = ? OR p.id = ?)";
-      orderParams = [activePincode, activePincode, targetOfferId, id, targetOfferId];
-      orderByClause = "(CASE WHEN sp.id = ? THEN 0 ELSE 1 END), sp.selling_price ASC";
+      whereClause = "((sp.id = ? AND sp.product_id = ?) OR (p.id = ?))";
+      orderParams = [activePincode, activePincode, targetOfferId, id, id, targetOfferId];
+      orderByClause = "(CASE WHEN sp.id = ? THEN 0 ELSE 1 END), (CASE WHEN sp.has_variants = 1 OR EXISTS(SELECT 1 FROM seller_product_variants v_check WHERE v_check.seller_product_id = sp.id OR v_check.product_id = p.id) THEN 0 ELSE 1 END), sp.selling_price ASC";
     } else if (isSellerProd) {
       whereClause = "sp.id = ?";
       orderParams = [activePincode, activePincode, id];
-      orderByClause = "sp.selling_price ASC";
+      orderByClause = "(CASE WHEN sp.has_variants = 1 OR EXISTS(SELECT 1 FROM seller_product_variants v_check WHERE v_check.seller_product_id = sp.id OR v_check.product_id = p.id) THEN 0 ELSE 1 END), sp.selling_price ASC";
     }
 
     const query = `
@@ -1820,7 +1820,7 @@ exports.getProductForUser = async (req, res) => {
                 ) as attributes,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
-                    FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id AND (spv.is_active = TRUE OR spv.is_active IS NULL)
+                    FROM seller_product_variants spv WHERE (spv.seller_product_id = sp.id OR spv.product_id = p.id) AND (spv.is_active = TRUE OR spv.is_active IS NULL)
                 ) as variants,
                 (
                     ? = '' 
@@ -1894,6 +1894,7 @@ exports.getProductForUser = async (req, res) => {
     product.gallery_image_urls = safeJsonParse(product.gallery_image_urls);
     product.attributes = safeJsonParse(product.attributes);
     product.variants = safeJsonParse(product.variants);
+    product.has_variants = Boolean(product.has_variants || (Array.isArray(product.variants) && product.variants.length > 0));
 
     console.log(`[getProductForUser DEBUG SUCCESS] fetched product_id=${product.product_id}, offer_id=${product.offer_id}, warranty_type=${product.warranty_type}, warranty_months=${product.warranty_months}, warranty_period=${product.warranty_period}, warranty_covered=${product.warranty_covered_by}, has_return=${product.has_return_policy}, is_replacement=${product.is_replacement_available}`);
 
