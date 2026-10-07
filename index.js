@@ -179,28 +179,27 @@ async function ensureTablesExist() {
         await db.query(`ALTER TABLE order_items ADD COLUMN delivered_at DATETIME NULL;`).catch(() => {});
         await db.query(`ALTER TABLE order_items ADD COLUMN return_window_expiry_date DATETIME NULL;`).catch(() => {});
         await db.query(`ALTER TABLE orders ADD COLUMN is_mlm_distributed TINYINT(1) DEFAULT 0;`).catch(() => {});
-        // Auto-fix for merchant products that missed attributes in database
+        // Fully dynamic auto-fix for any products with variants missing product_attributes
         try {
-            const [check1073] = await db.query("SELECT 1 FROM product_attributes WHERE product_id = 1073 LIMIT 1");
-            if (check1073.length === 0) {
-                const [cAttr] = await db.query("SELECT id FROM attributes WHERE LOWER(name) LIKE '%color%' LIMIT 1");
-                const [sAttr] = await db.query("SELECT id FROM attributes WHERE LOWER(name) LIKE '%size%' OR LOWER(name) LIKE '%storage%' LIMIT 1");
-                if (cAttr.length > 0) {
-                    const [cVal] = await db.query("SELECT id FROM attribute_values WHERE attribute_id = ? AND LOWER(value) IN ('red', 'pink') LIMIT 1", [cAttr[0].id]);
-                    if (cVal.length > 0) {
-                        await db.query("INSERT IGNORE INTO product_attributes (product_id, attribute_value_id) VALUES (1073, ?)", [cVal[0].id]);
-                    }
+            const [orphanedProds] = await db.query(`
+                SELECT p.id, p.name 
+                FROM products p
+                JOIN seller_product_variants spv ON spv.product_id = p.id
+                WHERE NOT EXISTS (SELECT 1 FROM product_attributes pa WHERE pa.product_id = p.id)
+                GROUP BY p.id
+            `);
+            for (const op of orphanedProds) {
+                const [matchedVals] = await db.query(`
+                    SELECT av.id FROM attribute_values av 
+                    WHERE ? LIKE CONCAT('%', av.value, '%') AND LENGTH(av.value) >= 2
+                    LIMIT 2
+                `, [op.name]);
+                for (const mv of matchedVals) {
+                    await db.query(`INSERT IGNORE INTO product_attributes (product_id, attribute_value_id) VALUES (?, ?)`, [op.id, mv.id]);
                 }
-                if (sAttr.length > 0) {
-                    const [sVal] = await db.query("SELECT id FROM attribute_values WHERE attribute_id = ? AND LOWER(value) IN ('128gb', '128 gb', '128') LIMIT 1", [sAttr[0].id]);
-                    if (sVal.length > 0) {
-                        await db.query("INSERT IGNORE INTO product_attributes (product_id, attribute_value_id) VALUES (1073, ?)", [sVal[0].id]);
-                    }
-                }
-                console.log("✅ Auto-fixed missing product_attributes for merchant test product 1073.");
             }
         } catch (e) {
-            console.warn("Product 1073 auto-attribute fix warning:", e.message);
+            console.warn("Dynamic attributes auto-link warning:", e.message);
         }
 
         console.log("✅ Auto-verified seller_product_variants, delivery_agents, return_window_days, orders, user_wallet_transactions & order_returns columns.");
