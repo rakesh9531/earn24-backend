@@ -412,6 +412,22 @@ exports.startDelivery = async (req, res) => {
             "UPDATE orders SET order_status = 'OUT_FOR_DELIVERY', trip_started_at = COALESCE(trip_started_at, NOW()), out_for_delivery_at = COALESCE(out_for_delivery_at, NOW()), shipped_at = COALESCE(shipped_at, NOW()) WHERE id = ? AND order_status != 'CANCELLED'", 
             [orderId]
         );
+
+        // Update item_status to OUT_FOR_DELIVERY ONLY for items assigned to this specific rider
+        await db.query(`
+            UPDATE order_items 
+            SET item_status = 'OUT_FOR_DELIVERY'
+            WHERE order_id = ?
+              AND (
+                  delivery_agent_id = ? 
+                  OR (delivery_agent_id IS NULL AND (SELECT delivery_agent_id FROM orders WHERE id = ?) = ? AND seller_product_id IN (
+                      SELECT sp.id FROM seller_products sp 
+                      LEFT JOIN sellers s ON sp.seller_id = s.id 
+                      WHERE s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL
+                  ))
+              )
+              AND item_status NOT IN ('CANCELLED', 'DELIVERED')
+        `, [orderId, agentId, orderId, agentId]).catch(e => console.warn('[startTrip order_items status update error]', e.message));
         
         const io = req.app.get('socketio');
         if (io) {

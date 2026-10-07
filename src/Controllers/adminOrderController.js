@@ -861,12 +861,12 @@ exports.verifySettlement = async (req, res) => {
                    o.courier_name,
                    o.pickup_otp,
                    o.pickup_status,
-                   o.address_line_1,
-                   o.address_line_2,
-                   o.city,
-                   o.state,
-                   o.pincode,
-                   o.landmark,
+                   ua.address_line_1,
+                   ua.address_line_2,
+                   ua.city,
+                   ua.state,
+                   ua.pincode,
+                   ua.landmark,
                    
                    -- Customer fields
                    u.full_name as customer_name,
@@ -904,6 +904,7 @@ exports.verifySettlement = async (req, res) => {
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.id
             JOIN users u ON o.user_id = u.id
+            LEFT JOIN user_addresses ua ON o.shipping_address_id = ua.id
             LEFT JOIN products p ON oi.product_id = p.id
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id
@@ -928,6 +929,7 @@ exports.verifySettlement = async (req, res) => {
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.id 
             JOIN users u ON o.user_id = u.id 
+            LEFT JOIN user_addresses ua ON o.shipping_address_id = ua.id
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id 
             LEFT JOIN sellers s ON sp.seller_id = s.id 
             LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)

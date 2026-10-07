@@ -427,7 +427,12 @@ exports.getOrderDetails = async (req, res) => {
     const { orderId } = req.params;
 
     try {
-        const orderQuery = `SELECT * FROM orders WHERE (id = ? OR order_number = ?) AND user_id = ?`;
+        const orderQuery = `
+            SELECT o.*, u.full_name as customer_name, u.mobile_number as customer_phone 
+            FROM orders o 
+            LEFT JOIN users u ON o.user_id = u.id 
+            WHERE (o.id = ? OR o.order_number = ?) AND o.user_id = ?
+        `;
         const [orderRows] = await db.query(orderQuery, [orderId, orderId, userId]);
         if (orderRows.length === 0) {
             return res.status(404).json({ status: false, message: 'Order not found.' });
@@ -436,7 +441,12 @@ exports.getOrderDetails = async (req, res) => {
         const realOrderId = orderRows[0].id;
         const realOrderNum = orderRows[0].order_number;
 
-        const addressQuery = `SELECT * FROM user_addresses WHERE id = ?`;
+        const addressQuery = `
+            SELECT ua.*, COALESCE(u.full_name, 'Customer') as full_name, u.mobile_number 
+            FROM user_addresses ua 
+            LEFT JOIN users u ON ua.user_id = u.id 
+            WHERE ua.id = ?
+        `;
         const [addressRows] = await db.query(addressQuery, [orderRows[0].shipping_address_id]);
 
         const [oiCols] = await db.query("SHOW COLUMNS FROM order_items LIKE 'seller_product_variant_id'").catch(() => [[]]);
@@ -450,11 +460,13 @@ exports.getOrderDetails = async (req, res) => {
                    IFNULL(sp.is_replacement_available, IFNULL(psc.is_replacement_available, 1)) as is_replacement_available,
                    IFNULL(sp.replacement_window_days, IFNULL(psc.replacement_window_days, 7)) as replacement_window_days,
                    IFNULL(sp.is_returnable, 1) as is_returnable,
+                   s.sellerable_type,
+                   s.sellerable_id,
                    COALESCE(m.business_name, s.display_name, 'Earn24 Seller') as seller_name,
                    COALESCE(m.business_address, '') as seller_address,
                    COALESCE(m.pincode, '') as seller_pincode,
-                   COALESCE(da.full_name, '') as delivery_agent_name,
-                   COALESCE(da.phone_number, '') as delivery_agent_phone
+                   COALESCE(item_da.full_name, (CASE WHEN s.sellerable_type = 'Merchant' THEN '' ELSE da.full_name END), '') as delivery_agent_name,
+                   COALESCE(item_da.phone_number, (CASE WHEN s.sellerable_type = 'Merchant' THEN '' ELSE da.phone_number END), '') as delivery_agent_phone
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
             LEFT JOIN product_subcategories psc ON p.subcategory_id = psc.id
@@ -463,6 +475,7 @@ exports.getOrderDetails = async (req, res) => {
             LEFT JOIN sellers s ON sp.seller_id = s.id
             LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
             LEFT JOIN orders o ON oi.order_id = o.id
+            LEFT JOIN delivery_agents item_da ON oi.delivery_agent_id = item_da.id
             LEFT JOIN delivery_agents da ON o.delivery_agent_id = da.id
             ${hasVariantCol ? 'LEFT JOIN seller_product_variants spv ON oi.seller_product_variant_id = spv.id' : ''}
             WHERE oi.order_id = ?
@@ -489,9 +502,13 @@ exports.getOrderDetails = async (req, res) => {
 
         const orderData = new Order({
             ...orderRows[0],
+            customer_name: orderRows[0].customer_name,
             return_window_days: returnWindowDays,
             is_returnable: isReturnable ? 1 : 0,
-            shipping_address: addressRows[0] ? new Address(addressRows[0]) : null,
+            shipping_address: addressRows[0] ? new Address({
+                ...addressRows[0],
+                full_name: addressRows[0].full_name || orderRows[0].customer_name || 'Customer'
+            }) : null,
             items: itemRows.map(item => {
                 let vTitle = item.variant_title || '';
                 let vSku = item.variant_sku || item.sku || '';
@@ -516,9 +533,23 @@ exports.getOrderDetails = async (req, res) => {
                 }
                 
                 const itemReturn = (returnRows || []).find(r => r.order_item_id == item.id && !['REJECTED', 'CLOSED'].includes(r.status)) || (returnRows || []).find(r => r.order_item_id == item.id) || null;
-                const itemStatusResolved = (item.item_status && item.item_status !== 'ACTIVE') 
-                    ? item.item_status 
-                    : (orderRows[0].order_status || 'CONFIRMED');
+                
+                // Separate status resolution for Merchant items vs Admin items
+                const isMerchantItem = (item.sellerable_type === 'Merchant' && item.sellerable_id);
+                let itemStatusResolved = 'CONFIRMED';
+                if (item.item_status && !['ACTIVE', 'PLACED'].includes(item.item_status)) {
+                    itemStatusResolved = item.item_status;
+                } else if (isMerchantItem) {
+                    if (item.delivery_agent_id || item.tracking_number) {
+                        itemStatusResolved = item.pickup_status === 'PICKED_UP' ? 'OUT_FOR_DELIVERY' : 'SHIPPED';
+                    } else {
+                        itemStatusResolved = 'CONFIRMED';
+                    }
+                } else {
+                    itemStatusResolved = (orderRows[0].order_status && !['ACTIVE', 'PLACED'].includes(orderRows[0].order_status))
+                        ? orderRows[0].order_status 
+                        : 'CONFIRMED';
+                }
 
                 let sCity = '';
                 let sState = '';
@@ -547,13 +578,13 @@ exports.getOrderDetails = async (req, res) => {
                     seller_city: sCity,
                     seller_state: sState,
                     seller_address: item.seller_address,
-                    tracking_number: item.tracking_number || orderRows[0].tracking_number || null,
-                    courier_name: item.courier_name || orderRows[0].courier_name || null,
-                    dispatch_mode: item.dispatch_mode || orderRows[0].dispatch_mode || 'LOCAL_RIDER',
+                    tracking_number: item.tracking_number || (isMerchantItem ? null : orderRows[0].tracking_number) || null,
+                    courier_name: item.courier_name || (isMerchantItem ? null : orderRows[0].courier_name) || null,
+                    dispatch_mode: item.dispatch_mode || (isMerchantItem ? 'LOCAL_RIDER' : orderRows[0].dispatch_mode) || 'LOCAL_RIDER',
                     delivery_agent_name: item.delivery_agent_name,
                     delivery_agent_phone: item.delivery_agent_phone,
-                    pickup_status: item.pickup_status || orderRows[0].pickup_status || 'PENDING',
-                    picked_up_at: item.picked_up_at || orderRows[0].picked_up_at || null,
+                    pickup_status: item.pickup_status || (isMerchantItem ? 'PENDING' : orderRows[0].pickup_status) || 'PENDING',
+                    picked_up_at: item.picked_up_at || (isMerchantItem ? null : orderRows[0].picked_up_at) || null,
                     delivered_at: item.delivered_at || (orderRows[0].order_status === 'DELIVERED' ? orderRows[0].delivered_at : null)
                 });
             }),
