@@ -689,12 +689,20 @@ exports.downloadInvoice = async (req, res) => {
             WHERE oi.order_id = ?
         `;
         const [itemRows] = await db.query(itemsQuery, [order.id]);
-        order.items = itemRows;
+        
+        let targetItems = itemRows;
+        if (req.query.item_id) {
+            const specific = itemRows.filter(i => i.id == req.query.item_id);
+            if (specific.length > 0) {
+                targetItems = specific;
+            }
+        }
+        order.items = targetItems;
 
         // Dynamic Seller Resolution:
         // - Admin Seller: EARN24 official address & GSTIN
         // - Merchant Seller: Merchant's own profile address, pincode & GSTIN
-        const firstItem = itemRows[0] || {};
+        const firstItem = targetItems[0] || {};
         const isMerchantItem = firstItem.sellerable_type === 'Merchant' && (firstItem.merchant_name || firstItem.merchant_address);
 
         let seller = {};
@@ -811,7 +819,14 @@ exports.downloadShippingLabel = async (req, res) => {
             LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
             WHERE oi.order_id = ?
         `;
-        const [items] = await db.query(itemsQuery, [order.id]);
+        const [itemRows] = await db.query(itemsQuery, [order.id]);
+        let items = itemRows;
+        if (req.query.item_id) {
+            const specific = itemRows.filter(i => i.id == req.query.item_id);
+            if (specific.length > 0) {
+                items = specific;
+            }
+        }
 
         const seller = {
             name: items[0]?.seller_name || "EARN24 Store",
