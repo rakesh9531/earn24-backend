@@ -129,27 +129,59 @@ exports.addItemToCart = async (req, res) => {
         const cartId = await getOrCreateCart(connection, userId);
 
         let actualSellerProductId = sellerProductId;
-        const [spCheck] = await connection.query("SELECT id FROM seller_products WHERE id = ?", [sellerProductId]);
-        if (spCheck.length === 0) {
-            const userPincode = req.body.pincode || '';
-            const [spByProduct] = await connection.query(`
-                SELECT sp.id 
-                FROM seller_products sp 
-                JOIN products p ON sp.product_id = p.id
-                WHERE sp.product_id = ? AND sp.is_active = TRUE
-                ORDER BY 
-                  (CASE 
-                    WHEN (
-                      ? = '' 
-                      OR p.is_universal_pincode = 1 
-                      OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
-                      OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id)
-                      OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = ?)
-                    ) THEN 1 ELSE 2 END) ASC,
-                  sp.selling_price ASC LIMIT 1
-            `, [sellerProductId, userPincode, userPincode]);
-            if (spByProduct.length > 0) {
-                actualSellerProductId = spByProduct[0].id;
+        const userPincode = req.body.pincode || '';
+        const targetProductId = req.body.productId || req.body.product_id;
+
+        if (targetProductId) {
+            // Verify if sellerProductId really matches this target product
+            const [matchCheck] = await connection.query(
+                "SELECT id FROM seller_products WHERE id = ? AND product_id = ?",
+                [sellerProductId, targetProductId]
+            );
+            if (matchCheck.length === 0) {
+                // If it doesn't match, find the appropriate active seller offer for this product
+                const [spByProduct] = await connection.query(`
+                    SELECT sp.id 
+                    FROM seller_products sp 
+                    JOIN products p ON sp.product_id = p.id
+                    WHERE sp.product_id = ? AND sp.is_active = TRUE
+                    ORDER BY 
+                      (CASE 
+                        WHEN (
+                          ? = '' 
+                          OR p.is_universal_pincode = 1 
+                          OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
+                          OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id)
+                          OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = ?)
+                        ) THEN 1 ELSE 2 END) ASC,
+                      sp.selling_price ASC LIMIT 1
+                `, [targetProductId, userPincode, userPincode]);
+                if (spByProduct.length > 0) {
+                    actualSellerProductId = spByProduct[0].id;
+                }
+            }
+        } else {
+            const [spCheck] = await connection.query("SELECT id FROM seller_products WHERE id = ?", [sellerProductId]);
+            if (spCheck.length === 0) {
+                const [spByProduct] = await connection.query(`
+                    SELECT sp.id 
+                    FROM seller_products sp 
+                    JOIN products p ON sp.product_id = p.id
+                    WHERE sp.product_id = ? AND sp.is_active = TRUE
+                    ORDER BY 
+                      (CASE 
+                        WHEN (
+                          ? = '' 
+                          OR p.is_universal_pincode = 1 
+                          OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = 'ALL')
+                          OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id)
+                          OR EXISTS (SELECT 1 FROM seller_product_pincodes spp_c WHERE spp_c.seller_product_id = sp.id AND spp_c.pincode = ?)
+                        ) THEN 1 ELSE 2 END) ASC,
+                      sp.selling_price ASC LIMIT 1
+                `, [sellerProductId, userPincode, userPincode]);
+                if (spByProduct.length > 0) {
+                    actualSellerProductId = spByProduct[0].id;
+                }
             }
         }
 
