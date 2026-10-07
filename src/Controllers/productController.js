@@ -1797,6 +1797,9 @@ exports.getProductForUser = async (req, res) => {
                 psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
                 psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
                 COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as merchant_business_name,
+                s.sellerable_type,
+                sp.id as seller_product_id,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (${bvGenerationPct} / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (${bvGenerationPct} / 100))) as bv_earned,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
@@ -1819,8 +1822,8 @@ exports.getProductForUser = async (req, res) => {
             FROM products p
             JOIN seller_products sp ON p.id = sp.product_id
             LEFT JOIN product_subcategories psc ON p.subcategory_id = psc.id
-            JOIN sellers s ON sp.seller_id = s.id
-            LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
+            LEFT JOIN sellers s ON sp.seller_id = s.id
+            LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE ${whereClause} AND sp.is_active = TRUE
@@ -2202,7 +2205,10 @@ exports.getProductsBySubcategory = async (req, res) => {
       query = `
             SELECT 
                 p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
-                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
+                b.name as brand_name, sp.id as offer_id, sp.id as seller_product_id, sp.seller_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
+                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as merchant_business_name,
+                s.sellerable_type,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
                 sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
                 IFNULL(sp.is_cod_available, 1) as is_cod_available,
@@ -2221,6 +2227,198 @@ exports.getProductsBySubcategory = async (req, res) => {
             JOIN seller_products AS sp ON p.id = sp.product_id
             LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
             LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
+            LEFT JOIN sellers AS s ON sp.seller_id = s.id
+            LEFT JOIN merchants AS m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+            LEFT JOIN brands AS b ON p.brand_id = b.id
+            LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
+            WHERE p.category_id = ? 
+                AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode = 'ALL' OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
+                AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+            GROUP BY sp.id ORDER BY p.popularity DESC LIMIT ? OFFSET ?;
+      `;
+      queryParams = [bvGenerationPct, bvGenerationPct, categoryId, pincode, limitNum, offset];
+
+      countQuery = `
+        SELECT COUNT(DISTINCT sp.id) as total FROM products AS p
+        JOIN seller_products AS sp ON p.id = sp.product_id
+        LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
+        WHERE p.category_id = ? AND (p.is_universal_pincode = 1 OR spp.pincode = ? OR spp.pincode = 'ALL' OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
+          AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+      `;
+      countParams = [categoryId, pincode];
+    } else {
+      query = `
+            SELECT 
+                p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
+                b.name as brand_name, sp.id as offer_id, sp.id as seller_product_id, sp.seller_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
+                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as merchant_business_name,
+                s.sellerable_type,
+                sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
+                sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
+                IFNULL(sp.is_cod_available, 1) as is_cod_available,
+                psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
+                psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
+                GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (? / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
+                (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                    FROM product_attributes pa
+                    JOIN attribute_values av ON pa.attribute_value_id = av.id
+                    JOIN attributes attr ON av.attribute_id = attr.id
+                    WHERE pa.product_id = p.id
+                ) as attributes,
+                ${variantsSubquery}
+            FROM products AS p
+            JOIN seller_products AS sp ON p.id = sp.product_id
+            LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
+            LEFT JOIN sellers AS s ON sp.seller_id = s.id
+            LEFT JOIN merchants AS m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+            LEFT JOIN brands AS b ON p.brand_id = b.id
+            LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
+            WHERE p.category_id = ? 
+                AND (p.is_universal_pincode = 1 OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
+                AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+            GROUP BY sp.id ORDER BY p.popularity DESC LIMIT ? OFFSET ?;
+      `;
+      queryParams = [bvGenerationPct, bvGenerationPct, categoryId, limitNum, offset];
+
+      countQuery = `
+        SELECT COUNT(DISTINCT sp.id) as total FROM products AS p
+        JOIN seller_products AS sp ON p.id = sp.product_id
+        WHERE p.category_id = ? 
+          AND (p.is_universal_pincode = 1 OR NOT EXISTS (SELECT 1 FROM seller_product_pincodes spp_check WHERE spp_check.seller_product_id = sp.id))
+          AND p.is_active = 1 AND p.is_deleted = 0 AND sp.is_active = 1 AND sp.selling_price > 0
+      `;
+      countParams = [categoryId];
+    }
+
+    await db.query("SET SESSION group_concat_max_len = 100000").catch(() => {});
+    const [products] = await db.query(query, queryParams);
+    const [countRows] = await db.query(countQuery, countParams);
+    const totalRecords = countRows[0] ? countRows[0].total : 0;
+
+    const formattedProducts = products.map(p => {
+      let rawHasReturn;
+      if (p.has_return_policy !== null && p.has_return_policy !== undefined) {
+        rawHasReturn = (p.has_return_policy === 1 || p.has_return_policy === true || p.has_return_policy === '1' || p.has_return_policy === 'true');
+      } else if (p.subcat_has_return_policy !== null && p.subcat_has_return_policy !== undefined) {
+        rawHasReturn = (p.subcat_has_return_policy === 1 || p.subcat_has_return_policy === true || p.subcat_has_return_policy === '1' || p.subcat_has_return_policy === 'true');
+      } else {
+        rawHasReturn = true;
+      }
+
+      let rawHasReplacement;
+      if (p.is_replacement_available !== null && p.is_replacement_available !== undefined) {
+        rawHasReplacement = (p.is_replacement_available === 1 || p.is_replacement_available === true || p.is_replacement_available === '1' || p.is_replacement_available === 'true');
+      } else if (p.subcat_is_replacement_available !== null && p.subcat_is_replacement_available !== undefined) {
+        rawHasReplacement = (p.subcat_is_replacement_available === 1 || p.subcat_is_replacement_available === true || p.subcat_is_replacement_available === '1' || p.subcat_is_replacement_available === 'true');
+      } else {
+        rawHasReplacement = true;
+      }
+
+      const returnDays = parseInt(p.return_window_days || p.subcat_return_window_days || 7, 10);
+      const replacementDays = parseInt(p.replacement_window_days || p.subcat_replacement_window_days || 7, 10);
+
+      return {
+        ...p,
+        product_id: p.id,
+        seller_name: p.seller_name || p.merchant_business_name || 'Earn24 Official',
+        merchant_business_name: p.merchant_business_name || p.seller_name || 'Earn24 Official',
+        seller_product_id: p.offer_id,
+        has_variants: Boolean(p.has_variants),
+        has_return_policy: rawHasReturn ? 1 : 0,
+        return_window_days: returnDays,
+        is_replacement_available: rawHasReplacement ? 1 : 0,
+        replacement_window_days: replacementDays,
+        hasReturnPolicy: rawHasReturn,
+        isReplacementAvailable: rawHasReplacement,
+        warranty_type: p.warranty_type || 'no_warranty',
+        warranty_months: p.warranty_months || 0,
+        warranty_period: p.warranty_period || '',
+        warranty_covered_by: p.warranty_covered_by || '',
+        bv_earned: parseFloat(p.bv_earned || 0).toFixed(2),
+        attributes: safeJsonParse(p.attributes, []),
+        gallery_image_urls: safeJsonParse(p.gallery_image_urls, []),
+        variants: safeJsonParse(p.variants, [])
+      };
+    });
+
+    res.status(200).json({
+      status: true,
+      data: formattedProducts,
+      pagination: {
+        total: totalRecords,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(totalRecords / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error("Error in getProductsByCategory:", error);
+    res.status(500).json({ status: false, message: "Internal server error." });
+  }
+};
+
+exports.getProductsBySubcategory = async (req, res) => {
+  try {
+    await ensureWarrantyColumns();
+    const { subcategoryId } = req.params;
+    const { pincode, page = 1, limit = 40 } = req.query;
+    const limitNum = parseInt(limit, 10);
+    const pageNum = parseInt(page, 10);
+    const offset = (pageNum - 1) * limitNum;
+    const isPincodeProvided = pincode && pincode !== 'ALL' && pincode !== 'null' && pincode !== 'undefined';
+
+    if (!subcategoryId) {
+      return res.status(400).json({ status: false, message: "Subcategory ID is required." });
+    }
+
+    const [settingsRows] = await db.query(
+      "SELECT setting_value FROM app_settings WHERE setting_key = 'bv_generation_pct_of_profit'",
+    );
+    const bvGenerationPct = settingsRows[0] ? parseFloat(settingsRows[0].setting_value) : 80.0;
+
+    let query = '';
+    let countQuery = '';
+    let queryParams = [];
+    let countParams = [];
+
+    const variantsSubquery = `
+      (
+        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+        FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id AND (spv.is_active = TRUE OR spv.is_active IS NULL)
+      ) as variants
+    `;
+
+    if (isPincodeProvided) {
+      query = `
+            SELECT 
+                p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
+                b.name as brand_name, sp.id as offer_id, sp.id as seller_product_id, sp.seller_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
+                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as merchant_business_name,
+                s.sellerable_type,
+                sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
+                sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
+                IFNULL(sp.is_cod_available, 1) as is_cod_available,
+                psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
+                psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
+                GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (? / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (? / 100))) as bv_earned,
+                (
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                    FROM product_attributes pa
+                    JOIN attribute_values av ON pa.attribute_value_id = av.id
+                    JOIN attributes attr ON av.attribute_id = attr.id
+                    WHERE pa.product_id = p.id
+                ) as attributes,
+                ${variantsSubquery}
+            FROM products AS p
+            JOIN seller_products AS sp ON p.id = sp.product_id
+            LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
+            LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
+            LEFT JOIN sellers AS s ON sp.seller_id = s.id
+            LEFT JOIN merchants AS m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.subcategory_id = ? 
@@ -2242,7 +2440,10 @@ exports.getProductsBySubcategory = async (req, res) => {
       query = `
             SELECT 
                 p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
-                b.name as brand_name, sp.id as offer_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
+                b.name as brand_name, sp.id as offer_id, sp.id as seller_product_id, sp.seller_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
+                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as merchant_business_name,
+                s.sellerable_type,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
                 sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
                 IFNULL(sp.is_cod_available, 1) as is_cod_available,
@@ -2260,6 +2461,8 @@ exports.getProductsBySubcategory = async (req, res) => {
             FROM products AS p
             JOIN seller_products AS sp ON p.id = sp.product_id
             LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
+            LEFT JOIN sellers AS s ON sp.seller_id = s.id
+            LEFT JOIN merchants AS m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.subcategory_id = ? 
@@ -2309,6 +2512,9 @@ exports.getProductsBySubcategory = async (req, res) => {
       return {
         ...p,
         product_id: p.id,
+        seller_name: p.seller_name || p.merchant_business_name || 'Earn24 Official',
+        merchant_business_name: p.merchant_business_name || p.seller_name || 'Earn24 Official',
+        seller_product_id: p.offer_id,
         has_variants: Boolean(p.has_variants),
         has_return_policy: rawHasReturn ? 1 : 0,
         return_window_days: returnDays,
