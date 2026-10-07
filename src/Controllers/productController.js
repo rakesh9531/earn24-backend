@@ -1796,8 +1796,18 @@ exports.getProductForUser = async (req, res) => {
                 IFNULL(sp.is_cod_available, 1) as is_cod_available,
                 psc.has_return_policy as subcat_has_return_policy, psc.return_window_days as subcat_return_window_days,
                 psc.is_replacement_available as subcat_is_replacement_available, psc.replacement_window_days as subcat_replacement_window_days,
-                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
-                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as merchant_business_name,
+                COALESCE(
+                    NULLIF(m.business_name, ''),
+                    NULLIF(m.owner_name, ''),
+                    CASE WHEN s.display_name != 'Merchant' THEN NULLIF(s.display_name, '') ELSE NULL END,
+                    'Earn24 Official'
+                ) as seller_name,
+                COALESCE(
+                    NULLIF(m.business_name, ''),
+                    NULLIF(m.owner_name, ''),
+                    CASE WHEN s.display_name != 'Merchant' THEN NULLIF(s.display_name, '') ELSE NULL END,
+                    'Earn24 Official'
+                ) as merchant_business_name,
                 s.sellerable_type,
                 sp.id as seller_product_id,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (sp.admin_margin_percent / 100)) * (${bvGenerationPct} / 100), ((sp.selling_price - IFNULL(sp.purchase_price, 0)) - ((sp.selling_price * IFNULL(h.gst_percentage, 0)) / 100)) * (${bvGenerationPct} / 100))) as bv_earned,
@@ -1823,7 +1833,7 @@ exports.getProductForUser = async (req, res) => {
             JOIN seller_products sp ON p.id = sp.product_id
             LEFT JOIN product_subcategories psc ON p.subcategory_id = psc.id
             LEFT JOIN sellers s ON sp.seller_id = s.id
-            LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+            LEFT JOIN merchants m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE ${whereClause} AND sp.is_active = TRUE
@@ -2206,8 +2216,18 @@ exports.getProductsBySubcategory = async (req, res) => {
             SELECT 
                 p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
                 b.name as brand_name, sp.id as offer_id, sp.id as seller_product_id, sp.seller_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
-                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
-                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as merchant_business_name,
+                COALESCE(
+                    NULLIF(m.business_name, ''),
+                    NULLIF(m.owner_name, ''),
+                    CASE WHEN s.display_name != 'Merchant' THEN NULLIF(s.display_name, '') ELSE NULL END,
+                    'Earn24 Official'
+                ) as seller_name,
+                COALESCE(
+                    NULLIF(m.business_name, ''),
+                    NULLIF(m.owner_name, ''),
+                    CASE WHEN s.display_name != 'Merchant' THEN NULLIF(s.display_name, '') ELSE NULL END,
+                    'Earn24 Official'
+                ) as merchant_business_name,
                 s.sellerable_type,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
                 sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
@@ -2228,7 +2248,7 @@ exports.getProductsBySubcategory = async (req, res) => {
             LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
             LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
             LEFT JOIN sellers AS s ON sp.seller_id = s.id
-            LEFT JOIN merchants AS m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+            LEFT JOIN merchants AS m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.category_id = ? 
@@ -2251,8 +2271,18 @@ exports.getProductsBySubcategory = async (req, res) => {
             SELECT 
                 p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
                 b.name as brand_name, sp.id as offer_id, sp.id as seller_product_id, sp.seller_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
-                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
-                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as merchant_business_name,
+                COALESCE(
+                    NULLIF(m.business_name, ''),
+                    NULLIF(m.owner_name, ''),
+                    CASE WHEN s.display_name != 'Merchant' THEN NULLIF(s.display_name, '') ELSE NULL END,
+                    'Earn24 Official'
+                ) as seller_name,
+                COALESCE(
+                    NULLIF(m.business_name, ''),
+                    NULLIF(m.owner_name, ''),
+                    CASE WHEN s.display_name != 'Merchant' THEN NULLIF(s.display_name, '') ELSE NULL END,
+                    'Earn24 Official'
+                ) as merchant_business_name,
                 s.sellerable_type,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
                 sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
@@ -2272,7 +2302,7 @@ exports.getProductsBySubcategory = async (req, res) => {
             JOIN seller_products AS sp ON p.id = sp.product_id
             LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
             LEFT JOIN sellers AS s ON sp.seller_id = s.id
-            LEFT JOIN merchants AS m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+            LEFT JOIN merchants AS m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.category_id = ? 
@@ -2418,7 +2448,7 @@ exports.getProductsBySubcategory = async (req, res) => {
             LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
             LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
             LEFT JOIN sellers AS s ON sp.seller_id = s.id
-            LEFT JOIN merchants AS m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+            LEFT JOIN merchants AS m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.subcategory_id = ? 
@@ -2441,8 +2471,18 @@ exports.getProductsBySubcategory = async (req, res) => {
             SELECT 
                 p.id, p.id as product_id, p.name, p.slug, p.description, p.main_image_url, p.gallery_image_urls, p.popularity,
                 b.name as brand_name, sp.id as offer_id, sp.id as seller_product_id, sp.seller_id, sp.selling_price, sp.mrp, sp.minimum_order_quantity, sp.quantity as stock_quantity, sp.has_variants,
-                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
-                COALESCE(m.business_name, s.display_name, 'Earn24 Official') as merchant_business_name,
+                COALESCE(
+                    NULLIF(m.business_name, ''),
+                    NULLIF(m.owner_name, ''),
+                    CASE WHEN s.display_name != 'Merchant' THEN NULLIF(s.display_name, '') ELSE NULL END,
+                    'Earn24 Official'
+                ) as seller_name,
+                COALESCE(
+                    NULLIF(m.business_name, ''),
+                    NULLIF(m.owner_name, ''),
+                    CASE WHEN s.display_name != 'Merchant' THEN NULLIF(s.display_name, '') ELSE NULL END,
+                    'Earn24 Official'
+                ) as merchant_business_name,
                 s.sellerable_type,
                 sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
                 sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
@@ -2462,7 +2502,7 @@ exports.getProductsBySubcategory = async (req, res) => {
             JOIN seller_products AS sp ON p.id = sp.product_id
             LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
             LEFT JOIN sellers AS s ON sp.seller_id = s.id
-            LEFT JOIN merchants AS m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
+            LEFT JOIN merchants AS m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.subcategory_id = ? 

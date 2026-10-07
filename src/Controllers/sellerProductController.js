@@ -1173,7 +1173,18 @@ exports.getHomeScreenData = async (req, res) => {
                         sp.purchase_price, sp.minimum_order_quantity,
                         sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
                         sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
-                        COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                        COALESCE(
+                            NULLIF(m.business_name, ''),
+                            NULLIF(m.owner_name, ''),
+                            CASE WHEN s.display_name != 'Merchant' THEN NULLIF(s.display_name, '') ELSE NULL END,
+                            'Earn24 Official'
+                        ) as seller_name,
+                        COALESCE(
+                            NULLIF(m.business_name, ''),
+                            NULLIF(m.owner_name, ''),
+                            CASE WHEN s.display_name != 'Merchant' THEN NULLIF(s.display_name, '') ELSE NULL END,
+                            'Earn24 Official'
+                        ) as merchant_business_name,
                         (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
                         (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
                         GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned,
@@ -1190,7 +1201,7 @@ exports.getHomeScreenData = async (req, res) => {
                         ) as variants
                     FROM seller_products sp
                     JOIN sellers s ON sp.seller_id = s.id
-                    LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
+                    LEFT JOIN merchants m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
                     LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
                     JOIN products p ON sp.product_id = p.id
                     LEFT JOIN brands b ON p.brand_id = b.id
@@ -1211,7 +1222,18 @@ exports.getHomeScreenData = async (req, res) => {
                         sp.purchase_price, sp.minimum_order_quantity,
                         sp.warranty_type, sp.warranty_months, sp.warranty_covered_by, sp.warranty_period,
                         sp.has_return_policy, sp.return_window_days, sp.is_replacement_available, sp.replacement_window_days,
-                        COALESCE(m.business_name, s.display_name, 'Earn24 Official') as seller_name,
+                        COALESCE(
+                            NULLIF(m.business_name, ''),
+                            NULLIF(m.owner_name, ''),
+                            CASE WHEN s.display_name != 'Merchant' THEN NULLIF(s.display_name, '') ELSE NULL END,
+                            'Earn24 Official'
+                        ) as seller_name,
+                        COALESCE(
+                            NULLIF(m.business_name, ''),
+                            NULLIF(m.owner_name, ''),
+                            CASE WHEN s.display_name != 'Merchant' THEN NULLIF(s.display_name, '') ELSE NULL END,
+                            'Earn24 Official'
+                        ) as merchant_business_name,
                         (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS avg_rating,
                         (SELECT COUNT(*) FROM product_reviews WHERE product_id = p.id AND status = 'APPROVED') AS total_reviews,
                         GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * (? / 100), ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * (? / 100))) as bv_earned,
@@ -1228,7 +1250,7 @@ exports.getHomeScreenData = async (req, res) => {
                         ) as variants
                     FROM seller_products sp
                     JOIN sellers s ON sp.seller_id = s.id
-                    LEFT JOIN merchants m ON s.sellerable_id = m.id AND s.sellerable_type = 'Merchant'
+                    LEFT JOIN merchants m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
                     JOIN products p ON sp.product_id = p.id
                     LEFT JOIN brands b ON p.brand_id = b.id
                     LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 
