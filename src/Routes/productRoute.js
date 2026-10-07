@@ -80,9 +80,9 @@ router.get('/search', productController.searchProducts);
 // --- NEW LIGHTWEIGHT ROUTE FOR SEARCH SUGGESTIONS ---
 router.get('/suggestions', productController.getSearchSuggestions);
 router.get('/check-pincode/:pincode', productController.checkPincodeServiceability);
-router.get('/:id', productController.getProductForUser);
 router.get('/by-category/:categoryId', productController.getProductsByCategory);
 router.get('/by-subcategory/:subcategoryId', productController.getProductsBySubcategory);
+router.get('/:id', productController.getProductForUser);
 
 // All master product routes require authentication and specific permissions
 router.use(auth);
