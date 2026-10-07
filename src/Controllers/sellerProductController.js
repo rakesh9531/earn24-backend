@@ -1201,7 +1201,7 @@ exports.getHomeScreenData = async (req, res) => {
                         ) as variants
                     FROM seller_products sp
                     JOIN sellers s ON sp.seller_id = s.id
-                    LEFT JOIN merchants m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
+                    LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
                     LEFT JOIN seller_product_pincodes spp ON sp.id = spp.seller_product_id
                     JOIN products p ON sp.product_id = p.id
                     LEFT JOIN brands b ON p.brand_id = b.id
@@ -1250,7 +1250,7 @@ exports.getHomeScreenData = async (req, res) => {
                         ) as variants
                     FROM seller_products sp
                     JOIN sellers s ON sp.seller_id = s.id
-                    LEFT JOIN merchants m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
+                    LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
                     JOIN products p ON sp.product_id = p.id
                     LEFT JOIN brands b ON p.brand_id = b.id
                     LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id 

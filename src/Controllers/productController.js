@@ -1833,7 +1833,7 @@ exports.getProductForUser = async (req, res) => {
             JOIN seller_products sp ON p.id = sp.product_id
             LEFT JOIN product_subcategories psc ON p.subcategory_id = psc.id
             LEFT JOIN sellers s ON sp.seller_id = s.id
-            LEFT JOIN merchants m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
+            LEFT JOIN merchants m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
             LEFT JOIN brands b ON p.brand_id = b.id
             LEFT JOIN hsn_codes h ON p.hsn_code_id = h.id
             WHERE ${whereClause} AND sp.is_active = TRUE
@@ -2248,7 +2248,7 @@ exports.getProductsBySubcategory = async (req, res) => {
             LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
             LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
             LEFT JOIN sellers AS s ON sp.seller_id = s.id
-            LEFT JOIN merchants AS m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
+            LEFT JOIN merchants AS m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.category_id = ? 
@@ -2302,7 +2302,7 @@ exports.getProductsBySubcategory = async (req, res) => {
             JOIN seller_products AS sp ON p.id = sp.product_id
             LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
             LEFT JOIN sellers AS s ON sp.seller_id = s.id
-            LEFT JOIN merchants AS m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
+            LEFT JOIN merchants AS m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.category_id = ? 
@@ -2448,7 +2448,7 @@ exports.getProductsBySubcategory = async (req, res) => {
             LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
             LEFT JOIN seller_product_pincodes AS spp ON sp.id = spp.seller_product_id
             LEFT JOIN sellers AS s ON sp.seller_id = s.id
-            LEFT JOIN merchants AS m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
+            LEFT JOIN merchants AS m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.subcategory_id = ? 
@@ -2502,7 +2502,7 @@ exports.getProductsBySubcategory = async (req, res) => {
             JOIN seller_products AS sp ON p.id = sp.product_id
             LEFT JOIN product_subcategories AS psc ON p.subcategory_id = psc.id
             LEFT JOIN sellers AS s ON sp.seller_id = s.id
-            LEFT JOIN merchants AS m ON ((s.sellerable_type = 'Merchant' OR s.sellerable_type = 'merchant') AND (s.sellerable_id = m.id OR s.sellerable_id = m.user_id))
+            LEFT JOIN merchants AS m ON (s.sellerable_type = 'Merchant' AND s.sellerable_id = m.id)
             LEFT JOIN brands AS b ON p.brand_id = b.id
             LEFT JOIN hsn_codes AS h ON p.hsn_code_id = h.id
             WHERE p.subcategory_id = ? 
