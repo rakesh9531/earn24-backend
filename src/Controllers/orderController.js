@@ -721,50 +721,45 @@ exports.downloadInvoice = async (req, res) => {
         `;
         const [itemRows] = await db.query(itemsQuery, [order.id]);
         
+        const isMerchantItem = (it) => {
+            const st = (it.sellerable_type || '').toString().trim().toLowerCase();
+            if (st === 'merchant') return true;
+            if (it.merchant_name && it.merchant_name !== 'Earn24 Admin') return true;
+            return false;
+        };
+
+        const isAdminRequester = (req.query.seller_type === 'admin') || 
+                                 (['admin', 'superadmin', 'super_admin'].includes(role) && req.query.seller_type !== 'merchant');
+        const isMerchantRequester = (req.query.seller_type === 'merchant') || (role === 'merchant');
+
         let targetItems = itemRows;
         if (req.query.item_id) {
             const specific = itemRows.filter(i => i.id == req.query.item_id);
             if (specific.length > 0) {
                 targetItems = specific;
             }
+        } else if (isAdminRequester) {
+            // Admin only bills Admin / Central Hub products
+            targetItems = itemRows.filter(i => !isMerchantItem(i));
+        } else if (isMerchantRequester) {
+            // Merchant only bills their own products
+            targetItems = itemRows.filter(i => isMerchantItem(i) && (!requester?.id || i.sellerable_id == requester.id));
         }
+
         order.items = targetItems;
+
+        // Recalculate financial totals if this is an Admin or Merchant specific bill
+        if (isAdminRequester || isMerchantRequester) {
+            const parcelTotal = targetItems.reduce((acc, it) => acc + parseFloat(it.total_price || (it.price_per_unit * it.quantity) || 0), 0);
+            order.subtotal = parcelTotal;
+            order.total_amount = parcelTotal;
+        }
 
         // Dynamic Seller Resolution:
         // - Admin Seller: EARN24 official address & GSTIN
         // - Merchant Seller: Merchant's own profile address, pincode & GSTIN
-        const firstItem = targetItems[0] || {};
-        const isMerchantItem = firstItem.sellerable_type === 'Merchant' && (firstItem.merchant_name || firstItem.merchant_address);
-
         let seller = {};
-        if (isMerchantItem) {
-            const mAddress = [
-                firstItem.merchant_address,
-                firstItem.merchant_pincode ? `Pincode: ${firstItem.merchant_pincode}` : ''
-            ].filter(Boolean).join('\n');
-
-            seller = {
-                seller_type: 'Merchant',
-                display_name: firstItem.merchant_name || firstItem.seller_display_name || "Merchant Partner",
-                address: mAddress || "Merchant Store Address",
-                gstin: firstItem.merchant_gstin || "N/A"
-            };
-        } else if (requester?.role?.toLowerCase() === 'merchant') {
-            // Fallback for merchant requester
-            const [mRows] = await db.query('SELECT business_name, business_address, pincode, gst_number FROM merchants WHERE id = ?', [requester.id]);
-            if (mRows.length > 0) {
-                const m = mRows[0];
-                const mAddress = [m.business_address, m.pincode ? `Pincode: ${m.pincode}` : ''].filter(Boolean).join('\n');
-                seller = {
-                    seller_type: 'Merchant',
-                    display_name: m.business_name || 'Merchant Partner',
-                    address: mAddress || 'Merchant Store Address',
-                    gstin: m.gst_number || 'N/A'
-                };
-            }
-        }
-
-        if (!seller.display_name) {
+        if (isAdminRequester) {
             // Load dynamic admin invoice settings from app_settings
             const [adminSettingsRows] = await db.query(
                 "SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'invoice_admin_%'"
@@ -782,6 +777,54 @@ exports.downloadInvoice = async (req, res) => {
                 gstin: adminSettingsMap['invoice_admin_gstin'] || "20EIMPK5093M1ZU",
                 email: adminSettingsMap['invoice_admin_email'] || "support@earn24.in"
             };
+        } else {
+            const firstItem = targetItems[0] || {};
+            const isMerchantItemVal = firstItem.sellerable_type === 'Merchant' && (firstItem.merchant_name || firstItem.merchant_address);
+
+            if (isMerchantItemVal) {
+                const mAddress = [
+                    firstItem.merchant_address,
+                    firstItem.merchant_pincode ? `Pincode: ${firstItem.merchant_pincode}` : ''
+                ].filter(Boolean).join('\n');
+
+                seller = {
+                    seller_type: 'Merchant',
+                    display_name: firstItem.merchant_name || firstItem.seller_display_name || "Merchant Partner",
+                    address: mAddress || "Merchant Store Address",
+                    gstin: firstItem.merchant_gstin || "N/A"
+                };
+            } else if (requester?.role?.toLowerCase() === 'merchant') {
+                const [mRows] = await db.query('SELECT business_name, business_address, pincode, gst_number FROM merchants WHERE id = ?', [requester.id]);
+                if (mRows.length > 0) {
+                    const m = mRows[0];
+                    const mAddress = [m.business_address, m.pincode ? `Pincode: ${m.pincode}` : ''].filter(Boolean).join('\n');
+                    seller = {
+                        seller_type: 'Merchant',
+                        display_name: m.business_name || 'Merchant Partner',
+                        address: mAddress || 'Merchant Store Address',
+                        gstin: m.gst_number || 'N/A'
+                    };
+                }
+            }
+
+            if (!seller.display_name) {
+                const [adminSettingsRows] = await db.query(
+                    "SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'invoice_admin_%'"
+                ).catch(() => [[]]);
+                const adminSettingsMap = (adminSettingsRows || []).reduce((acc, row) => {
+                    acc[row.setting_key] = row.setting_value;
+                    return acc;
+                }, {});
+
+                seller = {
+                    seller_type: 'Admin',
+                    display_name: adminSettingsMap['invoice_admin_name'] || "EARN24",
+                    tagline: adminSettingsMap['invoice_admin_tagline'] || "SHOP MORE | EARN MORE | HELP MORE",
+                    address: adminSettingsMap['invoice_admin_address'] || "Ground Floor, Galfarbari Badi Maszid,\nGalfarbari More, Near Kumardhubi Hospital,\nP.O. Kumardhubi, Egyarkund, Kumardhubi,\nDhanbad, Jharkhand – 828203 (India)",
+                    gstin: adminSettingsMap['invoice_admin_gstin'] || "20EIMPK5093M1ZU",
+                    email: adminSettingsMap['invoice_admin_email'] || "support@earn24.in"
+                };
+            }
         }
 
         // 5. If explicitly requested format=pdf, send 80mm PDF
@@ -851,23 +894,52 @@ exports.downloadShippingLabel = async (req, res) => {
             WHERE oi.order_id = ?
         `;
         const [itemRows] = await db.query(itemsQuery, [order.id]);
+        
+        const isMerchantItem = (it) => {
+            const st = (it.sellerable_type || '').toString().trim().toLowerCase();
+            if (st === 'merchant') return true;
+            if (it.merchant_name && it.merchant_name !== 'Earn24 Admin') return true;
+            return false;
+        };
+
+        const isAdminRequester = (req.query.seller_type === 'admin') || 
+                                 (['admin', 'superadmin', 'super_admin'].includes(role) && req.query.seller_type !== 'merchant');
+        const isMerchantRequester = (req.query.seller_type === 'merchant') || (role === 'merchant');
+
         let items = itemRows;
         if (req.query.item_id) {
             const specific = itemRows.filter(i => i.id == req.query.item_id);
             if (specific.length > 0) {
                 items = specific;
             }
+        } else if (isAdminRequester) {
+            items = itemRows.filter(i => !isMerchantItem(i));
+        } else if (isMerchantRequester) {
+            items = itemRows.filter(i => isMerchantItem(i) && (!requester?.id || i.sellerable_id == requester.id));
         }
 
-        const seller = {
-            name: items[0]?.seller_name || "EARN24 Store",
-            address: items[0]?.seller_address || "Central Hub",
-            phone: items[0]?.seller_phone || "",
-            gstin: items[0]?.seller_gstin || ""
-        };
+        const parcelTotal = items.reduce((sum, it) => sum + parseFloat(it.total_price || (it.price_per_unit * it.quantity) || 0), 0);
+
+        let seller;
+        if (isAdminRequester) {
+            seller = {
+                name: "EARN24 Central Hub",
+                address: "Ground Floor, Galfarbari Badi Maszid, Near Kumardhubi Hospital, Kumardhubi, Dhanbad, Jharkhand – 828203",
+                phone: "support@earn24.in",
+                gstin: "20EIMPK5093M1ZU"
+            };
+        } else {
+            seller = {
+                name: items[0]?.seller_name || "EARN24 Store",
+                address: items[0]?.seller_address || "Central Hub",
+                phone: items[0]?.seller_phone || "",
+                gstin: items[0]?.seller_gstin || ""
+            };
+        }
 
         const isPrepaid = (order.payment_method === 'WALLET' || order.payment_method === 'ONLINE' || order.payment_method === 'PAYU' || order.payment_status === 'COMPLETED' || order.payment_status === 'PAID');
-        const paymentLabel = isPrepaid ? 'PREPAID - DO NOT COLLECT CASH' : `CASH ON DELIVERY (COLLECT ₹${parseFloat(order.total_amount).toFixed(2)})`;
+        const collectAmount = (isAdminRequester || isMerchantRequester) ? parcelTotal : parseFloat(order.total_amount || 0);
+        const paymentLabel = isPrepaid ? 'PREPAID - DO NOT COLLECT CASH' : `CASH ON DELIVERY (COLLECT ₹${collectAmount.toFixed(2)})`;
         const routingMode = (order.dispatch_mode === 'SHIPROCKET_COURIER' || order.tracking_number)
             ? `COURIER: ${order.courier_name || 'Shiprocket Partner'}` 
             : 'EARN24 LOCAL DELIVERY PARTNER';

@@ -37,7 +37,7 @@ exports.getOrdersByStatus = async (req, res) => {
             LEFT JOIN seller_products sp ON oi.seller_product_id = sp.id 
             LEFT JOIN sellers s ON sp.seller_id = s.id 
             WHERE oi.order_id = o.id 
-            AND (sp.id IS NULL OR s.sellerable_type != 'Merchant' OR s.sellerable_id IS NULL)
+            AND (sp.id IS NULL OR LOWER(IFNULL(s.sellerable_type, '')) != 'merchant' OR s.sellerable_id IS NULL)
             AND (oi.item_status IS NULL OR oi.item_status NOT IN ('CANCELLED', 'RETURNED'))
         )`;
 
@@ -74,19 +74,34 @@ exports.getOrdersByStatus = async (req, res) => {
                            SELECT 1 FROM order_items oi_m 
                            JOIN seller_products sp_m ON oi_m.seller_product_id = sp_m.id 
                            JOIN sellers s_m ON sp_m.seller_id = s_m.id 
-                           WHERE oi_m.order_id = o.id AND s_m.sellerable_type = 'Merchant' AND s_m.sellerable_id IS NOT NULL
+                           WHERE oi_m.order_id = o.id AND LOWER(IFNULL(s_m.sellerable_type, '')) = 'merchant' AND s_m.sellerable_id IS NOT NULL
                        ) THEN (
                            SELECT IFNULL(SUM(oi_a.total_price), 0)
                            FROM order_items oi_a
                            LEFT JOIN seller_products sp_a ON oi_a.seller_product_id = sp_a.id
                            LEFT JOIN sellers s_a ON sp_a.seller_id = s_a.id
                            WHERE oi_a.order_id = o.id 
-                             AND (sp_a.id IS NULL OR s_a.sellerable_type != 'Merchant' OR s_a.sellerable_id IS NULL)
+                             AND (sp_a.id IS NULL OR LOWER(IFNULL(s_a.sellerable_type, '')) != 'merchant' OR s_a.sellerable_id IS NULL)
                              AND (oi_a.item_status IS NULL OR oi_a.item_status NOT IN ('CANCELLED', 'RETURNED'))
                        )
                        ELSE o.total_amount 
                    END as total_amount,
                    o.total_amount as full_order_grand_total,
+                   (
+                       SELECT COUNT(*) 
+                       FROM order_items oi_cnt
+                       LEFT JOIN seller_products sp_cnt ON oi_cnt.seller_product_id = sp_cnt.id
+                       LEFT JOIN sellers s_cnt ON sp_cnt.seller_id = s_cnt.id
+                       WHERE oi_cnt.order_id = o.id
+                         AND (sp_cnt.id IS NULL OR LOWER(IFNULL(s_cnt.sellerable_type, '')) != 'merchant' OR s_cnt.sellerable_id IS NULL)
+                         AND (oi_cnt.item_status IS NULL OR oi_cnt.item_status NOT IN ('CANCELLED', 'RETURNED'))
+                   ) as admin_items_count,
+                   EXISTS (
+                       SELECT 1 FROM order_items oi_m2 
+                       JOIN seller_products sp_m2 ON oi_m2.seller_product_id = sp_m2.id 
+                       JOIN sellers s_m2 ON sp_m2.seller_id = s_m2.id 
+                       WHERE oi_m2.order_id = o.id AND LOWER(IFNULL(s_m2.sellerable_type, '')) = 'merchant' AND s_m2.sellerable_id IS NOT NULL
+                   ) as has_merchant_items,
                    o.order_status, o.created_at, o.payment_method, o.payment_status,
                    o.assignment_status, o.pickup_otp, o.pickup_status,
                    ${trackingCol}, ${courierCol}, ${dispatchCol},
@@ -635,18 +650,28 @@ exports.getAdminOrderDetails = async (req, res) => {
         }
 
         // Check if this order contains items from both Admin and Merchant
-        const hasMerchantItems = processedItems.some(it => it.sellerable_type === 'Merchant' && it.sellerable_id);
-        const adminItems = processedItems.filter(it => !it.seller_product_id || it.sellerable_type !== 'Merchant' || !it.sellerable_id);
-        const adminItemsTotal = adminItems.reduce((sum, it) => sum + parseFloat(it.total_price || 0), 0);
+        const isMerchantItem = (it) => {
+            const st = (it.sellerable_type || '').toString().trim().toLowerCase();
+            if (st === 'merchant') return true;
+            if (it.seller_business_name && it.seller_business_name !== 'Earn24 Admin') return true;
+            return false;
+        };
+
+        const hasMerchantItems = processedItems.some(it => isMerchantItem(it));
+        const adminItems = processedItems.filter(it => !isMerchantItem(it));
+        const adminItemsTotal = adminItems.reduce((sum, it) => sum + parseFloat(it.total_price || (it.price_per_unit * it.quantity) || 0), 0);
 
         // 7. Combine results into a single rich object
         const orderDetails = {
             ...orderRows[0], 
-            items: processedItems,
+            items: adminItems, // ONLY Admin warehouse products for Admin order processing!
+            all_items: processedItems, // All order items kept for audit
             has_merchant_items: hasMerchantItems,
             admin_items_total: adminItemsTotal,
             admin_subtotal: adminItemsTotal,
             admin_items_count: adminItems.length,
+            subtotal: adminItemsTotal,
+            total_amount: adminItemsTotal, // Admin parcel value
             full_order_grand_total: orderRows[0].total_amount,
             tracking_timeline: timeline,
             return_request: returnDetails,
