@@ -100,5 +100,7 @@ router.get('/wallet/history', auth, userController.getWalletHistory);
 router.post('/favorites/toggle', auth, favoriteController.toggleFavorite);
 router.get('/favorites', auth, favoriteController.getFavorites);
 
+// --- ACCOUNT DELETION ---
+router.post('/delete-account', auth, userController.deleteUserAccount);
 
 module.exports = router;

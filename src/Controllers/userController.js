@@ -1483,3 +1483,49 @@ exports.verifyProfileEmailOtp = async (req, res) => {
         res.status(500).json({ status: false, message: "Email OTP verification failed." });
     }
 };
+
+/**
+ * Self Delete Account (Soft Delete for User)
+ */
+exports.deleteUserAccount = async (req, res) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) {
+            return res.status(401).json({ status: false, message: "Unauthorized." });
+        }
+
+        const reason = req.body?.reason ? req.body.reason.trim() : "User self-deleted via mobile app";
+
+        // Check if user exists
+        const [users] = await db.query(
+            "SELECT id, username, full_name FROM users WHERE id = ? AND is_deleted = 0",
+            [userId]
+        );
+
+        if (!users || users.length === 0) {
+            return res.status(404).json({ status: false, message: "User account not found or already deleted." });
+        }
+
+        // Soft delete user: de-activate account and mark is_deleted = 1
+        try {
+            await db.query(
+                "UPDATE users SET is_deleted = 1, is_active = 0, delete_reason = ?, deleted_at = NOW() WHERE id = ?",
+                [reason, userId]
+            );
+        } catch (colErr) {
+            // Fallback if deleted_at or delete_reason column is not in table schema
+            await db.query(
+                "UPDATE users SET is_deleted = 1, is_active = 0 WHERE id = ?",
+                [userId]
+            );
+        }
+
+        res.json({
+            status: true,
+            message: "Your account has been deleted successfully."
+        });
+    } catch (err) {
+        console.error("deleteUserAccount error:", err);
+        res.status(500).json({ status: false, message: "Failed to delete account. Please contact support." });
+    }
+};
