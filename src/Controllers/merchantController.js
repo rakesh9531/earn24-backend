@@ -24,7 +24,13 @@ const ensureSellerProductColumns = async (targetDb = db) => {
             { col: 'warranty_period', def: 'VARCHAR(100) NULL' },
             { col: 'low_stock_threshold', def: 'INT DEFAULT 5' },
             { col: 'minimum_order_quantity', def: 'INT DEFAULT 1' },
-            { col: 'has_variants', def: 'TINYINT(1) DEFAULT 0' }
+            { col: 'has_variants', def: 'TINYINT(1) DEFAULT 0' },
+            { col: 'weight_kg', def: 'VARCHAR(50) NULL' },
+            { col: 'dimensions', def: 'VARCHAR(100) NULL' },
+            { col: 'material', def: 'VARCHAR(200) NULL' },
+            { col: 'care_instructions', def: 'TEXT NULL' },
+            { col: 'country_of_origin', def: "VARCHAR(100) NULL DEFAULT 'India'" },
+            { col: 'attributes_json', def: 'TEXT NULL' }
         ];
 
         for (const item of colDefs) {
@@ -425,50 +431,87 @@ exports.addMerchantProduct = async (req, res) => {
         // Ensure columns exist on live schema
         await ensureSellerProductColumns(connection);
 
-        // 4. Insert into `seller_products` (is_active = 0 by default for Admin Moderation/Approval)
+        // 4. Resolve Dynamic Category Attributes & Specifications
+        let rawAttrIds = [];
+        if (body.attributeValueIds) {
+            let parsed = body.attributeValueIds;
+            if (typeof parsed === 'string') {
+                try { parsed = JSON.parse(parsed); } catch (e) { parsed = []; }
+            }
+            if (Array.isArray(parsed)) rawAttrIds.push(...parsed);
+        }
+        let rawProductAttrs = {};
+        if (body.productAttributes) {
+            let pAttrs = body.productAttributes;
+            if (typeof pAttrs === 'string') {
+                try { pAttrs = JSON.parse(pAttrs); } catch (e) { pAttrs = {}; }
+            }
+            if (typeof pAttrs === 'object' && pAttrs !== null) {
+                rawProductAttrs = pAttrs;
+                rawAttrIds.push(...Object.values(pAttrs));
+            }
+        }
+
+        const cleanAttrIds = [...new Set(rawAttrIds.map(v => parseInt(v, 10)).filter(v => !isNaN(v) && v > 0))];
+        let attributesJsonArr = [];
+
+        if (cleanAttrIds.length > 0) {
+            try {
+                const [valRows] = await connection.query(`
+                    SELECT av.id as val_id, av.value, COALESCE(attr.admin_label, attr.name) as attr_name
+                    FROM attribute_values av
+                    JOIN attributes attr ON av.attribute_id = attr.id
+                    WHERE av.id IN (?)
+                `, [cleanAttrIds]);
+
+                if (valRows && valRows.length > 0) {
+                    attributesJsonArr = valRows.map(r => ({
+                        attribute_name: r.attr_name,
+                        value: r.value
+                    }));
+
+                    if (productId) {
+                        await connection.query('DELETE FROM product_attributes WHERE product_id = ?', [productId]);
+                        const paRows = valRows.map(r => [productId, r.val_id]);
+                        await connection.query('INSERT IGNORE INTO product_attributes (product_id, attribute_value_id) VALUES ?', [paRows]);
+                    }
+                }
+            } catch (attrErr) {
+                console.warn("Could not save product attributes:", attrErr.message);
+            }
+        }
+
+        if (typeof rawProductAttrs === 'object' && rawProductAttrs !== null) {
+            Object.keys(rawProductAttrs).forEach(k => {
+                const v = rawProductAttrs[k];
+                if (v && isNaN(parseInt(v, 10))) {
+                    attributesJsonArr.push({ attribute_name: k, value: String(v) });
+                }
+            });
+        }
+        const attributesJsonString = attributesJsonArr.length > 0 ? JSON.stringify(attributesJsonArr) : null;
+
+        // 5. Insert into `seller_products` (is_active = 0 by default for Admin Moderation/Approval)
         const offerQuery = `
             INSERT INTO seller_products 
-              (seller_id, product_id, sku, mrp, merchant_price, admin_margin_percent, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity, is_active, warranty_type, warranty_months, warranty_covered_by, has_return_policy, return_window_days, is_replacement_available, replacement_window_days, is_cod_available) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+              (seller_id, product_id, sku, mrp, merchant_price, admin_margin_percent, selling_price, purchase_price, quantity, low_stock_threshold, minimum_order_quantity, is_active, warranty_type, warranty_months, warranty_covered_by, has_return_policy, return_window_days, is_replacement_available, replacement_window_days, is_cod_available, weight_kg, dimensions, material, care_instructions, country_of_origin, attributes_json) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         const [result] = await connection.query(offerQuery, [
             sellerId, productId, sku, mrp, merchantPrice, adminMarginPercent, sellingPrice, merchantPrice, quantity, body.low_stock_alert || 5, minimumOrderQuantity,
             body.warranty_type || 'no_warranty', parseInt(body.warranty_months || 0, 10), body.warranty_covered_by || null,
-            hasReturnPolicy, returnWindowDays, isReplacementAvailable, replacementWindowDays, isCodAvailable
+            hasReturnPolicy, returnWindowDays, isReplacementAvailable, replacementWindowDays, isCodAvailable,
+            body.weight_kg || null, body.dimensions || null, body.material || null, body.care_instructions || null, body.country_of_origin || 'India', attributesJsonString
         ]);
         const newOfferId = result.insertId;
 
-        // 5. Save pincodes (Handle Universal vs Specific)
+        // 6. Save pincodes (Handle Universal vs Specific)
         const isUniversalDelivery = (body.delivery_type === 'universal' || body.pincode_type === 'pan_india' || body.is_universal_pincode === 1 || body.is_universal_pincode === '1' || body.is_universal_pincode === true || body.is_universal_pincode === 'true');
         if (isUniversalDelivery) {
             await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES (?, ?)', [newOfferId, 'ALL']);
         } else if (pincodes.length > 0) {
             const pincodeValues = pincodes.map(p => [newOfferId, String(p).trim()]);
             await connection.query('INSERT INTO seller_product_pincodes (seller_product_id, pincode) VALUES ?', [pincodeValues]);
-        }
-
-        // 6. Save Dynamic Category Attributes
-        let attributeValueIds = body.attributeValueIds;
-        if (typeof attributeValueIds === 'string') {
-            try { attributeValueIds = JSON.parse(attributeValueIds); } catch (e) { attributeValueIds = []; }
-        }
-        if ((!Array.isArray(attributeValueIds) || attributeValueIds.length === 0) && body.productAttributes) {
-            let pAttrs = body.productAttributes;
-            if (typeof pAttrs === 'string') {
-                try { pAttrs = JSON.parse(pAttrs); } catch (e) { pAttrs = {}; }
-            }
-            if (typeof pAttrs === 'object' && pAttrs !== null) {
-                attributeValueIds = Object.values(pAttrs).map(v => parseInt(v, 10)).filter(v => !isNaN(v));
-            }
-        }
-        if (Array.isArray(attributeValueIds) && attributeValueIds.length > 0 && productId) {
-            try {
-                await connection.query('DELETE FROM product_attributes WHERE product_id = ?', [productId]);
-                const attrValues = attributeValueIds.map(valId => [productId, parseInt(valId, 10)]);
-                await connection.query('INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?', [attrValues]);
-            } catch (attrErr) {
-                console.warn("Could not save product attributes:", attrErr.message);
-            }
         }
 
         // 7. Save Variants if provided
@@ -542,7 +585,7 @@ exports.getMerchantProducts = async (req, res) => {
                 IFNULL(h.gst_percentage, 0) as gst_percentage,
                 GREATEST(0, IF(IFNULL(sp.admin_margin_percent, 0) > 0, (sp.selling_price * (IFNULL(sp.admin_margin_percent, 10.0) / 100)) * 0.80, ((sp.selling_price / (1 + (IFNULL(h.gst_percentage, 0) / 100))) - sp.purchase_price) * 0.80)) as bv_earned,
                 (
-                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('attribute_name', attr.name, 'value', av.value)), ']') 
+                    SELECT CONCAT('[', GROUP_CONCAT(DISTINCT JSON_OBJECT('attribute_name', COALESCE(attr.admin_label, attr.name), 'value', av.value) SEPARATOR ','), ']') 
                     FROM product_attributes pa
                     JOIN attribute_values av ON pa.attribute_value_id = av.id
                     JOIN attributes attr ON av.attribute_id = attr.id
@@ -579,6 +622,22 @@ exports.getMerchantProducts = async (req, res) => {
             try {
                 parsedAttributes = row.attributes ? (typeof row.attributes === 'string' ? JSON.parse(row.attributes) : row.attributes) : [];
             } catch (e) { parsedAttributes = []; }
+            if (!Array.isArray(parsedAttributes)) parsedAttributes = [];
+
+            // Robust fallback to attributes_json if relational attributes is empty
+            if (parsedAttributes.length === 0 && row.attributes_json) {
+                try {
+                    const fallbackAttrs = typeof row.attributes_json === 'string' ? JSON.parse(row.attributes_json) : row.attributes_json;
+                    if (Array.isArray(fallbackAttrs)) {
+                        parsedAttributes = fallbackAttrs;
+                    } else if (typeof fallbackAttrs === 'object' && fallbackAttrs !== null) {
+                        parsedAttributes = Object.keys(fallbackAttrs).map(k => ({
+                            attribute_name: k,
+                            value: String(fallbackAttrs[k])
+                        }));
+                    }
+                } catch (e) { }
+            }
 
             let parsedVariants = [];
             try {
@@ -600,7 +659,12 @@ exports.getMerchantProducts = async (req, res) => {
                 category: row.category_name || row.category || 'General',
                 brand: row.brand_name || row.brand || 'No Brand',
                 attributes: parsedAttributes,
-                variants: parsedVariants
+                variants: parsedVariants,
+                weight_kg: row.weight_kg || null,
+                dimensions: row.dimensions || null,
+                material: row.material || null,
+                care_instructions: row.care_instructions || null,
+                country_of_origin: row.country_of_origin || 'India'
             };
         });
         res.status(200).json({ status: true, data: processedData });
@@ -853,12 +917,22 @@ exports.updateMerchantProduct = async (req, res) => {
                  warranty_type = ?, warranty_months = ?, warranty_covered_by = ?, warranty_period = ?,
                  has_return_policy = COALESCE(?, has_return_policy, 0), return_window_days = ?, 
                  is_replacement_available = COALESCE(?, is_replacement_available, 0), replacement_window_days = ?,
-                 is_cod_available = COALESCE(?, is_cod_available, 1)
+                 is_cod_available = COALESCE(?, is_cod_available, 1),
+                 weight_kg = COALESCE(?, weight_kg),
+                 dimensions = COALESCE(?, dimensions),
+                 material = COALESCE(?, material),
+                 care_instructions = COALESCE(?, care_instructions),
+                 country_of_origin = COALESCE(?, country_of_origin)
              WHERE id = ?`,
             [
                 merchantPrice, sellingPrice, mrp, quantity, minimumOrderQuantity, lowStockThreshold, sku,
                 warrantyType, warrantyMonths, warrantyCoveredBy, warrantyPeriod,
                 hasReturnPolicy, returnWindowDays, isReplacementAvailable, replacementWindowDays, isCodAvailable,
+                body.weight_kg !== undefined ? body.weight_kg : null,
+                body.dimensions !== undefined ? body.dimensions : null,
+                body.material !== undefined ? body.material : null,
+                body.care_instructions !== undefined ? body.care_instructions : null,
+                body.country_of_origin !== undefined ? body.country_of_origin : null,
                 offerId
             ]
         );
@@ -942,27 +1016,65 @@ exports.updateMerchantProduct = async (req, res) => {
         }
 
         // Update Dynamic Category Attributes if provided
-        let attributeValueIds = body.attributeValueIds;
-        if (typeof attributeValueIds === 'string') {
-            try { attributeValueIds = JSON.parse(attributeValueIds); } catch (e) { attributeValueIds = []; }
+        let rawAttrIds = [];
+        if (body.attributeValueIds) {
+            let parsed = body.attributeValueIds;
+            if (typeof parsed === 'string') {
+                try { parsed = JSON.parse(parsed); } catch (e) { parsed = []; }
+            }
+            if (Array.isArray(parsed)) rawAttrIds.push(...parsed);
         }
-        if ((!Array.isArray(attributeValueIds) || attributeValueIds.length === 0) && body.productAttributes) {
+        let rawProductAttrs = {};
+        if (body.productAttributes) {
             let pAttrs = body.productAttributes;
             if (typeof pAttrs === 'string') {
                 try { pAttrs = JSON.parse(pAttrs); } catch (e) { pAttrs = {}; }
             }
             if (typeof pAttrs === 'object' && pAttrs !== null) {
-                attributeValueIds = Object.values(pAttrs).map(v => parseInt(v, 10)).filter(v => !isNaN(v));
+                rawProductAttrs = pAttrs;
+                rawAttrIds.push(...Object.values(pAttrs));
             }
         }
-        if (Array.isArray(attributeValueIds) && attributeValueIds.length > 0 && productId) {
+
+        const cleanAttrIds = [...new Set(rawAttrIds.map(v => parseInt(v, 10)).filter(v => !isNaN(v) && v > 0))];
+        let attributesJsonArr = [];
+
+        if (cleanAttrIds.length > 0) {
             try {
-                await connection.query('DELETE FROM product_attributes WHERE product_id = ?', [productId]);
-                const attrValues = attributeValueIds.map(valId => [productId, parseInt(valId, 10)]);
-                await connection.query('INSERT INTO product_attributes (product_id, attribute_value_id) VALUES ?', [attrValues]);
+                const [valRows] = await connection.query(`
+                    SELECT av.id as val_id, av.value, COALESCE(attr.admin_label, attr.name) as attr_name
+                    FROM attribute_values av
+                    JOIN attributes attr ON av.attribute_id = attr.id
+                    WHERE av.id IN (?)
+                `, [cleanAttrIds]);
+
+                if (valRows && valRows.length > 0) {
+                    attributesJsonArr = valRows.map(r => ({
+                        attribute_name: r.attr_name,
+                        value: r.value
+                    }));
+
+                    if (productId) {
+                        await connection.query('DELETE FROM product_attributes WHERE product_id = ?', [productId]);
+                        const paRows = valRows.map(r => [productId, r.val_id]);
+                        await connection.query('INSERT IGNORE INTO product_attributes (product_id, attribute_value_id) VALUES ?', [paRows]);
+                    }
+                }
             } catch (attrErr) {
                 console.warn("Could not save product attributes on update:", attrErr.message);
             }
+        }
+
+        if (typeof rawProductAttrs === 'object' && rawProductAttrs !== null) {
+            Object.keys(rawProductAttrs).forEach(k => {
+                const v = rawProductAttrs[k];
+                if (v && isNaN(parseInt(v, 10))) {
+                    attributesJsonArr.push({ attribute_name: k, value: String(v) });
+                }
+            });
+        }
+        if (attributesJsonArr.length > 0) {
+            await connection.query('UPDATE seller_products SET attributes_json = ? WHERE id = ?', [JSON.stringify(attributesJsonArr), offerId]);
         }
 
         await connection.commit();
