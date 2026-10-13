@@ -1,6 +1,44 @@
 const PDFDocument = require('pdfkit');
 
 /**
+ * Helper to format date and time in Indian Standard Time (IST / Asia/Kolkata, UTC+5:30)
+ * @param {string|Date} dateInput 
+ * @returns {{ orderDate: string, orderTime: string }}
+ */
+const formatISTDateTime = (dateInput) => {
+    const rawDate = dateInput ? new Date(dateInput) : new Date();
+    if (isNaN(rawDate.getTime())) {
+        return { orderDate: 'N/A', orderTime: 'N/A' };
+    }
+    
+    // Format Date: DD/MM/YYYY in Asia/Kolkata
+    const orderDate = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Kolkata',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+    }).format(rawDate);
+
+    // Format Time: HH : MM : SS in Asia/Kolkata (24-hour)
+    const timeParts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    }).formatToParts(rawDate);
+
+    const h = timeParts.find(p => p.type === 'hour')?.value || '00';
+    const m = timeParts.find(p => p.type === 'minute')?.value || '00';
+    const s = timeParts.find(p => p.type === 'second')?.value || '00';
+
+    return {
+        orderDate,
+        orderTime: `${h} : ${m} : ${s}`
+    };
+};
+
+/**
  * Generates an 80mm POS Thermal Receipt Slip HTML (Swipe Machine / Receipt Printer format)
  * @param {Object} order - Order data including items and shipping address
  * @param {Object} user - User/Customer data
@@ -16,10 +54,7 @@ exports.generateThermalInvoiceHTML = (order, user, seller) => {
         supportEmail: seller?.email || "support@earn24.in"
     };
 
-    const d = order.created_at ? new Date(order.created_at) : new Date();
-    const pad = (n) => String(n).padStart(2, '0');
-    const orderDate = `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
-    const orderTime = `${pad(d.getHours())} : ${pad(d.getMinutes())} : ${pad(d.getSeconds())}`;
+    const { orderDate, orderTime } = formatISTDateTime(order.created_at);
 
     const invoiceNo = order.invoice_no || order.invoice_number || (1000000000 + parseInt(order.id || 1, 10)).toString();
     const orderNumber = order.order_number || (`ORD-${order.id}`);
@@ -442,10 +477,7 @@ exports.generateInvoicePDF = (order, user, seller) => {
             email: seller?.email || "support@earn24.in"
         };
 
-        const d = order.created_at ? new Date(order.created_at) : new Date();
-        const pad = (n) => String(n).padStart(2, '0');
-        const orderDate = `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
-        const orderTime = `${pad(d.getHours())} : ${pad(d.getMinutes())} : ${pad(d.getSeconds())}`;
+        const { orderDate, orderTime } = formatISTDateTime(order.created_at);
         const invoiceNo = order.invoice_no || order.invoice_number || (1000000000 + parseInt(order.id || 1, 10)).toString();
 
         const shipping = order.shipping_address || {};
