@@ -704,6 +704,8 @@ exports.downloadInvoice = async (req, res) => {
         const itemsQuery = `
             SELECT oi.*, h.hsn_code, h.gst_percentage, 
                    s.sellerable_type,
+                   s.sellerable_id,
+                   m.id as merchant_id,
                    m.business_name as merchant_name,
                    m.business_address as merchant_address,
                    m.pincode as merchant_pincode,
@@ -724,13 +726,14 @@ exports.downloadInvoice = async (req, res) => {
         const isMerchantItem = (it) => {
             const st = (it.sellerable_type || '').toString().trim().toLowerCase();
             if (st === 'merchant') return true;
+            if (it.merchant_id || it.sellerable_id) return true;
             if (it.merchant_name && it.merchant_name !== 'Earn24 Admin') return true;
             return false;
         };
 
         const isAdminRequester = (req.query.seller_type === 'admin') || 
                                  (['admin', 'superadmin', 'super_admin'].includes(role) && req.query.seller_type !== 'merchant');
-        const isMerchantRequester = (req.query.seller_type === 'merchant') || (role === 'merchant');
+        const isMerchantRequester = (req.query.seller_type === 'merchant') || (role === 'merchant') || Boolean(req.query.merchant_id);
 
         let targetItems = itemRows;
         if (req.query.item_id) {
@@ -738,12 +741,18 @@ exports.downloadInvoice = async (req, res) => {
             if (specific.length > 0) {
                 targetItems = specific;
             }
+        } else if (isMerchantRequester) {
+            // Merchant only bills their own products
+            const targetMerchantId = req.query.merchant_id || (role === 'merchant' ? requester?.id : null);
+            targetItems = itemRows.filter(i => {
+                if (!isMerchantItem(i)) return false;
+                if (!targetMerchantId) return true;
+                const itemMId = i.merchant_id || i.sellerable_id;
+                return String(itemMId) === String(targetMerchantId);
+            });
         } else if (isAdminRequester) {
             // Admin only bills Admin / Central Hub products
             targetItems = itemRows.filter(i => !isMerchantItem(i));
-        } else if (isMerchantRequester) {
-            // Merchant only bills their own products
-            targetItems = itemRows.filter(i => isMerchantItem(i) && (!requester?.id || i.sellerable_id == requester.id));
         }
 
         order.items = targetItems;
@@ -882,6 +891,9 @@ exports.downloadShippingLabel = async (req, res) => {
         // Items and Merchant Info
         const itemsQuery = `
             SELECT oi.*, p.name as catalog_name,
+                   s.sellerable_type,
+                   s.sellerable_id,
+                   m.id as merchant_id,
                    COALESCE(m.business_name, s.display_name, 'EARN24 Central Hub') as seller_name,
                    COALESCE(m.business_address, s.address, 'Earn24 Logistics Center') as seller_address,
                    COALESCE(m.phone_number, '') as seller_phone,
@@ -898,13 +910,14 @@ exports.downloadShippingLabel = async (req, res) => {
         const isMerchantItem = (it) => {
             const st = (it.sellerable_type || '').toString().trim().toLowerCase();
             if (st === 'merchant') return true;
-            if (it.merchant_name && it.merchant_name !== 'Earn24 Admin') return true;
+            if (it.merchant_id || it.sellerable_id) return true;
+            if (it.seller_name && it.seller_name !== 'EARN24 Central Hub' && it.seller_name !== 'Earn24 Admin') return true;
             return false;
         };
 
         const isAdminRequester = (req.query.seller_type === 'admin') || 
                                  (['admin', 'superadmin', 'super_admin'].includes(role) && req.query.seller_type !== 'merchant');
-        const isMerchantRequester = (req.query.seller_type === 'merchant') || (role === 'merchant');
+        const isMerchantRequester = (req.query.seller_type === 'merchant') || (role === 'merchant') || Boolean(req.query.merchant_id);
 
         let items = itemRows;
         if (req.query.item_id) {
@@ -912,10 +925,16 @@ exports.downloadShippingLabel = async (req, res) => {
             if (specific.length > 0) {
                 items = specific;
             }
+        } else if (isMerchantRequester) {
+            const targetMerchantId = req.query.merchant_id || (role === 'merchant' ? requester?.id : null);
+            items = itemRows.filter(i => {
+                if (!isMerchantItem(i)) return false;
+                if (!targetMerchantId) return true;
+                const itemMId = i.merchant_id || i.sellerable_id;
+                return String(itemMId) === String(targetMerchantId);
+            });
         } else if (isAdminRequester) {
             items = itemRows.filter(i => !isMerchantItem(i));
-        } else if (isMerchantRequester) {
-            items = itemRows.filter(i => isMerchantItem(i) && (!requester?.id || i.sellerable_id == requester.id));
         }
 
         const parcelTotal = items.reduce((sum, it) => sum + parseFloat(it.total_price || (it.price_per_unit * it.quantity) || 0), 0);
