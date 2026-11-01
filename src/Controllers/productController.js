@@ -2451,3 +2451,46 @@ exports.checkPincodeServiceability = async (req, res) => {
         res.status(500).json({ status: false, message: "Could not verify pincode." });
     }
 };
+
+/**
+ * Validates a list of product/offer IDs and returns only those that are currently active, live, and in-stock.
+ */
+exports.filterActiveProducts = async (req, res) => {
+    try {
+        const rawIds = req.body.product_ids || req.body.ids || [];
+        if (!Array.isArray(rawIds) || rawIds.length === 0) {
+            return res.status(200).json({ status: true, active_ids: [] });
+        }
+
+        const cleanIds = rawIds.map(id => parseInt(id, 10)).filter(id => !isNaN(id) && id > 0);
+        if (cleanIds.length === 0) {
+            return res.status(200).json({ status: true, active_ids: [] });
+        }
+
+        const [rows] = await db.query(
+            `SELECT DISTINCT p.id as product_id, sp.id as offer_id
+             FROM products p
+             JOIN seller_products sp ON p.id = sp.product_id
+             WHERE (p.id IN (?) OR sp.id IN (?))
+               AND p.is_active = 1
+               AND p.is_deleted = 0
+               AND sp.is_active = 1
+               AND sp.quantity > 0`,
+            [cleanIds, cleanIds]
+        );
+
+        const activeIdSet = new Set();
+        rows.forEach(r => {
+            if (r.product_id) activeIdSet.add(r.product_id);
+            if (r.offer_id) activeIdSet.add(r.offer_id);
+        });
+
+        return res.status(200).json({
+            status: true,
+            active_ids: Array.from(activeIdSet)
+        });
+    } catch (error) {
+        console.error("Error in filterActiveProducts:", error);
+        return res.status(500).json({ status: false, message: "Failed to filter active products", error: error.message });
+    }
+};
