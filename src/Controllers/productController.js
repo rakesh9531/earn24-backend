@@ -1565,14 +1565,15 @@ exports.searchProducts = async (req, res) => {
           WHEN LOWER(p.name) = ? THEN 1 
           WHEN LOWER(p.name) LIKE ? THEN 2 
           WHEN LOWER(p.name) LIKE ? THEN 3 
-          ELSE 4 
+          WHEN LOWER(p.description) LIKE ? THEN 4
+          ELSE 5 
         END
       )`);
-      dataQueryParams.push(exactMatch, startsWithPattern, containsPattern);
+      dataQueryParams.push(exactMatch, startsWithPattern, containsPattern, containsPattern);
     }
 
     if (!isExplicitSort) {
-      sortParts.push("p.popularity DESC");
+      sortParts.push("p.popularity DESC, sp.id DESC");
     }
 
     const orderByClause = `ORDER BY ${sortParts.join(", ")}`;
