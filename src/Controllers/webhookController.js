@@ -82,7 +82,9 @@ exports.handleShiprocketWebhook = async (req, res) => {
             targetItemStatus = 'RTO';
         }
 
-        // 1. Update order_items matching this AWB
+        // 1. Update order_items matching this AWB or Order ID
+        let matchedParentOrderId = null;
+
         if (awb) {
             await db.query(
                 `UPDATE order_items 
@@ -93,39 +95,77 @@ exports.handleShiprocketWebhook = async (req, res) => {
                 [targetItemStatus, isDelivered ? 1 : 0, isPickedUp ? 1 : 0, awb]
             ).catch(err => console.error('[Shiprocket Webhook] order_items update error:', err.message));
 
-            // 2. Check if parent order needs status update
             const [matchedItems] = await db.query(
                 `SELECT order_id FROM order_items WHERE tracking_number = ? LIMIT 1`,
                 [awb]
             ).catch(() => [[]]);
-
             if (matchedItems && matchedItems.length > 0) {
-                const parentOrderId = matchedItems[0].order_id;
+                matchedParentOrderId = matchedItems[0].order_id;
+            }
 
-                if (isDelivered) {
-                    const [allItems] = await db.query(
-                        `SELECT item_status FROM order_items WHERE order_id = ?`,
-                        [parentOrderId]
-                    ).catch(() => [[]]);
-
-                    const allDone = allItems.length > 0 && allItems.every(i => i.item_status === 'DELIVERED' || i.item_status === 'CANCELLED');
-                    if (allDone) {
-                        await db.query(
-                            `UPDATE orders 
-                             SET order_status = 'DELIVERED', 
-                                 delivered_at = COALESCE(delivered_at, NOW()) 
-                             WHERE id = ?`,
-                            [parentOrderId]
-                        ).catch(err => console.error('[Shiprocket Webhook] orders delivery update error:', err.message));
-
-                        console.log(`[Shiprocket Webhook] ✅ Parent Order #${parentOrderId} completely marked as DELIVERED!`);
-                    }
-                } else if (isPickedUp) {
-                    await db.query(
-                        `UPDATE orders SET order_status = 'SHIPPED_SHIPROCKET' WHERE id = ? AND order_status IN ('PENDING', 'CONFIRMED', 'PROCESSING')`,
-                        [parentOrderId]
-                    ).catch(() => {});
+            // Also check orders table directly if tracking_number was saved on orders table
+            if (!matchedParentOrderId) {
+                const [matchedOrders] = await db.query(
+                    `SELECT id FROM orders WHERE tracking_number = ? LIMIT 1`,
+                    [awb]
+                ).catch(() => [[]]);
+                if (matchedOrders && matchedOrders.length > 0) {
+                    matchedParentOrderId = matchedOrders[0].id;
                 }
+            }
+        }
+
+        // If not found by AWB, try matching by Shiprocket order_id or channel_order_id
+        if (!matchedParentOrderId && orderIdStr) {
+            const [ordersById] = await db.query(
+                `SELECT id FROM orders WHERE id = ? OR order_number = ? LIMIT 1`,
+                [orderIdStr, orderIdStr]
+            ).catch(() => [[]]);
+            if (ordersById && ordersById.length > 0) {
+                matchedParentOrderId = ordersById[0].id;
+                // Update items under this order as well
+                await db.query(
+                    `UPDATE order_items 
+                     SET item_status = ?,
+                         delivered_at = IF(? = 1, COALESCE(delivered_at, NOW()), delivered_at),
+                         picked_up_at = IF(? = 1, COALESCE(picked_up_at, NOW()), picked_up_at)
+                     WHERE order_id = ?`,
+                    [targetItemStatus, isDelivered ? 1 : 0, isPickedUp ? 1 : 0, matchedParentOrderId]
+                ).catch(() => {});
+            }
+        }
+
+        // 2. Update parent order status and delivery fields
+        if (matchedParentOrderId) {
+            if (isDelivered) {
+                await db.query(
+                    `UPDATE orders 
+                     SET order_status = 'DELIVERED', 
+                         delivered_at = COALESCE(delivered_at, NOW()) 
+                     WHERE id = ?`,
+                    [matchedParentOrderId]
+                ).catch(err => console.error('[Shiprocket Webhook] orders delivery update error:', err.message));
+
+                // Also ensure all items of this order are marked DELIVERED
+                await db.query(
+                    `UPDATE order_items 
+                     SET item_status = 'DELIVERED', 
+                         delivered_at = COALESCE(delivered_at, NOW()) 
+                     WHERE order_id = ? AND item_status != 'CANCELLED'`,
+                    [matchedParentOrderId]
+                ).catch(() => {});
+
+                console.log(`[Shiprocket Webhook] ✅ Parent Order #${matchedParentOrderId} completely marked as DELIVERED!`);
+            } else if (isPickedUp) {
+                await db.query(
+                    `UPDATE orders SET order_status = 'SHIPPED_SHIPROCKET' WHERE id = ? AND order_status IN ('PENDING', 'CONFIRMED', 'PROCESSING')`,
+                    [matchedParentOrderId]
+                ).catch(() => {});
+            } else if (targetItemStatus === 'OUT_FOR_DELIVERY') {
+                await db.query(
+                    `UPDATE orders SET order_status = 'OUT_FOR_DELIVERY' WHERE id = ? AND order_status != 'DELIVERED'`,
+                    [matchedParentOrderId]
+                ).catch(() => {});
             }
         }
 
