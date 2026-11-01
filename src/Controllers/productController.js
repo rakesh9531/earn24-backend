@@ -1455,9 +1455,10 @@ exports.searchProducts = async (req, res) => {
     // --- 2. Build WHERE Clauses ---
     let whereClauses = [
       "(p.is_deleted = 0 OR p.is_deleted IS NULL)",
-      "(p.is_active = 1 OR p.is_active IS NULL OR p.is_active = TRUE)",
-      "(sp.is_active = 1 OR sp.is_active IS NULL OR sp.is_active = TRUE)",
-      "(sp.selling_price > 0 OR sp.selling_price IS NULL)"
+      "(p.is_active = 1 OR p.is_active = TRUE)",
+      "(sp.is_active = 1 OR sp.is_active = TRUE)",
+      "sp.selling_price > 0",
+      "sp.quantity > 0"
     ];
     let queryParams = [];
 
@@ -1736,16 +1737,34 @@ exports.getSearchSuggestions = async (req, res) => {
   try {
     const raw = query.trim().toLowerCase();
     const stems = extractSearchStems(raw);
-    const conditions = stems.map(() => `LOWER(name) LIKE ?`).join(" OR ");
+    const conditions = stems.map(() => `LOWER(p.name) LIKE ?`).join(" OR ");
     const params = stems.map(s => `%${s}%`);
 
     const [suggestions] = await db.query(
-      `SELECT DISTINCT id, name FROM products WHERE (${conditions}) LIMIT 15`,
+      `SELECT DISTINCT p.id, p.name 
+       FROM products p
+       JOIN seller_products sp ON p.id = sp.product_id
+       WHERE (p.is_active = 1 OR p.is_active = TRUE)
+         AND (p.is_deleted = 0 OR p.is_deleted IS NULL)
+         AND (sp.is_active = 1 OR sp.is_active = TRUE)
+         AND sp.selling_price > 0
+         AND sp.quantity > 0
+         AND (${conditions}) 
+       LIMIT 15`,
       params
     ).catch(async (e) => {
       console.warn("getSearchSuggestions query fallback:", e.message);
       const [fallback] = await db.query(
-        `SELECT DISTINCT id, name FROM products WHERE name LIKE ? LIMIT 10`,
+        `SELECT DISTINCT p.id, p.name 
+         FROM products p
+         JOIN seller_products sp ON p.id = sp.product_id
+         WHERE (p.is_active = 1 OR p.is_active = TRUE)
+           AND (p.is_deleted = 0 OR p.is_deleted IS NULL)
+           AND (sp.is_active = 1 OR sp.is_active = TRUE)
+           AND sp.selling_price > 0
+           AND sp.quantity > 0
+           AND p.name LIKE ? 
+         LIMIT 10`,
         [`%${raw}%`]
       );
       return [fallback];
