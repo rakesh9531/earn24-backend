@@ -753,9 +753,11 @@ exports.addSellerOffer = async (req, res) => {
             for (const v of variantsList) {
                 if (v && (v.title || v.size || v.color || v.price)) {
                     const vImg = saveBase64Image(v.variant_image_url || v.image_url) || null;
+                    const vActive = (v.is_active === 0 || v.is_active === false || v.is_active === '0' || v.is_active === 'false') ? 0 : 1;
+                    await connection.query('ALTER TABLE seller_product_variants ADD COLUMN is_active TINYINT(1) DEFAULT 1').catch(() => {});
                     await connection.query(
-                        `INSERT INTO seller_product_variants (seller_product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                        [newOfferId, v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant', v.color || null, v.size || null, v.sku || null, parseFloat(v.price || sellingPrice || 0), parseFloat(v.mrp || mrp || 0), parseInt(v.quantity || v.stock_quantity || quantity || 0, 10), vImg]
+                        `INSERT INTO seller_product_variants (seller_product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [newOfferId, v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant', v.color || null, v.size || null, v.sku || null, parseFloat(v.price || sellingPrice || 0), parseFloat(v.mrp || mrp || 0), parseInt(v.quantity || v.stock_quantity || quantity || 0, 10), vImg, vActive]
                     ).catch(() => {});
                 }
             }
@@ -903,7 +905,7 @@ exports.getAllSellerOffers = async (req, res) => {
                     WHERE pa.product_id = p.id
                 ) AS attributes,
                 (
-                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls, 'is_active', IFNULL(spv.is_active, 1))), ']')
                     FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
                 ) AS variants
             FROM seller_products sp
@@ -1044,15 +1046,17 @@ exports.updateSellerOffer = async (req, res) => {
                 await connection.query('ALTER TABLE seller_product_variants MODIFY COLUMN variant_image_url LONGTEXT NULL').catch(() => {});
                 await connection.query('DELETE FROM seller_product_variants WHERE seller_product_id = ?', [id]);
 
+                await connection.query('ALTER TABLE seller_product_variants ADD COLUMN is_active TINYINT(1) DEFAULT 1').catch(() => {});
                 for (const v of variantsList) {
                     if (v && (v.title || v.size || v.color || v.price)) {
                         let vImg = v.variant_image_url || v.image_url || null;
                         if (vImg && typeof vImg === 'string' && vImg.startsWith('data:image/')) {
                             vImg = saveBase64Image(vImg) || null;
                         }
+                        const vActive = (v.is_active === 0 || v.is_active === false || v.is_active === '0' || v.is_active === 'false') ? 0 : 1;
                         await connection.query(
-                            `INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                            [id, matchedProductId, v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant', v.color || null, v.size || null, v.sku || null, parseFloat(v.price || sellingPrice || 0), parseFloat(v.mrp || mrp || 0), parseInt(v.quantity || v.stock_quantity || quantity || 0, 10), vImg]
+                            `INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            [id, matchedProductId, v.title || `${v.color || ''} ${v.size || ''}`.trim() || 'Variant', v.color || null, v.size || null, v.sku || null, parseFloat(v.price || sellingPrice || 0), parseFloat(v.mrp || mrp || 0), parseInt(v.quantity || v.stock_quantity || quantity || 0, 10), vImg, vActive]
                         ).catch((err) => console.error('[Variant Insert Warning]:', err.message));
                     }
                 }
@@ -1088,6 +1092,25 @@ exports.toggleOfferStatus = async (req, res) => {
         res.status(200).json({ status: true, message: `Offer status updated to ${is_active ? 'Active' : 'Inactive'}.` });
     } catch (error) {
         res.status(500).json({ status: false, message: "An error occurred." });
+    }
+};
+
+exports.toggleVariantStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { is_active } = req.body;
+        if (typeof is_active !== 'boolean') {
+            return res.status(400).json({ status: false, message: "A valid 'is_active' boolean status is required." });
+        }
+        await db.query('ALTER TABLE seller_product_variants ADD COLUMN is_active TINYINT(1) DEFAULT 1').catch(() => {});
+        const [result] = await db.query('UPDATE seller_product_variants SET is_active = ? WHERE id = ?', [is_active ? 1 : 0, id]);
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ status: false, message: "Variant not found." });
+        }
+        res.status(200).json({ status: true, message: `Variant status updated to ${is_active ? 'Live' : 'Unlive'}.` });
+    } catch (error) {
+        console.error("toggleVariantStatus error:", error);
+        res.status(500).json({ status: false, message: "An error occurred while updating variant status." });
     }
 };
 

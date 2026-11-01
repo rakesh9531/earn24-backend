@@ -48,6 +48,7 @@ router.post('/add-offer', auth, can('inventory:create'), sellerProductController
 router.put('/update-offer/:id', auth, can('inventory:update'), sellerProductController.updateSellerOffer);
 router.get('/all', auth, can('inventory:read'), sellerProductController.getAllSellerOffers);
 router.patch('/toggle-status/:id', auth, can('inventory:update'), sellerProductController.toggleOfferStatus);
+router.patch('/variant/toggle-status/:id', auth, can('inventory:update'), sellerProductController.toggleVariantStatus);
 
 // --- Public Routes for Mobile App (No auth needed) ---
 router.get('/search', sellerProductController.findProductsByPincode);

@@ -1843,7 +1843,7 @@ exports.getProductForUser = async (req, res) => {
                 ) as attributes,
                 (
                     SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
-                    FROM seller_product_variants spv WHERE (spv.seller_product_id = sp.id OR spv.product_id = p.id) AND (spv.is_active = TRUE OR spv.is_active IS NULL)
+                    FROM seller_product_variants spv WHERE (spv.seller_product_id = sp.id OR spv.product_id = p.id) AND (spv.is_active = 1 OR spv.is_active = TRUE OR spv.is_active IS NULL) AND spv.is_active != 0 AND spv.stock_quantity > 0
                 ) as variants,
                 (
                     ? = '' 
