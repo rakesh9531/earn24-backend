@@ -1053,7 +1053,10 @@ exports.getMasterProductById = async (req, res) => {
 
     // Fetch associated attributes for the product
     const attributesSql = `
-            SELECT pa.attribute_value_id, a.name as attribute_name
+            SELECT pa.attribute_value_id, 
+                   av.attribute_id,
+                   av.value as attribute_value,
+                   TRIM(a.name) as attribute_name
             FROM product_attributes pa
             JOIN attribute_values av ON pa.attribute_value_id = av.id
             JOIN attributes a ON av.attribute_id = a.id
