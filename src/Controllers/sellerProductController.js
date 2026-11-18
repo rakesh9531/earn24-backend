@@ -933,9 +933,12 @@ exports.getAllSellerOffers = async (req, res) => {
                 parsedVariants = offer.variants ? (typeof offer.variants === 'string' ? JSON.parse(offer.variants) : offer.variants) : [];
             } catch (e) { parsedVariants = []; }
 
+            const pinList = offer.pincodes ? offer.pincodes.split(',').map(p => p.trim()).filter(Boolean) : [];
+            const isPanIndiaOffer = pinList.includes('ALL') || pinList.includes('PAN_INDIA');
             return {
                 ...offer,
-                pincodes: offer.pincodes ? offer.pincodes.split(',') : [],
+                is_universal_pincode: isPanIndiaOffer ? 1 : 0,
+                pincodes: pinList,
                 attributes: parsedAttributes,
                 variants: parsedVariants,
                 gst_percentage: parseFloat(offer.gst_percentage) || 0
