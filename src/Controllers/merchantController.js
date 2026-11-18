@@ -516,6 +516,8 @@ exports.addMerchantProduct = async (req, res) => {
 
         // 7. Save Variants if provided
         if (variants.length > 0) {
+            await connection.query('ALTER TABLE seller_product_variants ADD COLUMN purchase_price DECIMAL(10,2) DEFAULT 0.00').catch(() => {});
+
             try {
                 const variantValues = variants.map(v => {
                     let vImg = saveBase64Image(v.variant_image_url || v.image_url) || mainImageUrl;
@@ -540,7 +542,7 @@ exports.addMerchantProduct = async (req, res) => {
                     ];
                 });
                 await connection.query(
-                    'INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url, variant_image_urls) VALUES ?',
+                    'INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, purchase_price, stock_quantity, variant_image_url, variant_image_urls) VALUES ?',
                     [variantValues]
                 );
             } catch (varErr) {
@@ -1010,7 +1012,7 @@ exports.updateMerchantProduct = async (req, res) => {
                 ];
             });
             await connection.query(
-                'INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url, variant_image_urls) VALUES ?',
+                'INSERT INTO seller_product_variants (seller_product_id, product_id, title, color, size, sku, price, mrp, purchase_price, stock_quantity, variant_image_url, variant_image_urls) VALUES ?',
                 [variantValues]
             );
         }

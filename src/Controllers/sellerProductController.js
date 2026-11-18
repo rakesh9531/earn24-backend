@@ -754,6 +754,7 @@ exports.addSellerOffer = async (req, res) => {
                 if (v && (v.title || v.size || v.color || v.price)) {
                     const vImg = saveBase64Image(v.variant_image_url || v.image_url) || null;
                     const vActive = (v.is_active === 0 || v.is_active === false || v.is_active === '0' || v.is_active === 'false') ? 0 : 1;
+                    await connection.query('ALTER TABLE seller_product_variants ADD COLUMN purchase_price DECIMAL(10,2) DEFAULT 0.00').catch(() => {});
                     await connection.query('ALTER TABLE seller_product_variants ADD COLUMN is_active TINYINT(1) DEFAULT 1').catch(() => {});
                     await connection.query(
                         `INSERT INTO seller_product_variants (seller_product_id, title, color, size, sku, price, mrp, stock_quantity, variant_image_url, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -805,7 +806,7 @@ exports.findProductsByPincode = async (req, res) => {
                         WHERE pa.product_id = p.id
                     ) as attributes,
                     (
-                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'purchase_price', IFNULL(spv.purchase_price, 0), 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
                         FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
                     ) as variants
                 FROM seller_products sp
@@ -839,7 +840,7 @@ exports.findProductsByPincode = async (req, res) => {
                         WHERE pa.product_id = p.id
                     ) as attributes,
                     (
-                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'purchase_price', IFNULL(spv.purchase_price, 0), 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
                         FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
                     ) as variants
                 FROM seller_products sp
@@ -905,7 +906,7 @@ exports.getAllSellerOffers = async (req, res) => {
                     WHERE pa.product_id = p.id
                 ) AS attributes,
                 (
-                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls, 'is_active', IFNULL(spv.is_active, 1))), ']')
+                    SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'purchase_price', IFNULL(spv.purchase_price, 0), 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls, 'is_active', IFNULL(spv.is_active, 1))), ']')
                     FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
                 ) AS variants
             FROM seller_products sp
@@ -1046,7 +1047,8 @@ exports.updateSellerOffer = async (req, res) => {
                 await connection.query('ALTER TABLE seller_product_variants MODIFY COLUMN variant_image_url LONGTEXT NULL').catch(() => {});
                 await connection.query('DELETE FROM seller_product_variants WHERE seller_product_id = ?', [id]);
 
-                await connection.query('ALTER TABLE seller_product_variants ADD COLUMN is_active TINYINT(1) DEFAULT 1').catch(() => {});
+                await connection.query('ALTER TABLE seller_product_variants ADD COLUMN purchase_price DECIMAL(10,2) DEFAULT 0.00').catch(() => {});
+                    await connection.query('ALTER TABLE seller_product_variants ADD COLUMN is_active TINYINT(1) DEFAULT 1').catch(() => {});
                 for (const v of variantsList) {
                     if (v && (v.title || v.size || v.color || v.price)) {
                         let vImg = v.variant_image_url || v.image_url || null;
@@ -1219,7 +1221,7 @@ exports.getHomeScreenData = async (req, res) => {
                             WHERE pa.product_id = p.id
                         ) as attributes,
                         (
-                            SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                            SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'purchase_price', IFNULL(spv.purchase_price, 0), 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
                             FROM seller_product_variants spv WHERE (spv.seller_product_id = sp.id OR spv.product_id = p.id) AND (spv.is_active = TRUE OR spv.is_active IS NULL)
                         ) as variants
                     FROM seller_products sp
@@ -1268,7 +1270,7 @@ exports.getHomeScreenData = async (req, res) => {
                             WHERE pa.product_id = p.id
                         ) as attributes,
                         (
-                            SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                            SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'purchase_price', IFNULL(spv.purchase_price, 0), 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
                             FROM seller_product_variants spv WHERE (spv.seller_product_id = sp.id OR spv.product_id = p.id) AND (spv.is_active = TRUE OR spv.is_active IS NULL)
                         ) as variants
                     FROM seller_products sp
@@ -1348,7 +1350,7 @@ exports.getHomeScreenData = async (req, res) => {
                         WHERE pa.product_id = p.id
                     ) as attributes,
                     (
-                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'purchase_price', IFNULL(spv.purchase_price, 0), 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
                         FROM seller_product_variants spv WHERE (spv.seller_product_id = sp.id OR spv.product_id = p.id) AND (spv.is_active = TRUE OR spv.is_active IS NULL)
                     ) as variants
                 FROM seller_products sp
@@ -1394,7 +1396,7 @@ exports.getHomeScreenData = async (req, res) => {
                         WHERE pa.product_id = p.id
                     ) as attributes,
                     (
-                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'purchase_price', IFNULL(spv.purchase_price, 0), 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
                         FROM seller_product_variants spv WHERE (spv.seller_product_id = sp.id OR spv.product_id = p.id) AND (spv.is_active = TRUE OR spv.is_active IS NULL)
                     ) as variants
                 FROM seller_products sp
@@ -1515,7 +1517,7 @@ exports.getRelatedProducts = async (req, res) => {
                 WHERE pa.product_id = p.id
             ) as attributes,
             (
-                SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'purchase_price', IFNULL(spv.purchase_price, 0), 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
                 FROM seller_product_variants spv WHERE spv.seller_product_id = sp.id
             ) as variants
         `;
@@ -1637,7 +1639,7 @@ exports.getPaginatedTopBvDeals = async (req, res) => {
                         WHERE pa.product_id = p.id
                     ) as attributes,
                     (
-                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'purchase_price', IFNULL(spv.purchase_price, 0), 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
                         FROM seller_product_variants spv WHERE (spv.seller_product_id = sp.id OR spv.product_id = p.id) AND (spv.is_active = TRUE OR spv.is_active IS NULL)
                     ) as variants
                 FROM seller_products sp
@@ -1697,7 +1699,7 @@ exports.getPaginatedTopBvDeals = async (req, res) => {
                         WHERE pa.product_id = p.id
                     ) as attributes,
                     (
-                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
+                        SELECT CONCAT('[', GROUP_CONCAT(JSON_OBJECT('id', spv.id, 'title', spv.title, 'color', spv.color, 'size', spv.size, 'sku', spv.sku, 'price', spv.price, 'mrp', spv.mrp, 'purchase_price', IFNULL(spv.purchase_price, 0), 'stock_quantity', spv.stock_quantity, 'variant_image_url', spv.variant_image_url, 'variant_image_urls', spv.variant_image_urls)), ']')
                         FROM seller_product_variants spv WHERE (spv.seller_product_id = sp.id OR spv.product_id = p.id) AND (spv.is_active = TRUE OR spv.is_active IS NULL)
                     ) as variants
                 FROM seller_products sp
