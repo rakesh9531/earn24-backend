@@ -30,7 +30,7 @@ exports.sendSms = async (mobileNumber, otp) => {
             }
             
             // Direct 2Factor Text SMS Endpoint (omits unapproved template name so it sends Text SMS instead of Voice Call)
-            const templateName = process.env.TWO_FACTOR_TEMPLATE_NAME;
+            const templateName = process.env.TWO_FACTOR_TEMPLATE_NAME || 'EARN24_OTP';
             let url = `https://2factor.in/API/V1/${apiKey}/SMS/${cleanNumber}/${otp}`;
             if (templateName && templateName !== 'DeliveryOTP' && templateName !== 'YOUR_TEMPLATE_NAME') {
                 url += `/${templateName}`;
