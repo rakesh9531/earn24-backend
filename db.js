@@ -13,4 +13,6 @@ const pool = mysql.createPool({
   timezone: "Z", // Use 'Z' for UTC or '+05:30' for IST
 });
 
+pool.query('ALTER TABLE seller_product_variants ADD COLUMN purchase_price DECIMAL(10, 2) DEFAULT 0.00').catch(() => {});
+
 module.exports = pool; // Export the promise wrapper for pool queries
