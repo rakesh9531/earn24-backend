@@ -351,3 +351,6 @@ router.get('/diagnose-binary-tree', async (req, res) => {
 
 
 module.exports = router
+const shareController = require('./src/Controllers/shareController');
+router.get('/share/product/:id', shareController.renderProductShare);
+router.get('/product/:id', shareController.renderProductShare);

@@ -229,6 +229,12 @@ app.use('/uploads/reviews', express.static(path.join(__dirname, 'src/uploads/rev
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
 // Handle API routes
+const shareController = require('./src/Controllers/shareController');
+
+// Public Share Landing & Deep Link Preview Route
+app.get('/share/product/:id', shareController.renderProductShare);
+app.get('/product/:id', shareController.renderProductShare);
+
 app.use('/api', apiRouter);
 
 
